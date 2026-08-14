@@ -16,7 +16,7 @@ use pi_agent_core::provider::openrouter::{
 use pi_agent_core::scheduler::ModelProvider;
 use pi_agent_core::state::{Message, ModelDescriptor};
 use pi_agent_core::{Agent, DefaultCodingTools};
-use serde_json::{json, Value};
+use pi_agent_protocol::{JsonNumber, JsonValue};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -164,9 +164,11 @@ impl HookSet for OpenAiContextHook {
             .iter()
             .map(openai_message)
             .collect::<Result<Vec<_>, _>>()?;
-        serde_json::to_string(&messages).map_err(|error| {
-            pi_agent_core::error::HookError::new("convert_to_llm", error.to_string())
-        })
+        JsonValue::Array(messages)
+            .to_json_string()
+            .map_err(|error| {
+                pi_agent_core::error::HookError::new("convert_to_llm", error.to_string())
+            })
     }
 
     fn should_stop_after_turn(
@@ -184,9 +186,12 @@ impl HookSet for OpenAiContextHook {
     }
 }
 
-fn openai_message(message: &Message) -> Result<Value, pi_agent_core::error::HookError> {
+fn openai_message(message: &Message) -> Result<JsonValue, pi_agent_core::error::HookError> {
     match message {
-        Message::User { content, .. } => Ok(json!({"role": "user", "content": content})),
+        Message::User { content, .. } => Ok(JsonValue::object([
+            ("role", JsonValue::from("user")),
+            ("content", JsonValue::from(content.clone())),
+        ])),
         Message::Assistant {
             content,
             tool_calls,
@@ -195,31 +200,41 @@ fn openai_message(message: &Message) -> Result<Value, pi_agent_core::error::Hook
             let calls = tool_calls
                 .iter()
                 .map(|call| {
-                    json!({
-                        "id": call.id.as_str(),
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": call.arguments.as_str(),
-                        },
-                    })
+                    JsonValue::object([
+                        ("id", JsonValue::from(call.id.as_str())),
+                        ("type", JsonValue::from("function")),
+                        (
+                            "function",
+                            JsonValue::object([
+                                ("name", JsonValue::from(call.name.clone())),
+                                ("arguments", JsonValue::from(call.arguments.as_str())),
+                            ]),
+                        ),
+                    ])
                 })
                 .collect::<Vec<_>>();
-            Ok(json!({
-                "role": "assistant",
-                "content": if content.is_empty() { Value::Null } else { Value::String(content.clone()) },
-                "tool_calls": calls,
-            }))
+            Ok(JsonValue::object([
+                ("role", JsonValue::from("assistant")),
+                (
+                    "content",
+                    if content.is_empty() {
+                        JsonValue::Null
+                    } else {
+                        JsonValue::from(content.clone())
+                    },
+                ),
+                ("tool_calls", JsonValue::Array(calls)),
+            ]))
         }
         Message::ToolResult {
             tool_call_id,
             content,
             ..
-        } => Ok(json!({
-            "role": "tool",
-            "tool_call_id": tool_call_id.as_str(),
-            "content": content,
-        })),
+        } => Ok(JsonValue::object([
+            ("role", JsonValue::from("tool")),
+            ("tool_call_id", JsonValue::from(tool_call_id.as_str())),
+            ("content", JsonValue::from(content.clone())),
+        ])),
     }
 }
 
@@ -238,32 +253,67 @@ fn event_name(event: &AgentEventKind) -> &'static str {
     }
 }
 
-fn openrouter_cost_json(report: &OpenRouterCostReport) -> Value {
-    json!({
-        "schema_version": "pi-eval-cost/v1",
-        "currency": "USD",
-        "pricing": "provider_reported",
-        "reported_turn_count": report.reported_turn_count,
-        "unavailable_turn_count": report.unavailable_turn_count,
-        "complete": report.complete,
-        // A partial total is useful for diagnosis, but `complete` makes it impossible to
-        // mistake that value for the complete run cost.
-        "reported_total_usd": report.reported_total_usd,
-        "reported_upstream_inference_usd": report.reported_upstream_inference_usd,
-        "turns": report.turns.iter().map(|turn| json!({
-            "turn": turn.turn,
-            "source": turn.source.as_str(),
-            "total_usd": turn.total_usd,
-            "upstream_inference_usd": turn.upstream_inference_usd,
-            "model": turn.model,
-            "provider": turn.provider,
-            "input_tokens": turn.input_tokens,
-            "output_tokens": turn.output_tokens,
-            "cache_read_tokens": turn.cache_read_tokens,
-            "cache_write_tokens": turn.cache_write_tokens,
-            "reasoning_tokens": turn.reasoning_tokens,
-        })).collect::<Vec<_>>(),
-    })
+fn openrouter_cost_json(report: &OpenRouterCostReport) -> JsonValue {
+    let turns = report
+        .turns
+        .iter()
+        .map(|turn| {
+            JsonValue::object([
+                ("turn", JsonValue::from(turn.turn as u64)),
+                ("source", JsonValue::from(turn.source.as_str())),
+                ("total_usd", optional_f64(turn.total_usd)),
+                (
+                    "upstream_inference_usd",
+                    optional_f64(turn.upstream_inference_usd),
+                ),
+                ("model", optional_string(turn.model.as_ref())),
+                ("provider", optional_string(turn.provider.as_ref())),
+                ("input_tokens", optional_u64(turn.input_tokens)),
+                ("output_tokens", optional_u64(turn.output_tokens)),
+                ("cache_read_tokens", optional_u64(turn.cache_read_tokens)),
+                ("cache_write_tokens", optional_u64(turn.cache_write_tokens)),
+                ("reasoning_tokens", optional_u64(turn.reasoning_tokens)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    JsonValue::object([
+        ("schema_version", JsonValue::from("pi-eval-cost/v1")),
+        ("currency", JsonValue::from("USD")),
+        ("pricing", JsonValue::from("provider_reported")),
+        (
+            "reported_turn_count",
+            JsonValue::from(report.reported_turn_count as u64),
+        ),
+        (
+            "unavailable_turn_count",
+            JsonValue::from(report.unavailable_turn_count as u64),
+        ),
+        ("complete", JsonValue::from(report.complete)),
+        ("reported_total_usd", json_f64(report.reported_total_usd)),
+        (
+            "reported_upstream_inference_usd",
+            json_f64(report.reported_upstream_inference_usd),
+        ),
+        ("turns", JsonValue::Array(turns)),
+    ])
+}
+
+fn json_f64(value: f64) -> JsonValue {
+    JsonValue::number(JsonNumber::Float(value)).expect("evaluation JSON numbers are finite")
+}
+
+fn optional_f64(value: Option<f64>) -> JsonValue {
+    value.map(json_f64).unwrap_or(JsonValue::Null)
+}
+
+fn optional_u64(value: Option<u64>) -> JsonValue {
+    value.map(JsonValue::from).unwrap_or(JsonValue::Null)
+}
+
+fn optional_string(value: Option<&String>) -> JsonValue {
+    value
+        .map(|value| JsonValue::from(value.clone()))
+        .unwrap_or(JsonValue::Null)
 }
 
 /// A concrete opt-in provider plus only the accounting this evaluation host needs.
@@ -294,7 +344,7 @@ impl EvalProvider {
         }
     }
 
-    fn cost_json(&self) -> Option<Value> {
+    fn cost_json(&self) -> Option<JsonValue> {
         match self {
             Self::OpenRouter(provider) => Some(openrouter_cost_json(&provider.cost_report())),
             // The Command Code gateway does not report price fields in its NDJSON contract.
@@ -305,18 +355,27 @@ impl EvalProvider {
 
     /// Preserve actionable Command Code failure classification in the controller artifact while
     /// keeping its arbitrary remote message out of a broadly retained evaluation report.
-    fn error_json(&self) -> Option<Value> {
+    fn error_json(&self) -> Option<JsonValue> {
         let Self::CommandCode(provider) = self else {
             return None;
         };
         provider.last_error_report().map(|report| {
-            json!({
-                "source": report.source.as_str(),
-                "status_code": report.status_code,
-                "error_type": report.error_type,
-                "error_code": report.error_code,
-                "retryable": report.retryable,
-            })
+            JsonValue::object([
+                ("source", JsonValue::from(report.source.as_str())),
+                (
+                    "status_code",
+                    optional_u64(report.status_code.map(u64::from)),
+                ),
+                ("error_type", optional_string(report.error_type.as_ref())),
+                ("error_code", optional_string(report.error_code.as_ref())),
+                (
+                    "retryable",
+                    report
+                        .retryable
+                        .map(JsonValue::from)
+                        .unwrap_or(JsonValue::Null),
+                ),
+            ])
         })
     }
 }
@@ -363,23 +422,23 @@ fn final_text(agent: &Agent) -> String {
         .unwrap_or_default()
 }
 
+fn read_json(path: &PathBuf, label: &str) -> Result<JsonValue, String> {
+    let bytes = fs::read(path).map_err(|_| format!("cannot read evaluation {label}"))?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| format!("evaluation {label} is not JSON"))?;
+    JsonValue::parse(text).map_err(|_| format!("evaluation {label} is not JSON"))
+}
+
 fn main() -> Result<(), String> {
     let args = Args::parse()?;
-    let task: Value = serde_json::from_slice(
-        &fs::read(&args.task_json).map_err(|_| "cannot read evaluation task".to_owned())?,
-    )
-    .map_err(|_| "evaluation task is not JSON".to_owned())?;
-    let capabilities: Value = serde_json::from_slice(
-        &fs::read(&args.capabilities_json)
-            .map_err(|_| "cannot read evaluation capabilities".to_owned())?,
-    )
-    .map_err(|_| "evaluation capabilities are not JSON".to_owned())?;
+    let task = read_json(&args.task_json, "task")?;
+    let capabilities = read_json(&args.capabilities_json, "capabilities")?;
     if task.get("capabilities") != Some(&capabilities) {
         return Err("evaluation capability manifest does not match task".into());
     }
     let prompt = task
         .get("prompt")
-        .and_then(Value::as_str)
+        .and_then(JsonValue::as_str)
         .filter(|prompt| !prompt.is_empty())
         .ok_or_else(|| "evaluation task has no prompt".to_owned())?;
     let default_tools = DefaultCodingTools::new(&args.workspace)
@@ -445,7 +504,12 @@ fn main() -> Result<(), String> {
     let totals = provider.usage_snapshot();
     let trace = events
         .iter()
-        .map(|event| json!({"seq": event.sequence.0, "type": event_name(&event.kind)}))
+        .map(|event| {
+            JsonValue::object([
+                ("seq", JsonValue::from(event.sequence.0)),
+                ("type", JsonValue::from(event_name(&event.kind))),
+            ])
+        })
         .collect::<Vec<_>>();
     let turns = events
         .iter()
@@ -455,33 +519,52 @@ fn main() -> Result<(), String> {
         .iter()
         .filter(|event| matches!(event.kind, AgentEventKind::ToolExecutionStart { .. }))
         .count();
-    let mut output = json!({
-        "schema_version": RESULT_SCHEMA,
-        "attempt_id": args.attempt_id,
-        "baseline_id": args.baseline_id,
-        "terminal": {
-            "status": terminal_status(&result),
-            "code": terminal_code(&result),
-        },
-        "final_text": final_text(&agent),
-        "turns": turns,
-        "tool_calls": tool_calls,
-        "usage": {
-            "input": totals.input_tokens.unwrap_or(0),
-            "output": totals.output_tokens.unwrap_or(0),
-            "cache_read": 0,
-            "cache_write": 0,
-        },
-        "trace": trace,
-    });
+    let mut output = JsonValue::object([
+        ("schema_version", JsonValue::from(RESULT_SCHEMA)),
+        ("attempt_id", JsonValue::from(args.attempt_id)),
+        ("baseline_id", JsonValue::from(args.baseline_id)),
+        (
+            "terminal",
+            JsonValue::object([
+                ("status", JsonValue::from(terminal_status(&result))),
+                (
+                    "code",
+                    terminal_code(&result)
+                        .map(JsonValue::from)
+                        .unwrap_or(JsonValue::Null),
+                ),
+            ]),
+        ),
+        ("final_text", JsonValue::from(final_text(&agent))),
+        ("turns", JsonValue::from(turns as u64)),
+        ("tool_calls", JsonValue::from(tool_calls as u64)),
+        (
+            "usage",
+            JsonValue::object([
+                ("input", JsonValue::from(totals.input_tokens.unwrap_or(0))),
+                ("output", JsonValue::from(totals.output_tokens.unwrap_or(0))),
+                ("cache_read", JsonValue::from(0_u64)),
+                ("cache_write", JsonValue::from(0_u64)),
+            ]),
+        ),
+        ("trace", JsonValue::Array(trace)),
+    ]);
     if let Some(cost) = provider.cost_json() {
-        output["cost"] = cost;
+        output
+            .as_object_mut()
+            .expect("evaluation output is an object")
+            .insert("cost".to_owned(), cost);
     }
     if let Some(error) = provider.error_json() {
-        output["provider_error"] = error;
+        output
+            .as_object_mut()
+            .expect("evaluation output is an object")
+            .insert("provider_error".to_owned(), error);
     }
-    let encoded =
-        serde_json::to_vec(&output).map_err(|_| "cannot encode evaluation result".to_owned())?;
+    let encoded = output
+        .to_json_string()
+        .map(String::into_bytes)
+        .map_err(|_| "cannot encode evaluation result".to_owned())?;
     fs::write(&args.result_json, encoded)
         .map_err(|_| "cannot write evaluation result".to_owned())?;
     Ok(())

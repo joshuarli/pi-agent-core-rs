@@ -1294,7 +1294,7 @@ fn normalize_request(request: &ModelRequest) -> JsonValue {
 }
 
 /// Normalize the request at the shared logical boundary before a provider
-/// adapter serializes it. The upstream runner captures this same semantic
+/// adapter serializes it. The fixture contract captures this same semantic
 /// surface, so request fingerprints retain ordering and schemas without
 /// conflating a transport's wire format with core parity.
 fn normalize_quality_request(

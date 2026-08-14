@@ -67,6 +67,13 @@ impl JsonValue {
         Ok(miniserde::json::to_string(&self.to_miniserde()?))
     }
 
+    /// Encode this value as indented JSON text using deterministic object-key order.
+    pub fn to_json_string_pretty(&self) -> Result<String, JsonError> {
+        let mut output = String::new();
+        write_pretty(self, 0, &mut output)?;
+        Ok(output)
+    }
+
     /// Construct a numeric value, rejecting non-finite floating point values.
     pub fn number(number: JsonNumber) -> Result<Self, JsonError> {
         match number {
@@ -87,6 +94,74 @@ impl JsonValue {
             Self::Array(_) => JsonKind::Array,
             Self::Object(_) => JsonKind::Object,
         }
+    }
+
+    /// Borrow the value as a string, if it is a JSON string.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Return the value as a boolean, if it is a JSON boolean.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Return the value as an unsigned integer, if it is a nonnegative integer.
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Number(JsonNumber::Unsigned(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Return the value as a finite floating-point number.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(JsonNumber::Signed(value)) => Some(*value as f64),
+            Self::Number(JsonNumber::Unsigned(value)) => Some(*value as f64),
+            Self::Number(JsonNumber::Float(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Borrow the value as an array, if it is a JSON array.
+    pub fn as_array(&self) -> Option<&[JsonValue]> {
+        match self {
+            Self::Array(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Borrow the value as an object, if it is a JSON object.
+    pub fn as_object(&self) -> Option<&BTreeMap<String, JsonValue>> {
+        match self {
+            Self::Object(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Borrow the value as a mutable object, if it is a JSON object.
+    pub fn as_object_mut(&mut self) -> Option<&mut BTreeMap<String, JsonValue>> {
+        match self {
+            Self::Object(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Return whether this value is JSON `null`.
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    /// Return whether this value is a JSON object.
+    pub fn is_object(&self) -> bool {
+        matches!(self, Self::Object(_))
     }
 
     /// Return an object member, if this value is an object containing `key`.
@@ -164,6 +239,59 @@ impl JsonValue {
                 .collect::<Result<MiniObject, JsonError>>()
                 .map(MiniValue::Object),
         }
+    }
+}
+
+fn write_pretty(value: &JsonValue, depth: usize, output: &mut String) -> Result<(), JsonError> {
+    match value {
+        JsonValue::Null => output.push_str("null"),
+        JsonValue::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        JsonValue::Number(_) | JsonValue::String(_) => output.push_str(&value.to_json_string()?),
+        JsonValue::Array(values) => {
+            if values.is_empty() {
+                output.push_str("[]");
+            } else {
+                output.push('[');
+                for (index, value) in values.iter().enumerate() {
+                    output.push('\n');
+                    indent(output, depth + 1);
+                    write_pretty(value, depth + 1, output)?;
+                    if index + 1 != values.len() {
+                        output.push(',');
+                    }
+                }
+                output.push('\n');
+                indent(output, depth);
+                output.push(']');
+            }
+        }
+        JsonValue::Object(values) => {
+            if values.is_empty() {
+                output.push_str("{}");
+            } else {
+                output.push('{');
+                for (index, (key, value)) in values.iter().enumerate() {
+                    output.push('\n');
+                    indent(output, depth + 1);
+                    output.push_str(&JsonValue::String(key.clone()).to_json_string()?);
+                    output.push_str(": ");
+                    write_pretty(value, depth + 1, output)?;
+                    if index + 1 != values.len() {
+                        output.push(',');
+                    }
+                }
+                output.push('\n');
+                indent(output, depth);
+                output.push('}');
+            }
+        }
+    }
+    Ok(())
+}
+
+fn indent(output: &mut String, depth: usize) {
+    for _ in 0..depth {
+        output.push_str("  ");
     }
 }
 
@@ -311,6 +439,18 @@ mod tests {
         assert_eq!(
             value.to_json_string().expect("finite values serialize"),
             r#"{"a":[-1,2.5],"z":true}"#
+        );
+    }
+
+    #[test]
+    fn pretty_codec_uses_two_space_indentation_and_key_order() {
+        let value = JsonValue::parse(r#"{"z":true,"a":[-1,2.5]}"#).expect("valid JSON");
+
+        assert_eq!(
+            value
+                .to_json_string_pretty()
+                .expect("finite values serialize"),
+            "{\n  \"a\": [\n    -1,\n    2.5\n  ],\n  \"z\": true\n}"
         );
     }
 }

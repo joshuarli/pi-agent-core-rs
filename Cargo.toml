@@ -15,13 +15,10 @@ members = [
 unsafe_code = "forbid"
 
 [workspace.dependencies]
-# Protocol JSON is intentionally lightweight. Serde types do not appear in this workspace's
-# public API. `serde_json` is used only inside the private JSON Schema validator adapter.
-jsonschema = { version = "=0.49.9", default-features = false }
+# Protocol and adapter JSON are intentionally lightweight and Miniserde-backed.
 miniserde = "=0.1.46"
 # Luau's JIT backend is compiled from source, so hosts need not install a system
 # runtime. It is deliberately selected instead of mlua's mutually exclusive
 # LuaJIT backends.
 mlua = { version = "=0.12.0", default-features = false, features = ["luau-jit", "send"] }
-serde_json = "=1.0.151"
 smol = "=2.0.2"

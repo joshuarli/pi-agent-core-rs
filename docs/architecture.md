@@ -30,7 +30,7 @@ The workspace crates are:
 `PiDefaultCodingProfile` belongs with the explicit profile/tool adapters. It may be a module in
 `pi-agent-core` or a narrowly separated profile crate selected during implementation, but it must
 depend only on the core/protocol boundaries and caller-provided operation traits. It must not import
-the upstream SDK or make upstream source a runtime dependency.
+the selected contract or make external source a runtime dependency.
 
 ## Ports and adapters
 
@@ -62,9 +62,12 @@ may use HTTP, a native model, a world runtime, or a deterministic fixture; none 
 appears in core state.
 
 Tools expose name, description, raw JSON Schema, execution mode, and an async execute operation.
-Preparation/validation and scheduling are generic. A tool receives a call ID, validated JSON,
-cancellation, and an update sink. Standard coding tools are ordinary tools behind explicit profile
-operation ports.
+Preparation/validation and scheduling are generic. The core's Miniserde-native validator accepts
+the structural and combinator keywords used by the profile (`type`, `properties`, `required`,
+`additionalProperties`, `items`, `enum`, `const`, `allOf`, `anyOf`, `oneOf`, `not`, size bounds,
+and numeric bounds); unsupported draft-specific keywords are rejected as invalid tool schemas
+rather than ignored. A tool receives a call ID, validated JSON, cancellation, and an update sink.
+Standard coding tools are ordinary tools behind explicit profile operation ports.
 
 The optional `pi_agent_core::provider` module is a separate adapter layer behind explicit Cargo
 features. `provider-openrouter` and `provider-commandcode` are opt-in `curl` transports with
@@ -156,7 +159,7 @@ source calls A, B, C
 ```
 
 Sequential mode performs the entire prepare/execute/finalize/result cycle in source order. The
-selected upstream commit currently serializes the entire batch when any call has a sequential
+selected contract serializes the entire batch when any call has a sequential
 override; the mixed-mode fixture in `docs/semantics.md` decides whether V0 preserves that exact
 rule. Partial updates are awaited before a tool end event and ignored after settlement. Tool
 results are inserted in source order even when completion events are not.
@@ -254,5 +257,5 @@ These contract-bearing choices are settled by fixtures and dependency review:
 | Typed error hierarchy and failure-to-event mapping | `failure/provider-error`, `cancel/failure-shapes` |
 
 No change may introduce an undocumented fallback. A newly unresolved behavior
-must be marked `investigating` in `docs/parity-ledger.md` and resolved before
+must be marked investigating in a deterministic fixture and resolved before
 it becomes part of the supported contract.

@@ -41,14 +41,14 @@ class RecordedReplayContractTests(unittest.TestCase):
         self.assertEqual(actual["error"]["message"], recording["assistant"]["error_message"])
         self.assertEqual(actual["error"]["hint"], replay.OPENROUTER_PRIVACY_404_HINT)
 
-    def test_capture_commit_and_version_must_match_upstream_pin(self) -> None:
+    def test_capture_provenance_fields_must_be_non_empty(self) -> None:
         changed = copy.deepcopy(self.fixture)
-        changed["capture"]["pi_commit"] = "0" * 40
+        changed["capture"]["pi_commit"] = ""
         with self.assertRaises(replay.ContractError):
             replay.validate_recording(changed, source=replay.DEFAULT_FIXTURE)
 
         changed = copy.deepcopy(self.fixture)
-        changed["capture"]["pi_agent_core_version"] = "999.0.0-stale"
+        changed["capture"]["pi_agent_core_version"] = ""
         with self.assertRaises(replay.ContractError):
             replay.validate_recording(changed, source=replay.DEFAULT_FIXTURE)
 

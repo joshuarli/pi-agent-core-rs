@@ -4,11 +4,11 @@
 //! finite-response transport for the evaluation host: the core remains independent of HTTP,
 //! subprocesses, credentials, and provider price formats.
 
+use crate::json::{from_bytes, json_value, to_bytes, JsonValue};
 use crate::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use crate::state::{AssistantToolCall, SerializedJson, StopReason, ToolCallId, Usage};
-use serde_json::{json, Value};
 use std::fmt;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -234,33 +234,31 @@ impl OpenRouterProvider {
         &self,
         request: ModelRequest,
     ) -> Result<(Vec<ModelStreamEvent>, Usage, OpenRouterCostTurn), String> {
-        let messages: Vec<Value> = serde_json::from_str(&request.context)
+        let messages = JsonValue::parse(&request.context)
             .map_err(|_| "OpenRouter received invalid converted context".to_owned())?;
+        let messages = messages
+            .as_array()
+            .ok_or_else(|| "OpenRouter converted context must be an array".to_owned())?
+            .to_owned();
         let mut chat_messages = Vec::with_capacity(messages.len() + 1);
-        chat_messages.push(json!({"role": "system", "content": request.system_prompt}));
+        chat_messages.push(json_value!({"role": "system", "content": request.system_prompt}));
         chat_messages.extend(messages);
         let tools = request
             .tools
             .iter()
             .map(|tool| {
-                let schema = serde_json::from_str::<Value>(
-                    &tool
-                        .schema
-                        .to_json_string()
-                        .map_err(|_| "captured tool schema cannot be serialized")?,
-                )
-                .map_err(|_| "captured tool schema cannot be decoded")?;
-                Ok(json!({
+                let schema = tool.schema.clone();
+                Ok(json_value!({
                     "type": "function",
-                    "function": {
+                    "function": json_value!({
                         "name": tool.name,
                         "description": tool.description,
                         "parameters": schema,
-                    },
+                    }),
                 }))
             })
             .collect::<Result<Vec<_>, &str>>()?;
-        let mut payload = json!({
+        let mut payload = json_value!({
             "model": self.config.model,
             "messages": chat_messages,
             "temperature": 0,
@@ -268,10 +266,13 @@ impl OpenRouterProvider {
             "stream": false,
         });
         if !tools.is_empty() {
-            payload["tools"] = Value::Array(tools);
+            payload
+                .as_object_mut()
+                .expect("OpenRouter payload is an object")
+                .insert("tools".to_owned(), JsonValue::Array(tools));
         }
-        let payload = serde_json::to_vec(&payload)
-            .map_err(|_| "cannot serialize OpenRouter request".to_owned())?;
+        let payload =
+            to_bytes(&payload).map_err(|_| "cannot serialize OpenRouter request".to_owned())?;
         let output = run_curl(
             Command::new("curl")
                 .arg("--silent")
@@ -397,8 +398,8 @@ fn finite_nonnegative(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
 }
 
-fn number(value: &Value, key: &str) -> Option<f64> {
-    finite_nonnegative(value.get(key).and_then(Value::as_f64))
+fn number(value: &JsonValue, key: &str) -> Option<f64> {
+    finite_nonnegative(value.get(key).and_then(JsonValue::as_f64))
 }
 
 fn unavailable_cost(usage: &Usage, model: &str) -> OpenRouterCostTurn {
@@ -418,47 +419,47 @@ fn unavailable_cost(usage: &Usage, model: &str) -> OpenRouterCostTurn {
 }
 
 fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
-    let response: Value = serde_json::from_slice(bytes)
-        .map_err(|_| "OpenRouter returned a non-JSON response".to_owned())?;
+    let response =
+        from_bytes(bytes).map_err(|_| "OpenRouter returned a non-JSON response".to_owned())?;
     if response.get("error").is_some() {
         return Err("OpenRouter rejected the request".into());
     }
     let choice = response
         .get("choices")
-        .and_then(Value::as_array)
+        .and_then(JsonValue::as_array)
         .and_then(|choices| choices.first())
         .ok_or_else(|| "OpenRouter response did not contain a completion choice".to_owned())?;
     let message = choice
         .get("message")
-        .and_then(Value::as_object)
+        .and_then(JsonValue::as_object)
         .ok_or_else(|| "OpenRouter completion choice did not contain a message".to_owned())?;
     let mut events = Vec::new();
-    if let Some(content) = message.get("content").and_then(Value::as_str) {
+    if let Some(content) = message.get("content").and_then(JsonValue::as_str) {
         if !content.is_empty() {
             events.push(ModelStreamEvent::TextDelta(content.to_owned()));
         }
     }
     let mut has_tool_calls = false;
-    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+    if let Some(calls) = message.get("tool_calls").and_then(JsonValue::as_array) {
         for (index, call) in calls.iter().enumerate() {
             let id = call
                 .get("id")
-                .and_then(Value::as_str)
+                .and_then(JsonValue::as_str)
                 .filter(|id| !id.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("openrouter-call-{index}"));
             let function = call
                 .get("function")
-                .and_then(Value::as_object)
+                .and_then(JsonValue::as_object)
                 .ok_or_else(|| "OpenRouter tool call did not contain a function".to_owned())?;
             let name = function
                 .get("name")
-                .and_then(Value::as_str)
+                .and_then(JsonValue::as_str)
                 .filter(|name| !name.is_empty())
                 .ok_or_else(|| "OpenRouter tool call did not contain a name".to_owned())?;
             let arguments = function
                 .get("arguments")
-                .and_then(Value::as_str)
+                .and_then(JsonValue::as_str)
                 .ok_or_else(|| {
                     "OpenRouter tool call did not contain serialized arguments".to_owned()
                 })?;
@@ -471,20 +472,20 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
             has_tool_calls = true;
         }
     }
-    let stop_reason = match choice.get("finish_reason").and_then(Value::as_str) {
+    let stop_reason = match choice.get("finish_reason").and_then(JsonValue::as_str) {
         Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
         Some("length") => StopReason::Length,
         _ if has_tool_calls => StopReason::ToolUse,
         _ => StopReason::EndTurn,
     };
     events.push(ModelStreamEvent::End(stop_reason));
-    let usage = response.get("usage").cloned().unwrap_or(Value::Null);
-    let token = |name: &str| usage.get(name).and_then(Value::as_u64);
+    let usage = response.get("usage").cloned().unwrap_or(JsonValue::Null);
+    let token = |name: &str| usage.get(name).and_then(JsonValue::as_u64);
     let reasoning = usage
         .get("completion_tokens_details")
-        .and_then(Value::as_object)
+        .and_then(JsonValue::as_object)
         .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(Value::as_u64);
+        .and_then(JsonValue::as_u64);
     let parsed_usage = Usage {
         input_tokens: token("prompt_tokens"),
         output_tokens: token("completion_tokens"),
@@ -497,7 +498,7 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
         upstream_inference_usd: None,
         model: response
             .get("model")
-            .and_then(Value::as_str)
+            .and_then(JsonValue::as_str)
             .map(str::to_owned),
         provider: None,
         input_tokens: parsed_usage.input_tokens,
@@ -505,11 +506,11 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
         cache_read_tokens: usage
             .get("prompt_tokens_details")
             .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_u64),
+            .and_then(JsonValue::as_u64),
         cache_write_tokens: usage
             .get("prompt_tokens_details")
             .and_then(|details| details.get("cache_write_tokens"))
-            .and_then(Value::as_u64),
+            .and_then(JsonValue::as_u64),
         reasoning_tokens: parsed_usage.reasoning_tokens,
     });
     Ok(ParsedResponse {
@@ -517,7 +518,7 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
         usage: parsed_usage,
         generation_id: response
             .get("id")
-            .and_then(Value::as_str)
+            .and_then(JsonValue::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_owned),
         inline_cost,
@@ -525,7 +526,7 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
 }
 
 fn parse_generation_cost(bytes: &[u8], fallback_usage: &Usage) -> Option<OpenRouterCostTurn> {
-    let response: Value = serde_json::from_slice(bytes).ok()?;
+    let response = from_bytes(bytes).ok()?;
     let data = response.get("data")?;
     let total_usd = number(data, "total_cost")?;
     Some(OpenRouterCostTurn {
@@ -533,24 +534,27 @@ fn parse_generation_cost(bytes: &[u8], fallback_usage: &Usage) -> Option<OpenRou
         source: OpenRouterCostSource::Generation,
         total_usd: Some(total_usd),
         upstream_inference_usd: number(data, "upstream_inference_cost"),
-        model: data.get("model").and_then(Value::as_str).map(str::to_owned),
+        model: data
+            .get("model")
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned),
         provider: data
             .get("provider_name")
-            .and_then(Value::as_str)
+            .and_then(JsonValue::as_str)
             .map(str::to_owned),
         input_tokens: data
             .get("tokens_prompt")
-            .and_then(Value::as_u64)
+            .and_then(JsonValue::as_u64)
             .or(fallback_usage.input_tokens),
         output_tokens: data
             .get("tokens_completion")
-            .and_then(Value::as_u64)
+            .and_then(JsonValue::as_u64)
             .or(fallback_usage.output_tokens),
-        cache_read_tokens: data.get("tokens_cached").and_then(Value::as_u64),
-        cache_write_tokens: data.get("tokens_cache_write").and_then(Value::as_u64),
+        cache_read_tokens: data.get("tokens_cached").and_then(JsonValue::as_u64),
+        cache_write_tokens: data.get("tokens_cache_write").and_then(JsonValue::as_u64),
         reasoning_tokens: data
             .get("tokens_reasoning")
-            .and_then(Value::as_u64)
+            .and_then(JsonValue::as_u64)
             .or(fallback_usage.reasoning_tokens),
     })
 }

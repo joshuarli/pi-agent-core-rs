@@ -1,7 +1,7 @@
 # Canonical result and normalization policy
 
-Each runner emits one JSON object with `kind: "canonical_parity_result"`. The comparator compares
-these objects, never raw upstream or Rust event JSON. This keeps provider wire format and runtime
+The Rust runner emits one JSON object with `kind: "canonical_parity_result"`. The fixture check compares
+these objects, never raw provider or Rust event JSON. This keeps provider wire format and runtime
 bookkeeping outside the parity contract while retaining observable agent behavior.
 
 ## Canonical result shape
@@ -105,9 +105,9 @@ must provide a deterministic substitute or the contract must explicitly classify
 
 ## Recorded captures
 
-The OpenRouter artifact uses `kind: "recorded_pi_sdk_terminal_response"` and is produced through
-the pinned source `Agent`/provider adapter, not a host-installed Pi executable. Its `events` and
-`assistant` fields are upstream-oriented evidence. A recorded adapter maps them without modifying
+The OpenRouter artifact uses `kind: "recorded_pi_sdk_terminal_response"` and is preserved as
+immutable provider evidence. Its `events` and `assistant` fields are recording data. A recorded
+adapter maps them without modifying
 the capture:
 
 * `events` become canonical lifecycle events; a recorded `role: "toolResult"` is normalized to

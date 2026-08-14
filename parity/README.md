@@ -1,72 +1,41 @@
-# Parity harness
+# Rust contract fixtures
 
-The parity harness is a small, deterministic contract between two runners:
-
-```text
-declarative fixture ──┬── upstream runner ──┐
-                      └── Rust runner ──────┴── canonical result ── comparator
-```
-
-The runners execute the same fixture and emit the same JSON result shape. The comparator only
-compares canonical results; it never starts a Pi CLI, contacts a model provider, or interprets
-runner-specific output. The harness itself has no runtime dependency. A future runner may be
-implemented in any language, provided it obeys the boundaries in [`runners.md`](runners.md).
+The parity directory is a deterministic, provider-free contract corpus for the Rust agent
+kernel. Each declarative fixture is run by the checked-in Rust adapter and compared with its
+checked-in canonical result. There is no upstream checkout, differential runner, or live provider
+in this verification path.
 
 ## Layout
 
-```text
-parity/
-├── fixtures/
-│   ├── declarative/       # deterministic, provider-free test inputs
-│   ├── expected/          # optional checked-in canonical results
-│   ├── normalized/        # generated runner results (not source fixtures)
-│   └── recorded/          # immutable captures of external/provider behavior
-├── rust/                  # Rust runner documentation/auxiliary boundary
-├── compare/               # canonical-result comparison boundary (scaffold)
-├── fixture-format.md      # declarative input contract
-├── normalization.md       # canonicalization and redaction rules
-├── runners.md             # runner I/O and scope boundaries
-└── run-declarative.sh     # full pinned upstream/Rust corpus check
-```
+    parity/
+    ├── fixtures/
+    │   ├── declarative/       # deterministic, provider-free test inputs
+    │   ├── expected/          # checked-in canonical Rust results
+    │   ├── normalized/        # generated results, not source fixtures
+    │   └── recorded/          # immutable external/provider captures
+    ├── rust/                  # Rust runner documentation/auxiliary boundary
+    ├── compare/               # reserved canonical-result comparison boundary
+    ├── fixture-format.md      # declarative input contract
+    ├── normalization.md       # canonicalization and redaction rules
+    ├── runners.md             # Rust runner I/O and scope boundaries
+    └── run-rust.sh            # full Rust fixture check
 
-`upstream/` is the separately pinned upstream SDK runner. The checked-in V0 corpus currently
-covers text, deterministic model-stream cancellation/reuse, tool success/error, reverse parallel
-completion ordering, partial updates, before/after tool policy, queue modes, and continuation.
-Likewise, files under `fixtures/recorded/` are evidence, not live tests: a recorded provider
-response must remain usable when the provider is unavailable.
+The corpus covers text turns, cancellation and reuse, tool success/error, parallel completion
+ordering, partial updates, hooks, queues, continuation, and the default profile contract.
+Recorded provider responses remain immutable evidence and are checked only by their explicit
+provider-free replay adapter.
 
 ## Workflow
 
-1. Add a provider-free JSON fixture under `fixtures/declarative/`.
-2. If the case has a complete expected output, add its canonical result under `fixtures/expected/`.
-3. Run each adapter with the fixture and write one canonical result under `fixtures/normalized/`.
-4. Compare the two canonical results. A mismatch is a contract failure or an intentionally
-   documented fixture change; it is not resolved by weakening normalization.
+1. Add a provider-free JSON fixture under fixtures/declarative/.
+2. Add its canonical result under fixtures/expected/.
+3. Run ./parity/run-rust.sh.
+4. Treat a mismatch as a contract or fixture change; do not weaken normalization to hide it.
 
-To run this workflow for every declarative fixture, use
-[`run-declarative.sh`](run-declarative.sh). It verifies the upstream pin, builds with
-`+nightly-2026-07-24`, runs the in-process pinned SDK adapter and Rust adapter for each fixture,
-and compares both outputs with the checked-in expected result as well as with each other. The
-script uses only already-installed local tooling; it never invokes a Pi CLI, installs packages, or
-contacts a provider/network.
+The runner uses the pinned nightly toolchain and jq for canonical JSON comparison. It never
+starts a Pi CLI, installs packages, contacts a provider, reads ambient configuration, or mutates
+the checked-in fixture tree. Fixture outcomes that represent model/tool errors or cancellation
+are valid data; malformed fixtures and runner failures are verification failures.
 
-The samples [`single-turn-text.json`](fixtures/declarative/single-turn-text.json) and
-[`tool-continue.json`](fixtures/declarative/tool-continue.json) execute through both in-process
-SDK adapters without a model, network, or Pi CLI. The latter pins assistant tool-call settlement,
-host execution, source-ordered tool-result insertion, and model continuation; see
-[`runners.md`](runners.md) for exact commands.
-
-[`tool-error-continue.json`](fixtures/declarative/tool-error-continue.json) additionally proves
-that a tool execution failure is transcript data—not a failed agent run—and that the subsequent
-model turn can recover.
-
-The captured default coding profile has its own source gate:
-
-```text
-bash parity/run-profile.sh
-```
-
-It verifies prompt/definition bytes and exercises every standard pinned factory without invoking
-Pi. Six factories use virtual explicit operation adapters; `grep` has an unavoidable source-owned
-`rg` process boundary and is verified in an empty temporary Pi-agent directory so no host-managed
-`~/.pi` binary can participate. See [`profile/README.md`](profile/README.md).
+The default profile has checked-in captured prompt/definition data under profile/. Rust tests
+validate that capture and the concrete explicit capability boundary. See profile/README.md.

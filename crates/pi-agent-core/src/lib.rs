@@ -13,6 +13,12 @@ pub mod default_tools;
 pub mod error;
 pub mod event;
 pub mod hooks;
+#[cfg(any(
+    feature = "eval-runner",
+    feature = "provider-commandcode",
+    feature = "provider-openrouter"
+))]
+mod json;
 pub mod profile;
 pub mod provider;
 pub mod queue;

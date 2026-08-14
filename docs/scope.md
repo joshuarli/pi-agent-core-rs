@@ -1,7 +1,7 @@
 # Scope and compatibility boundary
 
 This document defines what the project means by “Pi parity.” The pinned
-upstream checkout and its fixture runner are the executable specification;
+checked-in deterministic fixtures and the Rust tests are the executable specification;
 prose is a boundary, not a substitute for a fixture. [`V1.md`](../V1.md)
 describes optional Luau policy work and does not widen the completed core.
 
@@ -24,7 +24,7 @@ request construction, tool scheduling and result ordering, queue semantics, even
 failure classification, and cleanup.
 
 Pi is the behavioral oracle, not a source-code port. A behavior enters the V0 contract only when
-it has an upstream path and symbol, a deterministic in-process fixture, and a normalized result
+it has a precise code target, a deterministic fixture, and a normalized result
 comparison. A source file being present in the Pi repository is not permission to implement it.
 
 ## V0 contract
@@ -51,7 +51,7 @@ any standard tool, wrap an operation with policy, or provide a complete applicat
 
 ## V0 exclusions
 
-These are rejected as V0 implementation targets even when an upstream package exports them:
+These are rejected as V0 implementation targets even when a broader application package exports them:
 
 | Excluded surface | Reason |
 | --- | --- |
@@ -89,13 +89,13 @@ interactive sessions or ambient discovery, it remains rejected.
 
 ## Decision rules
 
-When upstream behavior is encountered, classify it in `docs/parity-ledger.md` using exactly one of
-these statuses:
+When a behavior is added or remains uncertain, classify it in the relevant fixture and test
+evidence using exactly one of these statuses:
 
-* `supported`: part of the V0 target and covered by a fixture row;
+* `supported`: part of the V0 target and covered by a fixture;
 * `deferred-to-v1`: explicitly a Luau policy-plane concern from `V1.md`;
 * `rejected`: outside the headless kernel/profile boundary;
-* `investigating`: the selected public behavior or its settlement detail is not yet pinned by a
+* `investigating`: the selected behavior or its settlement detail is not yet pinned by a
   deterministic fixture.
 
 `investigating` is a temporary specification status, not permission to implement a guess. Every
@@ -116,13 +116,12 @@ scope without a new explicit contract.
 Copy this block when adding a row to any Milestone 0 ledger. Keep the status vocabulary exact.
 
 ```text
-ID: PL-<domain>-<number>
+ID: FIX-<domain>-<number>
 Status: supported | deferred-to-v1 | rejected | investigating
-Upstream path: packages/<package>/<path>:<line>
-Upstream symbol/export: <name>
+Code target: crates/<crate>/<path>:<line>
 Observable behavior: <one sentence; include ordering or settlement>
 V0/V1 rationale: <why this boundary is correct>
-Fixture: parity/fixtures/<scenario>/<runner>.json
+Fixture: parity/fixtures/declarative/<scenario>.json
 Expected evidence: <canonical field or assertion>
 Normalization: none | timestamp | generated-id | duration (explain)
 Open question / exit criterion: <required only for investigating>

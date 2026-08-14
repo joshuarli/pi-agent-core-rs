@@ -16,10 +16,10 @@ cargo +nightly-2026-07-24 fmt --check
 git diff --check
 ```
 
-For a profile or upstream-pin change, also run the documented fixture and
-source-profile gates in [`parity/README.md`](../parity/README.md) and
+For a profile or contract change, also run the Rust fixture check in
+[`parity/README.md`](../parity/README.md) and the profile tests described in
 [`parity/profile/README.md`](../parity/profile/README.md). A new supported
-behavior requires a ledger row and deterministic fixture before implementation.
+behavior requires a deterministic fixture before implementation.
 
 For the trace-first quality gate, run:
 
@@ -35,21 +35,18 @@ and resource interpretation are documented in
 
 ## Completion evidence
 
-- The parity corpus compares the pinned upstream SDK, Rust runner, and checked
-  goldens in process. It covers streams, tool updates/errors, hooks, queues,
-  observer settlement, cancellation, reuse, default profile bytes and tool
-  behavior.
+- The parity corpus runs the Rust runner against checked-in canonical goldens.
+  It covers streams, tool updates/errors, hooks, queues, observer settlement,
+  cancellation, reuse, default profile bytes and tool behavior.
 - The core has no Pi CLI/runtime dependency, no ambient configuration/session
   behavior, no Tokio, and no unsafe Rust. Providers and world side effects are
   explicit host ports.
 - Deterministic hardening covers lifecycle balance and cleanup, completion
   ordering, profile composition, concurrent run claims, workspace isolation,
   non-blocking observer overflow, and one thousand isolated agents.
-- The final comparative coding gate ran on 2026-08-14 with the explicit,
-  credential-injected DeepSeek manifest. Both upstream and Rust baselines passed two
-  of two light standard-library Python tasks and their `READY` controls, with
-  no attempt timeout. The provider-specific report is intentionally ignored;
-  the controller contract lives in [`evals/README.md`](../evals/README.md).
+- The final coding gate ran on 2026-08-14 with the explicit, credential-injected
+  provider manifest. The provider-specific report is intentionally ignored; the
+  controller contract lives in [`evals/README.md`](../evals/README.md).
 
 ## V1 extension evidence
 

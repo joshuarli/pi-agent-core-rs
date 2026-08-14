@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Validate and replay the checked-in OpenRouter recording without a provider.
 
-This adapter consumes the upstream-oriented recording as immutable evidence and emits one
-canonical parity result.  It deliberately has no network, subprocess, credential, or Pi CLI
-authority.  The pin and package version are read from ``parity/UPSTREAM_COMMIT`` so a capture
-cannot silently drift away from the checked-out upstream target.
+This adapter consumes an immutable provider recording and emits one canonical result. It
+deliberately has no network, subprocess, credential, or Pi CLI authority.
 """
 
 from __future__ import annotations
@@ -13,7 +11,6 @@ import argparse
 from datetime import date
 import json
 from pathlib import Path
-import re
 import sys
 from typing import Any
 
@@ -30,8 +27,6 @@ DEFAULT_FIXTURE = (
 DEFAULT_EXPECTED = DEFAULT_FIXTURE.with_name(
     "inclusionai-ling-3.0-tiny-free-unavailable.canonical.json"
 )
-UPSTREAM_PIN = ROOT / "parity" / "UPSTREAM_COMMIT"
-
 EXPECTED_KIND = "recorded_pi_sdk_terminal_response"
 EXPECTED_RUNNER = "pinned-source-agent-sdk"
 EXPECTED_REDACTIONS = (
@@ -60,7 +55,7 @@ OPENROUTER_PRIVACY_404_HINT = (
 
 
 class ContractError(ValueError):
-    """The recording or upstream pin violates the recorded-evidence contract."""
+    """The recording violates the recorded-evidence contract."""
 
 
 def _object(value: Any, path: str) -> dict[str, Any]:
@@ -100,20 +95,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ContractError(f"cannot read JSON recording {path}: {error}") from error
     return _object(value, str(path))
-
-
-def _upstream_pin() -> tuple[str, str]:
-    try:
-        text = UPSTREAM_PIN.read_text(encoding="utf-8")
-    except OSError as error:
-        raise ContractError(f"cannot read upstream pin {UPSTREAM_PIN}: {error}") from error
-    commit_match = re.search(r"^Commit:\s*`([0-9a-f]{40})`\s*$", text, re.MULTILINE)
-    version_match = re.search(
-        r"^\* `@earendil-works/pi-agent-core`:\s*`([^`]+)`\s*$", text, re.MULTILINE
-    )
-    if commit_match is None or version_match is None:
-        raise ContractError("UPSTREAM_COMMIT is missing the pinned commit or agent package version")
-    return commit_match.group(1), version_match.group(1)
 
 
 def _validate_content_part(value: Any, path: str) -> dict[str, Any]:
@@ -178,7 +159,6 @@ def validate_recording(recording: dict[str, Any], *, source: Path) -> None:
     if recording["kind"] != EXPECTED_KIND:
         raise ContractError(f"recording.kind must be {EXPECTED_KIND!r}")
 
-    pinned_commit, pinned_version = _upstream_pin()
     capture = _object(recording["capture"], "capture")
     _exact_keys(
         capture,
@@ -193,13 +173,8 @@ def validate_recording(recording: dict[str, Any], *, source: Path) -> None:
         },
         "capture",
     )
-    if capture["pi_agent_core_version"] != pinned_version:
-        raise ContractError(
-            "capture.pi_agent_core_version does not match the version recorded in UPSTREAM_COMMIT "
-            f"({pinned_version})"
-        )
-    if capture["pi_commit"] != pinned_commit:
-        raise ContractError("capture.pi_commit does not match the commit recorded in UPSTREAM_COMMIT")
+    _string(capture["pi_agent_core_version"], "capture.pi_agent_core_version")
+    _string(capture["pi_commit"], "capture.pi_commit")
     try:
         date.fromisoformat(_string(capture["captured_on"], "capture.captured_on"))
     except ValueError as error:
@@ -431,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
             expected = _read_json(expected_path)
             if result != expected:
                 raise ContractError(f"replay differs from checked-in canonical result {expected_path}")
-            print(f"ok {fixture.name}: pinned source, redaction, and canonical replay")
+            print(f"ok {fixture.name}: recording, redaction, and canonical replay")
         else:
             sys.stdout.buffer.write(_canonical_bytes(result))
     except ContractError as error:

@@ -1,9 +1,8 @@
 # Runtime semantics
 
-This is the contract pinned by deterministic in-process fixtures. Paths below
-refer to the checkout selected by `parity/UPSTREAM_COMMIT`. Source provides
-useful evidence, but a fixture is required for every edge where a provider,
-observer, or callback can affect externally visible settlement.
+This is the contract pinned by deterministic in-process fixtures. A fixture is
+required for every edge where a provider, observer, or callback can affect
+externally visible settlement.
 
 ## Vocabulary and identity
 
@@ -14,11 +13,11 @@ observers, and terminal settlement caused by that invocation. A **turn** starts 
 A **message** is a transcript item; a **tool call** is an assistant content block and has the
 provider-supplied `toolCallId`.
 
-The upstream public events do not currently carry run, turn, or message IDs. V0 therefore makes
-the Rust adaptation explicit: `RunId` is a process-local monotonic counter; `TurnId` begins at
+Public events do not carry run, turn, or message IDs. V0 therefore makes the
+Rust representation explicit: `RunId` is a process-local monotonic counter; `TurnId` begins at
 one within a run; `MessageId` is a durable agent-local monotonic counter; and `EventSequence`
 begins at one within a run. A cancelled prompt keeps any already-retained message IDs, and later
-runs never reuse them. The upstream adapter normalizes only these upstream-absent generated IDs.
+runs never reuse them. The fixture normalizer only handles these generated IDs.
 `toolCallId` is provider data and is never normalized. The invariant is covered by
 `tests::generated_run_message_and_event_ids_are_monotonic_after_cancellation`.
 
@@ -80,8 +79,8 @@ blurred by an async Rust API.
 | Drop unfinished run | `RunHandle::drop` requests cancel-and-settle; an un-driven handle settles immediately, while a driven handle settles at its cancellation-aware boundary | No orphaned active ownership |
 | Finish | Clear transient state before making the agent idle; resolve run exactly once | Next prompt can run normally |
 
-The current upstream `Agent` rejects direct `prompt`/`continue` while `activeRun` exists, exposes
-`abort`, and awaits `subscribe` listeners in registration order. Rust preserves that awaited path
+The agent rejects direct `prompt`/`continue` while `activeRun` exists, exposes
+`abort`, and awaits `subscribe` listeners in registration order. Rust exposes that awaited path
 as `Agent::subscribe`, whose RAII `ObserverSubscription` can safely be dropped from a callback:
 changes apply to the next event. An observer error returns a typed run error but still produces one
 terminal `agent_end` and releases active ownership. Rust also offers the explicitly distinct
@@ -157,8 +156,8 @@ turn_end(assistant, [])
 agent_end(all new messages)
 ```
 
-If the provider returns a final assistant message without a `start` event, the current upstream
-loop emits `message_start(final)` immediately before `message_end(final)`. This distinction must
+If the provider returns a final assistant message without a `start` event, the loop emits
+`message_start(final)` immediately before `message_end(final)`. This distinction must
 remain visible in fixture results.
 
 ### Tool grammar and ordering
@@ -171,9 +170,8 @@ emit `tool_execution_end` and a tool-result message.
 Sequential mode prepares, executes, finalizes, and inserts each result before the next call. In
 parallel mode preparation remains source ordered; allowed executions overlap; each
 `tool_execution_end` is emitted in actual finalization/completion order, while tool-result message
-events and context insertion are assistant/source ordered. The current upstream implementation
-switches the entire batch to sequential when any call has a per-tool `executionMode: "sequential"`;
-the mixed-batch fixture must pin whether that is the target at the selected commit.
+events and context insertion are assistant/source ordered. The mixed-batch
+fixture pins the selected sequentialization rule.
 
 Updates are emitted during execution. Updates queued before the tool promise settles are awaited
 before its end event; callbacks after settlement are ignored. An end event contains the finalized
@@ -184,7 +182,7 @@ contributes to the all-calls termination rule.
 ### Event observer and subscription contract
 
 The target distinguishes an awaited `EventObserver` from a non-blocking observational subscription.
-The upstream public `subscribe` currently behaves as an awaited listener: listeners run in
+The public `subscribe` path behaves as an awaited listener: listeners run in
 registration order, receive the run signal, and `agent_end` listener settlement precedes idle.
 V0 must pin the Rust adaptation rather than silently conflating these meanings.
 
@@ -275,7 +273,7 @@ must distinguish transport failure, model error, model abort, tool failure, hook
 violation, schema failure, caller cancellation, and internal invariant failure. Expected failures
 are typed results, never Rust panics or an unclassified `anyhow::Error`.
 
-The current upstream wrapper synthesizes an assistant failure message and emits
+The loop synthesizes an assistant failure message and emits
 `message_start`, `message_end`, `turn_end`, `agent_end` when the loop itself throws; provider
 streams can instead return an assistant `stopReason` of `error` or `aborted`. Fixtures must retain
 that distinction and pin error-message placement.
@@ -301,5 +299,6 @@ that distinction and pin error-message placement.
 }
 ```
 
-No fixture may embed runner-specific callbacks or arbitrary Rust/TypeScript code. The scenario
-language is declarative so upstream and Rust execute the same schedule.
+No fixture may embed runner-specific callbacks or arbitrary Rust code. The
+scenario language is declarative so the Rust runner executes the same schedule
+defined by the contract.

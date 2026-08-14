@@ -1,12 +1,6 @@
 {
   "format_version": 1,
   "kind": "pinned_default_coding_profile",
-  "upstream": {
-    "repository": "https://github.com/earendil-works/pi.git",
-    "commit": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
-    "package": "@earendil-works/pi-coding-agent",
-    "package_version": "0.84.1"
-  },
   "inputs": {
     "workspace_root": "/fixture/workspace",
     "documentation_paths": {

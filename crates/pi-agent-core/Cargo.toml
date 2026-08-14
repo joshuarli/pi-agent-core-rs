@@ -17,10 +17,8 @@ eval-runner = ["dep:smol", "provider-commandcode", "provider-openrouter"]
 trace = ["dep:pi-agent-trace"]
 
 [dependencies]
-jsonschema = { workspace = true }
 pi-agent-protocol = { path = "../pi-agent-protocol" }
 pi-agent-trace = { path = "../pi-agent-trace", optional = true }
-serde_json = { workspace = true }
 smol = { workspace = true, optional = true }
 
 [dev-dependencies]

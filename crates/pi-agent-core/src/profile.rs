@@ -1,8 +1,8 @@
 //! Explicit model/tool profiles.
 //!
-//! The pinned Pi coding profile is data supplied by the upstream parity capture.  This module
-//! provides its stable shape without pretending that tool names, prompt text, or schemas can be
-//! safely copied from memory.  A host may instead provide a sterile profile.
+//! The pinned Pi coding profile is checked-in captured data. This module provides its stable
+//! shape without pretending that tool names, prompt text, or schemas can be safely copied from
+//! memory. A host may instead provide a sterile profile.
 
 use crate::error::ProfileError;
 use crate::tool::{ToolDefinition, ToolRegistry};
@@ -54,7 +54,7 @@ pub struct PiDefaultCodingProfile {
 }
 
 impl PiDefaultCodingProfile {
-    /// Construct from a captured upstream profile specification.
+    /// Construct from a captured profile specification.
     pub fn from_spec(spec: ProfileSpec) -> Result<Self, ProfileError> {
         spec.validate()?;
         Ok(Self {
@@ -64,7 +64,7 @@ impl PiDefaultCodingProfile {
         })
     }
 
-    /// Load the exact default profile captured from the pinned upstream Pi release.
+    /// Load the exact checked-in default profile capture.
     ///
     /// The capture includes the rendered default prompt, active tool definitions, and the
     /// complete standard tool inventory. It is compiled into the crate, so constructing this
@@ -86,7 +86,7 @@ impl PiDefaultCodingProfile {
         let spec = ProfileSpec {
             system_prompt: profile_string(prompt, "text")?.to_owned(),
             tools: parse_profile_tools(profile_field(root, "active_tools")?)?,
-            // The upstream capture's system prompt is already composed with these exact
+            // The capture's system prompt is already composed with these exact
             // snippets and guidelines. Appending them here would duplicate prompt text.
             tool_guidance: Vec::new(),
         };
@@ -143,7 +143,7 @@ impl PiDefaultCodingProfile {
         &self.spec.tools
     }
 
-    /// Return all standard tool definitions captured from the pinned upstream factories.
+    /// Return all standard tool definitions captured in the default profile.
     ///
     /// This includes standard but inactive tools. [`Self::tool_definitions`] contains only the
     /// exact default active set used by the system prompt.

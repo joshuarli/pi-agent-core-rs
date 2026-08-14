@@ -38,10 +38,11 @@ pass it to `with_operations`. The standard shell adapter starts with an empty en
 must explicitly choose `CommandEnvironment::inherited()` or add variables. No factory consults
 ambient cwd, home, `.pi`, sessions, credentials, or resource discovery.
 
-## Upstream sources and source hashes
+## Captured profile provenance
 
-All paths are relative to `parity/upstream/source` at the commit recorded in
-`parity/UPSTREAM_COMMIT`.
+The following hashes are retained as historical provenance for the captured profile data. They
+are review information only; runtime code and verification do not require an external source
+checkout or an upstream pin.
 
 | Artifact | Upstream symbol | SHA-256 of source bytes |
 | --- | --- | --- |
@@ -63,7 +64,7 @@ workspace/documentation inputs and currently records prompt SHA-256
 
 ## Active-tool order
 
-At the pinned source, `createCodingTools(cwd, options)` constructs this order:
+The captured profile constructs this order:
 
 ```text
 read -> bash -> edit -> write
@@ -230,10 +231,10 @@ profile/workspace-isolation        two explicit workspaces cannot cross authorit
 ```
 
 Every profile fixture uses an isolated temporary or virtual fixture workspace. No fixture consults
-the repository cwd, credentials, sessions, or a live provider. Six pinned upstream factories run
+the repository cwd, credentials, sessions, or a live provider. The Rust factories run
 through virtual in-memory operation adapters. Upstream `grep` necessarily owns a process seam:
 its dedicated capture creates an empty temporary `PI_CODING_AGENT_DIR` before importing the
-pinned source, requires resolution to PATH `rg` rather than a managed `~/.pi` binary, and then
+pinned profile data, requires resolution to PATH `rg` rather than a managed `~/.pi` binary, and then
 runs in a disposable workspace. It never invokes Pi itself.
 
 The executable factory smoke/evidence suite is
@@ -245,23 +246,12 @@ tools. The test also locks in head truncation for `read`, explicit empty-success
 runner fixtures: it verifies the Rust factories' concrete capability boundary without consulting a
 live Pi installation or the repository workspace.
 
-The corresponding upstream evidence is split deliberately rather than emulated:
-
-- [`parity/upstream/profile-behavior-runner.mts`](../parity/upstream/profile-behavior-runner.mts)
-  imports the pinned source factories and runs virtual success/invalid/host-error cases for
-  `read`, `bash`, `edit`, `write`, `find`, and `ls`.
-- [`parity/upstream/profile-grep-process-runner.mts`](../parity/upstream/profile-grep-process-runner.mts)
-  runs pinned `grep` through its explicit `rg` process boundary under the isolated agent
-  directory described above.
-
-Run both source checks with `bash parity/run-profile.sh`. The Rust suite proves the matching
-explicit capability boundary for all seven tools; it does not claim that its local search adapter
-is a hidden copy of the pinned process implementation. Hosts needing full ripgrep behavior may
-replace `CodingOperations::grep_files` explicitly.
+The Rust suite is the profile check. Run `bash parity/run-rust.sh` to execute the complete
+deterministic corpus. It proves the explicit capability boundary for all seven tools; hosts
+needing full ripgrep behavior may replace `CodingOperations::grep_files` explicitly.
 
 ## Profile update procedure
 
-When the upstream pin changes, re-capture source hashes, factories, schemas, snippets, guidelines,
-active order, generated prompt bytes/hash, and operation behavior. Classify each change in
-`docs/parity-ledger.md`; update Rust only after a fixture diff explains it. A changed default
-profile is a deliberate parity-version change, not an incidental source refresh.
+When the default profile changes, update the captured factories, schemas, snippets, guidelines,
+active order, generated prompt bytes/hash, operation behavior, and the corresponding Rust tests
+and fixtures together. A changed default profile is a deliberate contract-version change.

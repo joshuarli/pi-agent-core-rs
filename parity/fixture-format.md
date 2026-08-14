@@ -77,7 +77,7 @@ Tool definitions are only capabilities supplied to the agent. They do not grant 
 filesystem, process, clock, network, or environment access.
 
 `setup.context_hooks` is an optional, closed V0 fixture adapter for the context boundary. It
-exists to compare the pinned SDK and Rust without embedding runner-specific callbacks in a case.
+exists to exercise the Rust context boundary without embedding runner-specific callbacks in a case.
 When present it requires:
 
 ```json
@@ -115,8 +115,8 @@ wall-clock cancellation, and ambient provider behavior remain outside this forma
 
 ### `model_script`
 
-`model_script` is a deterministic provider-neutral stream script. The upstream and Rust adapters
-translate it into their respective provider-stream interfaces. Each entry is one inference turn;
+`model_script` is a deterministic provider-neutral stream script. The Rust adapter translates it
+into the provider-stream interface. Each entry is one inference turn;
 `chunks` are emitted in order. Version 1 chunk kinds are:
 
 * `text_delta` with a string `text`;
@@ -191,7 +191,7 @@ tool preparation records `Operation aborted` and the next model request observes
 scope. `host.after_tool_call` may be `{ "tool_name": string, "content": string,
 "is_error": boolean, "terminate"?: boolean }`; it replaces those terminal result fields after
 execution. When supplied, `terminate` replaces the finalized batch hint. Other hook behavior is
-added only with an upstream differential fixture.
+added only with a dedicated deterministic fixture.
 
 `host.should_stop_after_turn` may be a boolean. When true, it stops the run immediately after
 the current `turn_end`, before queue polling or another model request.

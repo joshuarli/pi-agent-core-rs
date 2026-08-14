@@ -10,7 +10,7 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
 - [Quickstart](docs/quickstart.md) for an application integration.
 - [Scope](docs/scope.md), [architecture](docs/architecture.md), and
   [semantics](docs/semantics.md) for the durable core contract.
-- [Pi subset](docs/pi-sdk-subset.md), [parity ledger](docs/parity-ledger.md),
+- [fixture format](parity/fixture-format.md), [parity guide](parity/README.md),
   and [verification](docs/verification.md) for compatibility evidence.
 - [Default coding profile](docs/default-coding-profile.md),
   [provider adapters](docs/provider-adapters.md), [tracing](docs/trace.md),

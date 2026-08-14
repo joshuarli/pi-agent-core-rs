@@ -13,8 +13,8 @@ Run the checked-in verification from any working directory:
 
 The command validates:
 
-* `capture.pi_commit` and `capture.pi_agent_core_version` against `parity/UPSTREAM_COMMIT`;
-* the pinned-source capture runner and OpenRouter/model identity;
+* non-empty capture provenance fields and the recorded capture runner;
+* the OpenRouter/model identity;
 * the required redaction manifest, including the API key, authorization headers, session ID,
   and timestamps;
 * the one-turn event sequence (including optional assistant streaming updates), request,

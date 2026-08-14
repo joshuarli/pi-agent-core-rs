@@ -5,13 +5,13 @@
 //! operating system, environment variable, or local Command Code credential file. Hosts convert
 //! their transcript to the standard Chat Completions message array before it reaches this adapter.
 
+use crate::json::{json_value, to_bytes, JsonValue};
 use crate::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use crate::state::{
     AssistantToolCall, SerializedJson, StopReason, ThinkingLevel, ToolCallId, Usage,
 };
-use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::process::{Command, Stdio};
@@ -418,8 +418,8 @@ impl CommandCodeProvider {
     fn complete(&self, request: ModelRequest) -> Result<ParsedCommandCodeResponse, String> {
         self.validate_model(&request)?;
         let payload = self.build_payload(&request)?;
-        let payload = serde_json::to_vec(&payload)
-            .map_err(|_| "cannot serialize Command Code request".to_owned())?;
+        let payload =
+            to_bytes(&payload).map_err(|_| "cannot serialize Command Code request".to_owned())?;
         let response = self.run_request(&payload)?;
         parse_ndjson_response(&response, &self.config.api_key)
     }
@@ -434,27 +434,21 @@ impl CommandCodeProvider {
         Err("Command Code configuration does not match the requested model".into())
     }
 
-    fn build_payload(&self, request: &ModelRequest) -> Result<Value, String> {
+    fn build_payload(&self, request: &ModelRequest) -> Result<JsonValue, String> {
         let messages = commandcode_messages(&request.context)?;
         let tools = request
             .tools
             .iter()
             .map(|tool| {
-                let schema = serde_json::from_str::<Value>(
-                    &tool
-                        .schema
-                        .to_json_string()
-                        .map_err(|_| "captured tool schema cannot be serialized")?,
-                )
-                .map_err(|_| "captured tool schema cannot be decoded")?;
-                Ok(json!({
+                let schema = tool.schema.clone();
+                Ok(json_value!({
                     "name": tool.name,
                     "description": tool.description,
                     "input_schema": schema,
                 }))
             })
             .collect::<Result<Vec<_>, &str>>()?;
-        let mut params = json!({
+        let mut params = json_value!({
             "model": self.config.model,
             "messages": messages,
             "tools": tools,
@@ -463,28 +457,37 @@ impl CommandCodeProvider {
             "stream": true,
         });
         if let Some(temperature) = self.config.temperature {
-            params["temperature"] = json!(temperature);
+            params
+                .as_object_mut()
+                .expect("Command Code params are an object")
+                .insert("temperature".to_owned(), json_value!(temperature));
         }
         if let Some(reasoning) = reasoning_effort(request.thinking_level) {
-            params["reasoning_effort"] = Value::String(reasoning.into());
+            params
+                .as_object_mut()
+                .expect("Command Code params are an object")
+                .insert(
+                    "reasoning_effort".to_owned(),
+                    JsonValue::String(reasoning.into()),
+                );
         }
-        let mut payload = json!({
-            "config": {
+        let mut payload = json_value!({
+            "config": json_value!({
                 "workingDir": self.config.host.working_directory,
                 "date": self.config.host.date,
                 "environment": self.config.host.environment,
-                "structure": [],
+                "structure": json_value!([]),
                 "isGitRepo": false,
                 "currentBranch": "",
                 "mainBranch": "",
                 // This adapter does not discover a repository. Match Command Code's current
                 // non-repository shape instead of claiming an unverified clean worktree.
                 "gitStatus": "",
-                "recentCommits": [],
-            },
-            "memory": Value::Null,
-            "taste": Value::Null,
-            "skills": Value::Null,
+                "recentCommits": json_value!([]),
+            }),
+            "memory": JsonValue::Null,
+            "taste": JsonValue::Null,
+            "skills": JsonValue::Null,
             "permissionMode": self.config.permission_mode.as_str(),
             "threadId": self.config.thread_id,
             "mode": self.config.mode,
@@ -651,9 +654,13 @@ fn run_curl(command: &mut Command, payload: &[u8]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
-fn commandcode_messages(context: &str) -> Result<Vec<Value>, String> {
-    let messages: Vec<Value> = serde_json::from_str(context)
+fn commandcode_messages(context: &str) -> Result<Vec<JsonValue>, String> {
+    let messages = JsonValue::parse(context)
         .map_err(|_| "Command Code received invalid converted context".to_owned())?;
+    let messages = messages
+        .as_array()
+        .ok_or_else(|| "Command Code converted context must be an array".to_owned())?
+        .to_owned();
     let mut tool_names = BTreeMap::<String, String>::new();
     messages
         .iter()
@@ -662,49 +669,51 @@ fn commandcode_messages(context: &str) -> Result<Vec<Value>, String> {
 }
 
 fn commandcode_message(
-    message: &Value,
+    message: &JsonValue,
     tool_names: &mut BTreeMap<String, String>,
-) -> Result<Value, String> {
+) -> Result<JsonValue, String> {
     let object = message
         .as_object()
         .ok_or_else(|| "Command Code context message must be an object".to_owned())?;
     let role = string_field(object, "role", "Command Code context message")?;
     match role {
-        "user" => Ok(json!({
+        "user" => Ok(json_value!({
             "role": "user",
-            "content": [{"type": "text", "text": string_or_null(object, "content")?}],
+            "content": json_value!([json_value!({
+                "type": "text",
+                "text": string_or_null(object, "content")?,
+            })]),
         })),
         "assistant" => {
             let mut content = Vec::new();
             if let Some(text) = optional_string_or_null(object, "content")? {
                 if !text.is_empty() {
-                    content.push(json!({"type": "text", "text": text}));
+                    content.push(json_value!({"type": "text", "text": text}));
                 }
             }
-            if let Some(calls) = object.get("tool_calls").and_then(Value::as_array) {
+            if let Some(calls) = object.get("tool_calls").and_then(JsonValue::as_array) {
                 for call in calls {
                     let call = call.as_object().ok_or_else(|| {
                         "Command Code assistant tool call must be an object".to_owned()
                     })?;
                     let id = string_field(call, "id", "Command Code assistant tool call")?;
-                    let function =
-                        call.get("function")
-                            .and_then(Value::as_object)
-                            .ok_or_else(|| {
-                                "Command Code assistant tool call did not contain a function"
-                                    .to_owned()
-                            })?;
+                    let function = call
+                        .get("function")
+                        .and_then(JsonValue::as_object)
+                        .ok_or_else(|| {
+                            "Command Code assistant tool call did not contain a function".to_owned()
+                        })?;
                     let name = string_field(function, "name", "Command Code tool function")?;
                     let arguments =
                         string_field(function, "arguments", "Command Code tool function")?;
-                    let input: Value = serde_json::from_str(arguments).map_err(|_| {
+                    let input = JsonValue::parse(arguments).map_err(|_| {
                         "Command Code tool call arguments must be serialized JSON".to_owned()
                     })?;
                     if !input.is_object() {
                         return Err("Command Code tool call arguments must be a JSON object".into());
                     }
                     tool_names.insert(id.to_owned(), name.to_owned());
-                    content.push(json!({
+                    content.push(json_value!({
                         "type": "tool-call",
                         "toolCallId": id,
                         "toolName": name,
@@ -712,22 +721,28 @@ fn commandcode_message(
                     }));
                 }
             }
-            Ok(json!({"role": "assistant", "content": content}))
+            Ok(json_value!({"role": "assistant", "content": content}))
         }
         "tool" => {
             let id = string_field(object, "tool_call_id", "Command Code tool result")?;
             let name = tool_names.get(id).ok_or_else(|| {
                 "Command Code tool result has no preceding assistant tool-call name".to_owned()
             })?;
-            Ok(json!({
+            Ok(json_value!({
                 "role": "tool",
-                "content": [{
+                "content": json_value!([json_value!({
                     "type": "tool-result",
                     "toolCallId": id,
                     "toolName": name,
-                    "output": {"type": "text", "value": string_or_null(object, "content")?},
-                    "isError": object.get("is_error").and_then(Value::as_bool).unwrap_or(false),
-                }],
+                    "output": json_value!({
+                        "type": "text",
+                        "value": string_or_null(object, "content")?,
+                    }),
+                    "isError": object
+                        .get("is_error")
+                        .and_then(JsonValue::as_bool)
+                        .unwrap_or(false),
+                })]),
             }))
         }
         _ => Err("Command Code context role is unsupported".into()),
@@ -735,31 +750,31 @@ fn commandcode_message(
 }
 
 fn string_field<'a>(
-    object: &'a Map<String, Value>,
+    object: &'a BTreeMap<String, JsonValue>,
     key: &str,
     subject: &str,
 ) -> Result<&'a str, String> {
     object
         .get(key)
-        .and_then(Value::as_str)
+        .and_then(JsonValue::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{subject} did not contain {key}"))
 }
 
 fn optional_string_or_null<'a>(
-    object: &'a Map<String, Value>,
+    object: &'a BTreeMap<String, JsonValue>,
     key: &str,
 ) -> Result<Option<&'a str>, String> {
     match object.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value)),
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(value)) => Ok(Some(value)),
         Some(_) => Err(format!(
             "Command Code context {key} must be a string or null"
         )),
     }
 }
 
-fn string_or_null(object: &Map<String, Value>, key: &str) -> Result<String, String> {
+fn string_or_null(object: &BTreeMap<String, JsonValue>, key: &str) -> Result<String, String> {
     Ok(optional_string_or_null(object, key)?
         .unwrap_or_default()
         .to_owned())
@@ -780,7 +795,7 @@ fn parse_ndjson_response(bytes: &[u8], api_key: &str) -> Result<ParsedCommandCod
     let mut terminal = false;
     let mut error = None;
     for line in response.lines().filter(|line| !line.trim().is_empty()) {
-        let event: Value = serde_json::from_str(line)
+        let event = JsonValue::parse(line)
             .map_err(|_| "Command Code returned invalid NDJSON".to_owned())?;
         let event = event
             .as_object()
@@ -812,7 +827,8 @@ fn parse_ndjson_response(bytes: &[u8], api_key: &str) -> Result<ParsedCommandCod
                     .ok_or_else(|| {
                         "Command Code tool call did not contain object input".to_owned()
                     })?;
-                let arguments = serde_json::to_string(input)
+                let arguments = input
+                    .to_json_string()
                     .map_err(|_| "Command Code tool call input cannot be serialized".to_owned())?;
                 events.push(ModelStreamEvent::ToolCall(AssistantToolCall {
                     id: ToolCallId::new(id)
@@ -859,21 +875,24 @@ fn parse_ndjson_response(bytes: &[u8], api_key: &str) -> Result<ParsedCommandCod
 /// agent-visible error. In addition to object fields, the client recognizes a message shaped as
 /// `<status> {\"error\": {\"type\": ..., \"message\": ...}}`; preserve that useful diagnostic
 /// structure for trusted hosts.
-fn parse_gateway_error(event: &Map<String, Value>, api_key: &str) -> CommandCodeErrorReport {
+fn parse_gateway_error(
+    event: &BTreeMap<String, JsonValue>,
+    api_key: &str,
+) -> CommandCodeErrorReport {
     let (mut message, direct_status, direct_retryable, mut error_type, error_code) =
         match event.get("error") {
-            Some(Value::String(message)) if !message.is_empty() => {
+            Some(JsonValue::String(message)) if !message.is_empty() => {
                 (message.to_owned(), None, None, None, None)
             }
-            Some(Value::Object(error)) => (
+            Some(JsonValue::Object(error)) => (
                 error
                     .get("message")
-                    .and_then(Value::as_str)
+                    .and_then(JsonValue::as_str)
                     .filter(|message| !message.is_empty())
                     .unwrap_or("Command Code gateway emitted an error without a message")
                     .to_owned(),
                 status_code(error.get("statusCode")).or_else(|| status_code(error.get("status"))),
-                error.get("isRetryable").and_then(Value::as_bool),
+                error.get("isRetryable").and_then(JsonValue::as_bool),
                 diagnostic_text(error.get("type"), api_key),
                 diagnostic_text(error.get("code"), api_key),
             ),
@@ -918,7 +937,7 @@ struct EmbeddedGatewayError {
 
 fn parse_embedded_error(message: &str) -> Option<EmbeddedGatewayError> {
     let json_start = message.find('{')?;
-    let payload: Value = serde_json::from_str(&message[json_start..]).ok()?;
+    let payload = JsonValue::parse(&message[json_start..]).ok()?;
     let error = payload.get("error")?.as_object()?;
     let embedded_message = error.get("message")?.as_str()?.trim();
     if embedded_message.is_empty() {
@@ -930,21 +949,21 @@ fn parse_embedded_error(message: &str) -> Option<EmbeddedGatewayError> {
         status_code: prefix.parse::<u16>().ok(),
         error_type: error
             .get("type")
-            .and_then(Value::as_str)
+            .and_then(JsonValue::as_str)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
     })
 }
 
-fn status_code(value: Option<&Value>) -> Option<u16> {
+fn status_code(value: Option<&JsonValue>) -> Option<u16> {
     value
-        .and_then(Value::as_u64)
+        .and_then(JsonValue::as_u64)
         .and_then(|value| u16::try_from(value).ok())
 }
 
-fn diagnostic_text(value: Option<&Value>, api_key: &str) -> Option<String> {
+fn diagnostic_text(value: Option<&JsonValue>, api_key: &str) -> Option<String> {
     value
-        .and_then(Value::as_str)
+        .and_then(JsonValue::as_str)
         .filter(|value| !value.is_empty())
         .map(|value| redact_diagnostic_text(value, api_key))
 }
@@ -984,24 +1003,24 @@ fn redact_diagnostic_text(value: &str, api_key: &str) -> String {
     format!("{truncated}… [truncated]")
 }
 
-fn finish_reason(value: Option<&Value>) -> StopReason {
-    match value.and_then(Value::as_str) {
+fn finish_reason(value: Option<&JsonValue>) -> StopReason {
+    match value.and_then(JsonValue::as_str) {
         Some("tool-calls") => StopReason::ToolUse,
         Some("length") => StopReason::Length,
         _ => StopReason::EndTurn,
     }
 }
 
-fn parse_usage(value: Option<&Value>) -> Usage {
-    let Some(value) = value.and_then(Value::as_object) else {
+fn parse_usage(value: Option<&JsonValue>) -> Usage {
+    let Some(value) = value.and_then(JsonValue::as_object) else {
         return Usage::default();
     };
-    let input_tokens = value.get("inputTokens").and_then(Value::as_u64);
-    let output_tokens = value.get("outputTokens").and_then(Value::as_u64);
+    let input_tokens = value.get("inputTokens").and_then(JsonValue::as_u64);
+    let output_tokens = value.get("outputTokens").and_then(JsonValue::as_u64);
     let reasoning_tokens = value
         .get("reasoningTokens")
-        .and_then(Value::as_u64)
-        .or_else(|| value.get("reasoning_tokens").and_then(Value::as_u64));
+        .and_then(JsonValue::as_u64)
+        .or_else(|| value.get("reasoning_tokens").and_then(JsonValue::as_u64));
     Usage {
         input_tokens,
         output_tokens,
@@ -1062,25 +1081,78 @@ mod tests {
         let payload = CommandCodeProvider::new(config())
             .build_payload(&request)
             .expect("payload");
-        assert_eq!(payload["config"]["workingDir"], "/sandbox/project");
-        assert_eq!(payload["config"]["date"], "2026-08-14");
-        assert_eq!(payload["config"]["environment"], "darwin");
-        assert_eq!(payload["permissionMode"], "auto-accept");
-        assert_eq!(payload["threadId"], "b51a3243-2dd9-4c81-b659-a039645b7d4e");
-        assert_eq!(payload["config"]["gitStatus"], "");
-        assert_eq!(payload["params"]["reasoning_effort"], "high");
         assert_eq!(
-            payload["params"]["tools"][0]["input_schema"]["type"],
-            "object"
+            field(field(&payload, "config"), "workingDir").as_str(),
+            Some("/sandbox/project")
         );
         assert_eq!(
-            payload["params"]["messages"][1]["content"][0]["type"],
-            "tool-call"
+            field(field(&payload, "config"), "date").as_str(),
+            Some("2026-08-14")
         );
         assert_eq!(
-            payload["params"]["messages"][2]["content"][0]["toolName"],
-            "read"
+            field(field(&payload, "config"), "environment").as_str(),
+            Some("darwin")
         );
+        assert_eq!(
+            field(&payload, "permissionMode").as_str(),
+            Some("auto-accept")
+        );
+        assert_eq!(
+            field(&payload, "threadId").as_str(),
+            Some("b51a3243-2dd9-4c81-b659-a039645b7d4e")
+        );
+        assert_eq!(
+            field(field(&payload, "config"), "gitStatus").as_str(),
+            Some("")
+        );
+        assert_eq!(
+            field(field(&payload, "params"), "reasoning_effort").as_str(),
+            Some("high")
+        );
+        assert_eq!(
+            field(
+                array_item(field(field(&payload, "params"), "tools"), 0),
+                "input_schema"
+            )
+            .get("type")
+            .and_then(JsonValue::as_str),
+            Some("object")
+        );
+        assert_eq!(
+            field(
+                array_item(field(field(&payload, "params"), "messages"), 1),
+                "content"
+            )
+            .as_array()
+            .and_then(|content| content.first())
+            .and_then(|content| content.get("type"))
+            .and_then(JsonValue::as_str),
+            Some("tool-call")
+        );
+        assert_eq!(
+            field(
+                array_item(field(field(&payload, "params"), "messages"), 2),
+                "content"
+            )
+            .as_array()
+            .and_then(|content| content.first())
+            .and_then(|content| content.get("toolName"))
+            .and_then(JsonValue::as_str),
+            Some("read")
+        );
+    }
+
+    fn field<'a>(value: &'a JsonValue, name: &str) -> &'a JsonValue {
+        value
+            .get(name)
+            .unwrap_or_else(|| panic!("missing JSON field {name}"))
+    }
+
+    fn array_item(value: &JsonValue, index: usize) -> &JsonValue {
+        value
+            .as_array()
+            .and_then(|values| values.get(index))
+            .unwrap_or_else(|| panic!("missing JSON array item {index}"))
     }
 
     #[test]

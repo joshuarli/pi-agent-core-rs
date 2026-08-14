@@ -12,7 +12,7 @@ model stream -> assistant response -> tool execution -> tool results -> next tur
 
 It is designed for disposable agents in CI sandboxes, VM worlds, RL
 environments, and swarms. Pi is a behavioral oracle through an in-process,
-pinned SDK fixture harness; this project never launches the Pi CLI for parity
+pinned Rust fixture harness; this project never launches the Pi CLI for parity
 or runtime behavior.
 
 ## Design commitments
@@ -52,8 +52,8 @@ downstream optional layers.
   scheduling.
 - [Runtime semantics](semantics.md) — observable lifecycle and cancellation
   contracts.
-- [Pinned Pi SDK subset](pi-sdk-subset.md) and [parity ledger](parity-ledger.md)
-  — exact behavioral target and fixture evidence.
+- [Fixture format](../parity/fixture-format.md) and [Rust parity guide](../parity/README.md)
+  — exact behavioral fixtures and verification evidence.
 - [Default coding profile](default-coding-profile.md) — captured prompt, tools,
   operation adapters, and update procedure.
 - [Verification](verification.md) — required checks and completed V0 evidence.
