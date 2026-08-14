@@ -115,6 +115,10 @@ and race any I/O with the supplied `CancellationToken`. Implement tools as
 provider credentials in the core, a system prompt, a tool environment, or a
 Luau policy.
 
+For two narrow, optional HTTP adapters, see [provider adapters](provider-adapters.md).
+They require explicit Cargo features and caller-supplied configuration; the
+default build remains provider-free.
+
 For the full request, tool, queue, hook, and terminal contracts, read
 [runtime semantics](semantics.md). For an optional capability-scoped Luau
 policy, start with [Writing Luau extensions](luau-extensions.md); a scripting

@@ -11,7 +11,9 @@ path = "src/lib.rs"
 [features]
 default = []
 parity-runner = ["dep:smol"]
-eval-runner = ["dep:smol"]
+provider-commandcode = []
+provider-openrouter = []
+eval-runner = ["dep:smol", "provider-commandcode", "provider-openrouter"]
 trace = ["dep:pi-agent-trace"]
 
 [dependencies]

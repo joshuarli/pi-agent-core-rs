@@ -14,6 +14,7 @@ pub mod error;
 pub mod event;
 pub mod hooks;
 pub mod profile;
+pub mod provider;
 pub mod queue;
 pub mod run;
 pub mod scheduler;

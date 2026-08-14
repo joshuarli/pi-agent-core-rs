@@ -1,34 +1,32 @@
-//! Opt-in OpenRouter coding-evaluation adapter for the Rust default profile.
+//! Opt-in provider coding-evaluation adapter for the Rust default profile.
 //!
 //! This binary is intentionally outside the library boundary: it is invoked only by the final
-//! V0 evaluation controller through a caller-owned secret-injection boundary. It
-//! supplies a concrete transport to exercise the otherwise provider-free core, while retaining
-//! the core's explicit workspace, profile, and Smol-owned execution boundaries.
+//! V0 evaluation controller through a caller-owned secret-injection boundary. It supplies a
+//! concrete transport to exercise the otherwise provider-free core, while retaining the core's
+//! explicit workspace, profile, and Smol-owned execution boundaries.
 
 use pi_agent_core::event::AgentEventKind;
 use pi_agent_core::hooks::{AfterToolCall, BeforeToolCall, ContextEnvelope, HookSet, NextTurn};
-use pi_agent_core::scheduler::{
-    CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+use pi_agent_core::provider::commandcode::{
+    CommandCodeConfig, CommandCodeHostContext, CommandCodeProvider,
 };
-use pi_agent_core::state::{
-    AssistantToolCall, Message, ModelDescriptor, SerializedJson, StopReason, ToolCallId, Usage,
+use pi_agent_core::provider::openrouter::{
+    OpenRouterConfig, OpenRouterCostReport, OpenRouterProvider,
 };
+use pi_agent_core::scheduler::ModelProvider;
+use pi_agent_core::state::{Message, ModelDescriptor};
 use pi_agent_core::{Agent, DefaultCodingTools};
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::Arc;
 
 const RESULT_SCHEMA: &str = "pi-coding-eval-result/v0";
-const OPENROUTER_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
 /// Explicit command-line arguments supplied by `evals/controller.py`.
 struct Args {
+    provider: ProviderKind,
     model: String,
     task_json: PathBuf,
     workspace: PathBuf,
@@ -36,6 +34,17 @@ struct Args {
     result_json: PathBuf,
     attempt_id: String,
     baseline_id: String,
+    commandcode_date: Option<String>,
+    commandcode_environment: Option<String>,
+    commandcode_thread_id: Option<String>,
+    commandcode_project_slug: Option<String>,
+}
+
+/// Explicit provider choice for this executable integration boundary.
+#[derive(Clone, Copy)]
+enum ProviderKind {
+    OpenRouter,
+    CommandCode,
 }
 
 impl Args {
@@ -60,7 +69,46 @@ impl Args {
                 .cloned()
                 .ok_or_else(|| format!("missing required argument {flag}"))
         };
+        let provider = match values.get("--provider").map(String::as_str) {
+            None | Some("openrouter") => ProviderKind::OpenRouter,
+            Some("commandcode" | "command-code") => ProviderKind::CommandCode,
+            Some(_) => return Err("--provider must be openrouter or commandcode".into()),
+        };
+        let commandcode_date = values.get("--commandcode-date").cloned();
+        let commandcode_environment = values.get("--commandcode-environment").cloned();
+        let commandcode_thread_id = values.get("--commandcode-thread-id").cloned();
+        let commandcode_project_slug = values.get("--commandcode-project-slug").cloned();
+        for flag in values.keys() {
+            if !matches!(
+                flag.as_str(),
+                "--provider"
+                    | "--model"
+                    | "--task-json"
+                    | "--workspace"
+                    | "--capabilities-json"
+                    | "--result-json"
+                    | "--attempt-id"
+                    | "--baseline-id"
+                    | "--commandcode-date"
+                    | "--commandcode-environment"
+                    | "--commandcode-thread-id"
+                    | "--commandcode-project-slug"
+            ) {
+                return Err(format!("unsupported evaluation adapter argument {flag}"));
+            }
+        }
+        if matches!(provider, ProviderKind::CommandCode)
+            && (commandcode_date.is_none()
+                || commandcode_environment.is_none()
+                || commandcode_thread_id.is_none()
+                || commandcode_project_slug.is_none())
+        {
+            return Err(
+                "Command Code requires --commandcode-date, --commandcode-environment, --commandcode-thread-id, and --commandcode-project-slug".into(),
+            );
+        }
         Ok(Self {
+            provider,
             model: take("--model")?,
             task_json: PathBuf::from(take("--task-json")?),
             workspace: PathBuf::from(take("--workspace")?),
@@ -68,6 +116,10 @@ impl Args {
             result_json: PathBuf::from(take("--result-json")?),
             attempt_id: take("--attempt-id")?,
             baseline_id: take("--baseline-id")?,
+            commandcode_date,
+            commandcode_environment,
+            commandcode_thread_id,
+            commandcode_project_slug,
         })
     }
 }
@@ -171,471 +223,6 @@ fn openai_message(message: &Message) -> Result<Value, pi_agent_core::error::Hook
     }
 }
 
-/// Aggregate, redacted token counters across each OpenRouter turn.
-#[derive(Clone, Debug, Default)]
-struct UsageTotals(Arc<Mutex<Usage>>);
-
-impl UsageTotals {
-    fn add(&self, usage: Usage) {
-        let mut totals = self.0.lock().expect("evaluation usage mutex poisoned");
-        totals.input_tokens =
-            Some(totals.input_tokens.unwrap_or(0) + usage.input_tokens.unwrap_or(0));
-        totals.output_tokens =
-            Some(totals.output_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0));
-        totals.reasoning_tokens =
-            Some(totals.reasoning_tokens.unwrap_or(0) + usage.reasoning_tokens.unwrap_or(0));
-    }
-
-    fn snapshot(&self) -> Usage {
-        self.0
-            .lock()
-            .expect("evaluation usage mutex poisoned")
-            .clone()
-    }
-}
-
-/// Redacted, provider-reported cost for one model turn.
-///
-/// We deliberately retain only accounting fields from OpenRouter's generation response. The
-/// provider response id, raw payload, request text, and credentials never enter evaluation
-/// artifacts. `total_usd` uses OpenRouter's reported number; it is not a local price estimate.
-#[derive(Clone, Debug)]
-struct CostTurn {
-    source: &'static str,
-    total_usd: Option<f64>,
-    upstream_inference_usd: Option<f64>,
-    model: Option<String>,
-    provider: Option<String>,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cache_read_tokens: Option<u64>,
-    cache_write_tokens: Option<u64>,
-    reasoning_tokens: Option<u64>,
-}
-
-impl CostTurn {
-    fn unavailable(usage: &Usage, model: &str) -> Self {
-        Self {
-            source: "unavailable",
-            total_usd: None,
-            upstream_inference_usd: None,
-            model: Some(model.to_owned()),
-            provider: None,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: usage.reasoning_tokens,
-        }
-    }
-
-    fn json(&self, turn: usize) -> Value {
-        json!({
-            "turn": turn,
-            "source": self.source,
-            "total_usd": self.total_usd,
-            "upstream_inference_usd": self.upstream_inference_usd,
-            "model": self.model,
-            "provider": self.provider,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_write_tokens": self.cache_write_tokens,
-            "reasoning_tokens": self.reasoning_tokens,
-        })
-    }
-}
-
-/// Cost collection is separate from core `Usage`: cost is an adapter/accounting concern, while
-/// the core owns portable token accounting. Keeping this boundary explicit prevents a provider
-/// price table from silently becoming part of the SDK contract.
-#[derive(Clone, Debug, Default)]
-struct CostTotals(Arc<Mutex<Vec<CostTurn>>>);
-
-impl CostTotals {
-    fn add(&self, turn: CostTurn) {
-        self.0
-            .lock()
-            .expect("evaluation cost mutex poisoned")
-            .push(turn);
-    }
-
-    fn snapshot_json(&self) -> Value {
-        let turns = self.0.lock().expect("evaluation cost mutex poisoned");
-        let reported = turns
-            .iter()
-            .filter(|turn| turn.total_usd.is_some())
-            .collect::<Vec<_>>();
-        let total_usd = reported
-            .iter()
-            .filter_map(|turn| turn.total_usd)
-            .sum::<f64>();
-        let inference = reported
-            .iter()
-            .filter_map(|turn| turn.upstream_inference_usd)
-            .sum::<f64>();
-        json!({
-            "schema_version": "pi-eval-cost/v1",
-            "currency": "USD",
-            "pricing": "provider_reported",
-            "reported_turn_count": reported.len(),
-            "unavailable_turn_count": turns.len().saturating_sub(reported.len()),
-            "complete": reported.len() == turns.len(),
-            // A partial total is useful for diagnosis, but `complete` makes it impossible to
-            // mistake that value for the complete run cost.
-            "reported_total_usd": if total_usd == 0.0 { 0.0 } else { total_usd },
-            "reported_upstream_inference_usd": if inference == 0.0 { 0.0 } else { inference },
-            "turns": turns
-                .iter()
-                .enumerate()
-                .map(|(index, turn)| turn.json(index + 1))
-                .collect::<Vec<_>>(),
-        })
-    }
-}
-
-/// Small blocking OpenRouter adapter used only by this executable evaluation binary.
-///
-/// The core has no transport dependency. This adapter returns one finite `ModelStream` after a
-/// standard non-streaming Chat Completions request, which is sufficient to exercise the actual
-/// agent/tool loop and preserves the V0 core's caller-owned execution model.
-#[derive(Debug)]
-struct OpenRouterProvider {
-    api_key: String,
-    model: String,
-    max_tokens: u64,
-    usage: UsageTotals,
-    costs: CostTotals,
-}
-
-impl OpenRouterProvider {
-    fn response_stream(
-        &self,
-        request: ModelRequest,
-        cancellation: CancellationToken,
-    ) -> ModelStream {
-        if cancellation.is_cancelled() {
-            return ModelStream {
-                events: vec![ModelStreamEvent::End(StopReason::Cancelled)],
-            };
-        }
-        match self.complete(request) {
-            Ok((events, usage, cost)) => {
-                self.usage.add(usage.clone());
-                self.costs.add(cost);
-                let mut events = events;
-                if usage.input_tokens.is_some() || usage.output_tokens.is_some() {
-                    // V0 streams cannot deliver any event after `End`; usage is part of the
-                    // provider response and must precede the terminal settlement event.
-                    let terminal = events
-                        .pop()
-                        .expect("parsed OpenRouter response has terminal event");
-                    events.push(ModelStreamEvent::Usage(usage));
-                    events.push(terminal);
-                }
-                ModelStream { events }
-            }
-            Err(message) => ModelStream {
-                events: vec![ModelStreamEvent::Error { message }],
-            },
-        }
-    }
-
-    fn complete(
-        &self,
-        request: ModelRequest,
-    ) -> Result<(Vec<ModelStreamEvent>, Usage, CostTurn), String> {
-        let messages: Vec<Value> = serde_json::from_str(&request.context)
-            .map_err(|_| "evaluation transport received invalid converted context".to_owned())?;
-        let mut chat_messages = Vec::with_capacity(messages.len() + 1);
-        chat_messages.push(json!({"role": "system", "content": request.system_prompt}));
-        chat_messages.extend(messages);
-        let tools = request
-            .tools
-            .iter()
-            .map(|tool| {
-                let schema = serde_json::from_str::<Value>(
-                    &tool
-                        .schema
-                        .to_json_string()
-                        .map_err(|_| "captured tool schema cannot be serialized")?,
-                )
-                .map_err(|_| "captured tool schema cannot be decoded")?;
-                Ok(json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": schema,
-                    },
-                }))
-            })
-            .collect::<Result<Vec<_>, &str>>()?;
-        let mut payload = json!({
-            "model": self.model,
-            "messages": chat_messages,
-            "temperature": 0,
-            "max_tokens": self.max_tokens,
-            "stream": false,
-        });
-        if !tools.is_empty() {
-            payload["tools"] = Value::Array(tools);
-        }
-        let payload = serde_json::to_vec(&payload)
-            .map_err(|_| "cannot serialize OpenRouter evaluation request".to_owned())?;
-        let mut child = Command::new("curl")
-            .arg("--silent")
-            .arg("--show-error")
-            .arg("--connect-timeout")
-            .arg("10")
-            .arg("--max-time")
-            .arg("30")
-            .arg("--request")
-            .arg("POST")
-            .arg(OPENROUTER_COMPLETIONS_URL)
-            .arg("--header")
-            .arg("Content-Type: application/json")
-            .arg("--header")
-            .arg(format!("Authorization: Bearer {}", self.api_key))
-            .arg("--data-binary")
-            .arg("@-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| "could not start the evaluation HTTP transport".to_owned())?;
-        {
-            use std::io::Write;
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| "evaluation HTTP transport has no request pipe".to_owned())?;
-            stdin
-                .write_all(&payload)
-                .map_err(|_| "could not send evaluation request".to_owned())?;
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|_| "evaluation HTTP transport did not settle".to_owned())?;
-        if !output.status.success() {
-            return Err("evaluation HTTP transport failed before a provider response".into());
-        }
-        let parsed = parse_openrouter_response(&output.stdout)?;
-        // The completion's own `usage.cost` is the immediate accounting source. Query the
-        // generation endpoint only when that provider field is absent: this avoids adding a
-        // retention-sensitive metadata round trip to ordinary model turns.
-        let cost = parsed
-            .inline_cost
-            .clone()
-            .or_else(|| {
-                parsed
-                    .generation_id
-                    .as_deref()
-                    .and_then(|generation_id| self.generation_cost(generation_id, &parsed.usage))
-            })
-            .unwrap_or_else(|| CostTurn::unavailable(&parsed.usage, &self.model));
-        Ok((parsed.events, parsed.usage, cost))
-    }
-
-    /// Fetch a redacted accounting record from OpenRouter after a completion settles.
-    ///
-    /// The generation endpoint can be briefly eventually consistent, so this makes three short
-    /// bounded attempts. A metadata miss never fails an agent run: the caller records a clearly
-    /// marked unavailable/fallback accounting turn instead.
-    fn generation_cost(&self, generation_id: &str, usage: &Usage) -> Option<CostTurn> {
-        for attempt in 0..3 {
-            let output = Command::new("curl")
-                .arg("--silent")
-                .arg("--show-error")
-                .arg("--connect-timeout")
-                .arg("10")
-                .arg("--max-time")
-                .arg("15")
-                .arg("--get")
-                .arg(OPENROUTER_GENERATION_URL)
-                .arg("--data-urlencode")
-                .arg(format!("id={generation_id}"))
-                .arg("--header")
-                .arg(format!("Authorization: Bearer {}", self.api_key))
-                .stderr(Stdio::null())
-                .output();
-            if let Ok(output) = output {
-                if output.status.success() {
-                    if let Some(cost) = parse_generation_cost(&output.stdout, usage) {
-                        return Some(cost);
-                    }
-                }
-            }
-            if attempt < 2 {
-                thread::sleep(Duration::from_millis(150 * (attempt + 1)));
-            }
-        }
-        None
-    }
-}
-
-impl ModelProvider for OpenRouterProvider {
-    fn stream<'a>(
-        &'a self,
-        request: ModelRequest,
-        cancellation: CancellationToken,
-    ) -> ModelFuture<'a> {
-        let stream = self.response_stream(request, cancellation);
-        Box::pin(std::future::ready(Ok(Box::new(stream) as _)))
-    }
-}
-
-struct ParsedOpenRouterResponse {
-    events: Vec<ModelStreamEvent>,
-    usage: Usage,
-    generation_id: Option<String>,
-    inline_cost: Option<CostTurn>,
-}
-
-fn finite_nonnegative(value: Option<f64>) -> Option<f64> {
-    value.filter(|value| value.is_finite() && *value >= 0.0)
-}
-
-fn number(value: &Value, key: &str) -> Option<f64> {
-    finite_nonnegative(value.get(key).and_then(Value::as_f64))
-}
-
-fn parse_openrouter_response(bytes: &[u8]) -> Result<ParsedOpenRouterResponse, String> {
-    let response: Value = serde_json::from_slice(bytes)
-        .map_err(|_| "OpenRouter returned a non-JSON evaluation response".to_owned())?;
-    if response.get("error").is_some() {
-        return Err("OpenRouter rejected the evaluation request".into());
-    }
-    let choice = response
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .ok_or_else(|| "OpenRouter response did not contain a completion choice".to_owned())?;
-    let message = choice
-        .get("message")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "OpenRouter completion choice did not contain a message".to_owned())?;
-    let mut events = Vec::new();
-    if let Some(content) = message.get("content").and_then(Value::as_str) {
-        if !content.is_empty() {
-            events.push(ModelStreamEvent::TextDelta(content.to_owned()));
-        }
-    }
-    let mut has_tool_calls = false;
-    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for (index, call) in calls.iter().enumerate() {
-            let id = call
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("openrouter-call-{index}"));
-            let function = call
-                .get("function")
-                .and_then(Value::as_object)
-                .ok_or_else(|| "OpenRouter tool call did not contain a function".to_owned())?;
-            let name = function
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| "OpenRouter tool call did not contain a name".to_owned())?;
-            let arguments = function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    "OpenRouter tool call did not contain serialized arguments".to_owned()
-                })?;
-            events.push(ModelStreamEvent::ToolCall(AssistantToolCall {
-                id: ToolCallId::new(id)
-                    .map_err(|_| "OpenRouter tool call omitted its identifier".to_owned())?,
-                name: name.to_owned(),
-                arguments: SerializedJson::new(arguments),
-            }));
-            has_tool_calls = true;
-        }
-    }
-    let stop_reason = match choice.get("finish_reason").and_then(Value::as_str) {
-        Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
-        Some("length") => StopReason::Length,
-        _ if has_tool_calls => StopReason::ToolUse,
-        _ => StopReason::EndTurn,
-    };
-    events.push(ModelStreamEvent::End(stop_reason));
-    let usage = response.get("usage").cloned().unwrap_or(Value::Null);
-    let token = |name: &str| usage.get(name).and_then(Value::as_u64);
-    let reasoning = usage
-        .get("completion_tokens_details")
-        .and_then(Value::as_object)
-        .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(Value::as_u64);
-    let parsed_usage = Usage {
-        input_tokens: token("prompt_tokens"),
-        output_tokens: token("completion_tokens"),
-        reasoning_tokens: reasoning,
-    };
-    let inline_cost = number(&usage, "cost").map(|total_usd| CostTurn {
-        source: "openrouter_chat_usage",
-        total_usd: Some(total_usd),
-        upstream_inference_usd: None,
-        model: response
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        provider: None,
-        input_tokens: parsed_usage.input_tokens,
-        output_tokens: parsed_usage.output_tokens,
-        cache_read_tokens: usage
-            .get("prompt_tokens_details")
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_u64),
-        cache_write_tokens: usage
-            .get("prompt_tokens_details")
-            .and_then(|details| details.get("cache_write_tokens"))
-            .and_then(Value::as_u64),
-        reasoning_tokens: parsed_usage.reasoning_tokens,
-    });
-    Ok(ParsedOpenRouterResponse {
-        events,
-        usage: parsed_usage,
-        generation_id: response
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned),
-        inline_cost,
-    })
-}
-
-fn parse_generation_cost(bytes: &[u8], fallback_usage: &Usage) -> Option<CostTurn> {
-    let response: Value = serde_json::from_slice(bytes).ok()?;
-    let data = response.get("data")?;
-    let total_usd = number(data, "total_cost")?;
-    Some(CostTurn {
-        source: "openrouter_generation",
-        total_usd: Some(total_usd),
-        upstream_inference_usd: number(data, "upstream_inference_cost"),
-        model: data.get("model").and_then(Value::as_str).map(str::to_owned),
-        provider: data
-            .get("provider_name")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        input_tokens: data
-            .get("tokens_prompt")
-            .and_then(Value::as_u64)
-            .or(fallback_usage.input_tokens),
-        output_tokens: data
-            .get("tokens_completion")
-            .and_then(Value::as_u64)
-            .or(fallback_usage.output_tokens),
-        cache_read_tokens: data.get("tokens_cached").and_then(Value::as_u64),
-        cache_write_tokens: data.get("tokens_cache_write").and_then(Value::as_u64),
-        reasoning_tokens: data
-            .get("tokens_reasoning")
-            .and_then(Value::as_u64)
-            .or(fallback_usage.reasoning_tokens),
-    })
-}
-
 fn event_name(event: &AgentEventKind) -> &'static str {
     match event {
         AgentEventKind::AgentStart => "agent_start",
@@ -648,6 +235,72 @@ fn event_name(event: &AgentEventKind) -> &'static str {
         AgentEventKind::ToolExecutionEnd { .. } => "tool_execution_end",
         AgentEventKind::TurnEnd { .. } => "turn_end",
         AgentEventKind::AgentEnd { .. } => "agent_end",
+    }
+}
+
+fn openrouter_cost_json(report: &OpenRouterCostReport) -> Value {
+    json!({
+        "schema_version": "pi-eval-cost/v1",
+        "currency": "USD",
+        "pricing": "provider_reported",
+        "reported_turn_count": report.reported_turn_count,
+        "unavailable_turn_count": report.unavailable_turn_count,
+        "complete": report.complete,
+        // A partial total is useful for diagnosis, but `complete` makes it impossible to
+        // mistake that value for the complete run cost.
+        "reported_total_usd": report.reported_total_usd,
+        "reported_upstream_inference_usd": report.reported_upstream_inference_usd,
+        "turns": report.turns.iter().map(|turn| json!({
+            "turn": turn.turn,
+            "source": turn.source.as_str(),
+            "total_usd": turn.total_usd,
+            "upstream_inference_usd": turn.upstream_inference_usd,
+            "model": turn.model,
+            "provider": turn.provider,
+            "input_tokens": turn.input_tokens,
+            "output_tokens": turn.output_tokens,
+            "cache_read_tokens": turn.cache_read_tokens,
+            "cache_write_tokens": turn.cache_write_tokens,
+            "reasoning_tokens": turn.reasoning_tokens,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// A concrete opt-in provider plus only the accounting this evaluation host needs.
+enum EvalProvider {
+    OpenRouter(Arc<OpenRouterProvider>),
+    CommandCode(Arc<CommandCodeProvider>),
+}
+
+impl EvalProvider {
+    fn model_provider(&self) -> Arc<dyn ModelProvider> {
+        match self {
+            Self::OpenRouter(provider) => provider.clone() as Arc<dyn ModelProvider>,
+            Self::CommandCode(provider) => provider.clone() as Arc<dyn ModelProvider>,
+        }
+    }
+
+    fn usage_snapshot(&self) -> pi_agent_core::state::Usage {
+        match self {
+            Self::OpenRouter(provider) => provider.usage_snapshot(),
+            Self::CommandCode(provider) => provider.usage_snapshot(),
+        }
+    }
+
+    fn provider_name(&self) -> &'static str {
+        match self {
+            Self::OpenRouter(_) => "openrouter",
+            Self::CommandCode(_) => "command-code",
+        }
+    }
+
+    fn cost_json(&self) -> Option<Value> {
+        match self {
+            Self::OpenRouter(provider) => Some(openrouter_cost_json(&provider.cost_report())),
+            // The Command Code gateway does not report price fields in its NDJSON contract.
+            // Omitting this optional artifact field avoids manufacturing a local price estimate.
+            Self::CommandCode(_) => None,
+        }
     }
 }
 
@@ -695,9 +348,6 @@ fn final_text(agent: &Agent) -> String {
 
 fn main() -> Result<(), String> {
     let args = Args::parse()?;
-    let api_key = env::var("OPENROUTER_API_KEY").map_err(|_| {
-        "OPENROUTER_API_KEY must be supplied by the caller's secret injector".to_owned()
-    })?;
     let task: Value = serde_json::from_slice(
         &fs::read(&args.task_json).map_err(|_| "cannot read evaluation task".to_owned())?,
     )
@@ -717,23 +367,56 @@ fn main() -> Result<(), String> {
         .ok_or_else(|| "evaluation task has no prompt".to_owned())?;
     let default_tools = DefaultCodingTools::new(&args.workspace)
         .map_err(|error| format!("cannot construct explicit workspace tools: {error}"))?;
-    let usage = UsageTotals::default();
-    let costs = CostTotals::default();
-    let provider = Arc::new(OpenRouterProvider {
-        api_key,
-        model: args.model.clone(),
-        max_tokens: 1024,
-        usage: usage.clone(),
-        costs: costs.clone(),
-    });
+    let provider = match args.provider {
+        ProviderKind::OpenRouter => {
+            let api_key = env::var("OPENROUTER_API_KEY").map_err(|_| {
+                "OPENROUTER_API_KEY must be supplied by the caller's secret injector".to_owned()
+            })?;
+            EvalProvider::OpenRouter(Arc::new(OpenRouterProvider::new(OpenRouterConfig::new(
+                api_key,
+                args.model.clone(),
+            ))))
+        }
+        ProviderKind::CommandCode => {
+            let api_key = env::var("COMMANDCODE_API_KEY").map_err(|_| {
+                "COMMANDCODE_API_KEY must be supplied by the caller's secret injector".to_owned()
+            })?;
+            let host = CommandCodeHostContext::new(
+                args.workspace.to_string_lossy(),
+                args.commandcode_date
+                    .as_deref()
+                    .expect("validated Command Code date"),
+                args.commandcode_environment
+                    .as_deref()
+                    .expect("validated Command Code environment"),
+            )
+            .map_err(|error| format!("invalid Command Code host context: {error}"))?;
+            let config = CommandCodeConfig::new(api_key, args.model.clone(), host)
+                .map_err(|error| format!("invalid Command Code configuration: {error}"))?
+                .with_thread_id(
+                    args.commandcode_thread_id
+                        .as_deref()
+                        .expect("validated Command Code thread ID"),
+                )
+                .and_then(|config| {
+                    config.with_project_slug(
+                        args.commandcode_project_slug
+                            .as_deref()
+                            .expect("validated Command Code project slug"),
+                    )
+                })
+                .map_err(|error| format!("invalid Command Code configuration: {error}"))?;
+            EvalProvider::CommandCode(Arc::new(CommandCodeProvider::new(config)))
+        }
+    };
     let agent = Agent::builder()
         .model(ModelDescriptor {
-            provider: "openrouter".into(),
+            provider: provider.provider_name().into(),
             model: args.model,
             revision: None,
         })
         .hooks(Arc::new(OpenAiContextHook))
-        .model_provider(provider as Arc<dyn ModelProvider>)
+        .model_provider(provider.model_provider())
         .pinned_default_coding_profile(default_tools)
         .map_err(|error| format!("cannot apply pinned default profile: {error}"))?
         .build();
@@ -742,7 +425,7 @@ fn main() -> Result<(), String> {
         .map_err(|error| format!("cannot start evaluation run: {error}"))?;
     let result = smol::block_on(run.drive());
     let events = run.events();
-    let totals = usage.snapshot();
+    let totals = provider.usage_snapshot();
     let trace = events
         .iter()
         .map(|event| json!({"seq": event.sequence.0, "type": event_name(&event.kind)}))
@@ -755,7 +438,7 @@ fn main() -> Result<(), String> {
         .iter()
         .filter(|event| matches!(event.kind, AgentEventKind::ToolExecutionStart { .. }))
         .count();
-    let output = json!({
+    let mut output = json!({
         "schema_version": RESULT_SCHEMA,
         "attempt_id": args.attempt_id,
         "baseline_id": args.baseline_id,
@@ -772,68 +455,14 @@ fn main() -> Result<(), String> {
             "cache_read": 0,
             "cache_write": 0,
         },
-        "cost": costs.snapshot_json(),
         "trace": trace,
     });
+    if let Some(cost) = provider.cost_json() {
+        output["cost"] = cost;
+    }
     let encoded =
         serde_json::to_vec(&output).map_err(|_| "cannot encode evaluation result".to_owned())?;
     fs::write(&args.result_json, encoded)
         .map_err(|_| "cannot write evaluation result".to_owned())?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_redacted_generation_cost_without_retaining_identifier() {
-        let usage = Usage {
-            input_tokens: Some(10),
-            output_tokens: Some(3),
-            reasoning_tokens: None,
-        };
-        let cost = parse_generation_cost(
-            br#"{
-                "data": {
-                    "id": "gen_must_not_be_written_to_artifacts",
-                    "total_cost": 0.0000123,
-                    "upstream_inference_cost": 0.00001,
-                    "model": "poolside/laguna-xs-2.1:free",
-                    "provider_name": "Poolside",
-                    "tokens_prompt": 12,
-                    "tokens_completion": 4,
-                    "tokens_cached": 2,
-                    "tokens_reasoning": 1
-                }
-            }"#,
-            &usage,
-        )
-        .expect("provider cost is parsed");
-        let record = cost.json(1);
-        assert_eq!(record["source"], "openrouter_generation");
-        assert_eq!(record["total_usd"], 0.0000123);
-        assert_eq!(record["provider"], "Poolside");
-        assert!(record.get("id").is_none());
-        assert!(!serde_json::to_string(&record)
-            .expect("cost record serializes")
-            .contains("gen_must_not_be_written_to_artifacts"));
-    }
-
-    #[test]
-    fn chat_usage_cost_is_a_fallback_when_generation_metadata_is_unavailable() {
-        let parsed = parse_openrouter_response(
-            br#"{
-                "id": "gen_example",
-                "model": "poolside/laguna-xs-2.1:free",
-                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "cost": 0}
-            }"#,
-        )
-        .expect("chat response parses");
-        let cost = parsed.inline_cost.expect("inline provider cost");
-        assert_eq!(cost.source, "openrouter_chat_usage");
-        assert_eq!(cost.total_usd, Some(0.0));
-        assert_eq!(parsed.generation_id.as_deref(), Some("gen_example"));
-    }
 }

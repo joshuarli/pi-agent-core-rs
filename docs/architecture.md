@@ -66,6 +66,13 @@ Preparation/validation and scheduling are generic. A tool receives a call ID, va
 cancellation, and an update sink. Standard coding tools are ordinary tools behind explicit profile
 operation ports.
 
+The optional `pi_agent_core::provider` module is a separate adapter layer behind explicit Cargo
+features. `provider-openrouter` and `provider-commandcode` are opt-in `curl` transports with
+caller-supplied keys and no ambient configuration discovery; the evaluation runner selects one
+only through its explicit provider argument. They do not change the default build or the
+`ModelProvider` contract. See
+[provider adapters](provider-adapters.md) for their wire and context boundaries.
+
 ## Ownership and state transitions
 
 One owned `Agent` has exactly zero or one active `Run`. The application owns the `Agent` and drives

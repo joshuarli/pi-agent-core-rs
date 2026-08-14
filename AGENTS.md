@@ -13,8 +13,8 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
 - [Pi subset](docs/pi-sdk-subset.md), [parity ledger](docs/parity-ledger.md),
   and [verification](docs/verification.md) for compatibility evidence.
 - [Default coding profile](docs/default-coding-profile.md),
-  [tracing](docs/trace.md), and [Luau extensions](docs/luau-extensions.md) for
-  optional layers.
+  [provider adapters](docs/provider-adapters.md), [tracing](docs/trace.md),
+  and [Luau extensions](docs/luau-extensions.md) for optional layers.
 - [`V1.md`](V1.md) for remaining programmable-policy work.
 
 ## Working contract
