@@ -61,7 +61,7 @@ These are rejected as V0 implementation targets even when a broader application 
 | Resource discovery, prompt templates, skills, extensions, package management, MCP | These are application/resource systems, not the selected execution kernel |
 | `AGENTS.md`, `.pi`, `~/.pi`, cwd/home/settings/config discovery | Authority must cross an explicit host boundary |
 | Pi provider catalog/authentication/model discovery and a port of `pi-ai` | Provider mechanics stay behind the small model-stream trait |
-| OpenTelemetry, Sentry, compaction policy and provider-specific retry/catalog policy | Not needed for the V0 state machine |
+| OpenTelemetry, Sentry, compaction policy and provider catalog policy | Not needed for the V0 state machine; optional built-in adapters own bounded transport retry |
 | Tokio, Node, TypeScript, `napi-rs`, JavaScript callback bridges, or a scripting runtime | Core is executor-owned pure Rust |
 | Swarm framework, world forking, IPC, C ABI, WASM/component, Python bindings | Post-V1 exploration only when a concrete use case exists |
 

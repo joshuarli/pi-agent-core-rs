@@ -5,6 +5,15 @@ The default `pi-agent-core` build contains only the `ModelProvider` and
 or discover credentials. Optional adapters are an embedding convenience, not
 a change to that core boundary.
 
+The built-in finite-response adapters retry replay-safe failures with a bounded
+exponential backoff. The standard policy makes the initial attempt plus three
+retries at 250 ms, 500 ms, and 1 s, capped at 8 s. Transport failures are
+retryable for both adapters; provider response errors are retried only when the
+adapter can classify them as transient (for example, 429 or 5xx). Hosts can
+replace the policy with `RetryPolicy` through each adapter config's
+`with_retry_policy` method. The generic `ModelProvider` port does not retry
+opaque caller providers or replay a stream after it has exposed events.
+
 | Feature | Module | Wire protocol | Intended use |
 | --- | --- | --- | --- |
 | `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response transport with packet-bound model validation and cancellation-aware child custody. |
@@ -66,9 +75,16 @@ decision:
 use pi_agent_core::provider::commandcode::{
     CommandCodeConfig, CommandCodeHostContext, CommandCodeProvider,
 };
+use pi_agent_core::provider::RetryPolicy;
+use std::time::Duration;
 
 let host = CommandCodeHostContext::new("/sandbox/project", "2026-08-14", "linux")?;
 let config = CommandCodeConfig::new("caller-supplied-api-key", "deepseek/deepseek-v4-flash", host)?;
+let config = config.with_retry_policy(RetryPolicy::new(
+    3,
+    Duration::from_millis(250),
+    Duration::from_secs(8),
+));
 let provider = CommandCodeProvider::new(config);
 # let _ = provider;
 # Ok::<(), Box<dyn std::error::Error>>(())

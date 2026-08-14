@@ -4,6 +4,10 @@
 //! explicit Cargo features so transport processes and provider wire formats never become part of
 //! the default state-machine build.
 
+mod retry;
+
+pub use retry::RetryPolicy;
+
 #[cfg(feature = "provider-commandcode")]
 pub mod commandcode;
 #[cfg(feature = "provider-openrouter")]

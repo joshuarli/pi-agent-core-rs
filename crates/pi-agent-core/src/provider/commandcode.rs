@@ -5,6 +5,8 @@
 //! operating system, environment variable, or local Command Code credential file. Hosts convert
 //! their transcript to the standard Chat Completions message array before it reaches this adapter.
 
+use super::retry::{retry_with_backoff, wait_with_cancellation, RetryableError};
+use super::RetryPolicy;
 use crate::json::{json_value, to_bytes, JsonValue};
 use crate::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
@@ -97,7 +99,8 @@ pub struct CommandCodeErrorReport {
     pub error_code: Option<String>,
     /// Whether the current Command Code client considers the failure retryable.
     ///
-    /// This adapter records the classification but does not retry requests itself.
+    /// The adapter uses this classification for bounded retries before exposing the terminal
+    /// error stream; the report preserves the final classification for trusted host diagnostics.
     pub retryable: Option<bool>,
 }
 
@@ -190,6 +193,7 @@ pub struct CommandCodeConfig {
     zero_data_retention: bool,
     project_slug: Option<String>,
     taste_learning_enabled: bool,
+    retry_policy: RetryPolicy,
 }
 
 impl CommandCodeConfig {
@@ -213,6 +217,7 @@ impl CommandCodeConfig {
             // Command Code CLI 1.24.0 enables this client feature by default. Embeddings can
             // turn it off explicitly; the adapter never discovers a user preference.
             taste_learning_enabled: true,
+            retry_policy: RetryPolicy::standard(),
         })
     }
 
@@ -285,6 +290,12 @@ impl CommandCodeConfig {
         self.taste_learning_enabled = enabled;
         self
     }
+
+    /// Replace the bounded backoff policy used for replay-safe transport and gateway attempts.
+    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = retry_policy;
+        self
+    }
 }
 
 impl fmt::Debug for CommandCodeConfig {
@@ -302,6 +313,7 @@ impl fmt::Debug for CommandCodeConfig {
             .field("zero_data_retention", &self.zero_data_retention)
             .field("project_slug", &self.project_slug)
             .field("taste_learning_enabled", &self.taste_learning_enabled)
+            .field("retry_policy", &self.retry_policy)
             .finish()
     }
 }
@@ -357,7 +369,7 @@ impl CommandCodeProvider {
                 events: vec![ModelStreamEvent::End(StopReason::Cancelled)],
             };
         }
-        match self.complete(request) {
+        match self.complete(request, &cancellation) {
             Ok(mut response) => {
                 if let Some(report) = response.error.take() {
                     self.record_error(report);
@@ -415,13 +427,35 @@ impl CommandCodeProvider {
             Some(totals.reasoning_tokens.unwrap_or(0) + usage.reasoning_tokens.unwrap_or(0));
     }
 
-    fn complete(&self, request: ModelRequest) -> Result<ParsedCommandCodeResponse, String> {
+    fn complete(
+        &self,
+        request: ModelRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<ParsedCommandCodeResponse, String> {
         self.validate_model(&request)?;
         let payload = self.build_payload(&request)?;
         let payload =
             to_bytes(&payload).map_err(|_| "cannot serialize Command Code request".to_owned())?;
-        let response = self.run_request(&payload)?;
-        parse_ndjson_response(&response, &self.config.api_key)
+        let mut retry_index = 0;
+        loop {
+            let response = self.run_request(&payload, cancellation)?;
+            let parsed = parse_ndjson_response(&response, &self.config.api_key)?;
+            let retryable = parsed
+                .error
+                .as_ref()
+                .and_then(|report| report.retryable)
+                .unwrap_or(false);
+            if !retryable || retry_index >= self.config.retry_policy.max_retries() {
+                return Ok(parsed);
+            }
+            if !wait_with_cancellation(
+                self.config.retry_policy.delay_before_retry(retry_index),
+                cancellation,
+            ) {
+                return Err("Command Code request cancelled".into());
+            }
+            retry_index += 1;
+        }
     }
 
     fn validate_model(&self, request: &ModelRequest) -> Result<(), String> {
@@ -504,29 +538,38 @@ impl CommandCodeProvider {
         Ok(payload)
     }
 
-    fn run_request(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
-        let mut command = Command::new("curl");
-        command
-            .arg("--silent")
-            .arg("--show-error")
-            .arg("--no-buffer")
-            .arg("--connect-timeout")
-            .arg("10")
-            .arg("--max-time")
-            .arg("60")
-            .arg("--request")
-            .arg("POST")
-            .arg(API_URL);
-        for header in self.request_headers() {
-            command.arg("--header").arg(header);
-        }
-        command
-            .arg("--data-binary")
-            .arg("@-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        run_curl(&mut command, payload)
+    fn run_request(
+        &self,
+        payload: &[u8],
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<u8>, String> {
+        retry_with_backoff(self.config.retry_policy, cancellation, || {
+            let mut command = Command::new("curl");
+            command
+                .arg("--silent")
+                .arg("--show-error")
+                .arg("--no-buffer")
+                .arg("--connect-timeout")
+                .arg("10")
+                .arg("--max-time")
+                .arg("60")
+                .arg("--request")
+                .arg("POST")
+                .arg(API_URL);
+            for header in self.request_headers() {
+                command.arg("--header").arg(header);
+            }
+            command
+                .arg("--data-binary")
+                .arg("@-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            run_curl(&mut command, payload).map_err(|message| RetryableError {
+                retryable: !cancellation.is_cancelled(),
+                message,
+            })
+        })
     }
 
     fn request_headers(&self) -> Vec<String> {

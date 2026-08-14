@@ -4,6 +4,8 @@
 //! finite-response transport for the evaluation host: the core remains independent of HTTP,
 //! subprocesses, credentials, and provider price formats.
 
+use super::retry::{retry_with_backoff, RetryableError};
+use super::RetryPolicy;
 use crate::json::{from_bytes, json_value, to_bytes, JsonValue};
 use crate::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
@@ -58,6 +60,7 @@ pub struct OpenRouterConfig {
     api_key: String,
     model: String,
     max_tokens: u64,
+    retry_policy: RetryPolicy,
 }
 
 impl OpenRouterConfig {
@@ -67,12 +70,19 @@ impl OpenRouterConfig {
             api_key: api_key.into(),
             model: model.into(),
             max_tokens: 1024,
+            retry_policy: RetryPolicy::standard(),
         }
     }
 
     /// Replace the explicit maximum completion-token cap.
     pub fn with_max_tokens(mut self, max_tokens: u64) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Replace the bounded backoff policy used for replay-safe transport attempts.
+    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = retry_policy;
         self
     }
 
@@ -111,6 +121,7 @@ impl fmt::Debug for OpenRouterConfig {
             .field("api_key", &"[redacted]")
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
+            .field("retry_policy", &self.retry_policy)
             .finish()
     }
 }
@@ -338,33 +349,42 @@ impl OpenRouterProvider {
     ) -> Result<(Vec<ModelStreamEvent>, Usage, OpenRouterCostTurn), String> {
         self.validate_model(&request)?;
         let payload = build_payload(&self.config, &request)?;
-        let config_path = write_curl_config(&self.config.api_key)?;
-        let output = run_curl(
-            Command::new("curl")
-                .arg("--silent")
-                .arg("--show-error")
-                .arg("--connect-timeout")
-                .arg("10")
-                .arg("--max-time")
-                .arg("30")
-                .arg("--request")
-                .arg("POST")
-                .arg(COMPLETIONS_URL)
-                .arg("--config")
-                .arg(&config_path)
-                .arg("--data-binary")
-                .arg("@-")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin"),
-            &payload,
-            cancellation,
-        );
-        let _ = fs::remove_file(&config_path);
-        let output = output?;
-        let parsed = parse_response(&output)?;
+        let parsed = retry_with_backoff(self.config.retry_policy, cancellation, || {
+            let config_path =
+                write_curl_config(&self.config.api_key).map_err(RetryableError::permanent)?;
+            let output = run_curl(
+                Command::new("curl")
+                    .arg("--silent")
+                    .arg("--show-error")
+                    .arg("--connect-timeout")
+                    .arg("10")
+                    .arg("--max-time")
+                    .arg("30")
+                    .arg("--request")
+                    .arg("POST")
+                    .arg(COMPLETIONS_URL)
+                    .arg("--config")
+                    .arg(&config_path)
+                    .arg("--data-binary")
+                    .arg("@-")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .env_clear()
+                    .env("PATH", "/usr/bin:/bin"),
+                &payload,
+                cancellation,
+            );
+            let _ = fs::remove_file(&config_path);
+            let output = output.map_err(|message| RetryableError {
+                retryable: !cancellation.is_cancelled(),
+                message,
+            })?;
+            parse_response(&output).map_err(|message| RetryableError {
+                retryable: openrouter_response_retryable(&output),
+                message,
+            })
+        })?;
         if cancellation.is_cancelled() {
             return Err("OpenRouter HTTP transport cancelled".into());
         }
@@ -389,7 +409,7 @@ impl OpenRouterProvider {
         usage: &Usage,
         cancellation: &CancellationToken,
     ) -> Option<OpenRouterCostTurn> {
-        for attempt in 0..3 {
+        for attempt in 0..=self.config.retry_policy.max_retries() {
             if cancellation.is_cancelled() {
                 return None;
             }
@@ -417,15 +437,13 @@ impl OpenRouterProvider {
                     return Some(cost);
                 }
             }
-            if attempt < 2 {
-                let delay = Duration::from_millis(150 * (attempt + 1));
-                let started = std::time::Instant::now();
-                while started.elapsed() < delay {
-                    if cancellation.is_cancelled() {
-                        return None;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
+            if attempt < self.config.retry_policy.max_retries()
+                && !super::retry::wait_with_cancellation(
+                    self.config.retry_policy.delay_before_retry(attempt),
+                    cancellation,
+                )
+            {
+                return None;
             }
         }
         None
@@ -1067,6 +1085,24 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
     })
 }
 
+/// Classify an OpenRouter JSON error without exposing its remote diagnostic to the agent.
+/// OpenRouter places the HTTP status in the error object's numeric `code` field for the common
+/// rate-limit and transient-service failures.
+fn openrouter_response_retryable(bytes: &[u8]) -> bool {
+    let Some(error) = from_bytes(bytes)
+        .ok()
+        .and_then(|response| response.get("error").cloned())
+        .and_then(|error| error.as_object().cloned())
+    else {
+        return false;
+    };
+    let status = error
+        .get("code")
+        .and_then(JsonValue::as_u64)
+        .or_else(|| error.get("status").and_then(JsonValue::as_u64));
+    matches!(status, Some(429) | Some(500..=599))
+}
+
 fn parse_generation_cost(bytes: &[u8], fallback_usage: &Usage) -> Option<OpenRouterCostTurn> {
     let response = from_bytes(bytes).ok()?;
     let data = response.get("data")?;
@@ -1226,6 +1262,22 @@ mod tests {
         assert!(
             matches!(stream.events.first(), Some(ModelStreamEvent::Error { message }) if message.contains("does not match requested model"))
         );
+    }
+
+    #[test]
+    fn retries_only_transient_openrouter_response_statuses() {
+        assert!(openrouter_response_retryable(
+            br#"{"error":{"code":429,"message":"slow down"}}"#
+        ));
+        assert!(openrouter_response_retryable(
+            br#"{"error":{"code":503,"message":"temporarily unavailable"}}"#
+        ));
+        assert!(!openrouter_response_retryable(
+            br#"{"error":{"code":400,"message":"invalid request"}}"#
+        ));
+        assert!(!openrouter_response_retryable(
+            br#"{"error":{"message":"invalid request"}}"#
+        ));
     }
 
     #[test]
