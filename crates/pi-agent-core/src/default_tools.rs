@@ -20,11 +20,18 @@ use crate::tool::{
 use pi_agent_protocol::{JsonNumber, JsonValue};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::future::Future;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+static COMMAND_CAPTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 /// A future returned by a host operation adapter.
 pub type OperationFuture<'a, T> =
@@ -371,43 +378,158 @@ impl CodingOperations for LocalCodingOperations {
         updates: ToolUpdateSink,
     ) -> OperationFuture<'a, CommandOutput> {
         Box::pin(async move {
-            if cancellation.is_cancelled() {
-                return Err(OperationError::new("cancelled"));
-            }
-            let mut process = Command::new("bash");
-            process.arg("-c").arg(command).current_dir(cwd);
-            environment.apply(&mut process);
-            // The local synchronous adapter cannot interrupt a child without
-            // creating a worker thread. Host adapters can provide true async
-            // cancellation; local cancellation is checked at both boundaries.
-            let output = process
-                .output()
-                .map_err(|error| OperationError::new(error.to_string()))?;
-            if cancellation.is_cancelled() {
-                return Err(OperationError::new("cancelled"));
-            }
-            if let Some(timeout) = timeout_seconds {
-                // Validation happens at the tool boundary. Retaining this
-                // branch documents that the local adapter does not claim to
-                // enforce a timeout after a blocking child has started.
-                let _ = timeout;
-            }
-            let mut update = Vec::new();
-            update.extend_from_slice(&output.stdout);
-            update.extend_from_slice(&output.stderr);
-            if !update.is_empty() {
-                updates.emit(ToolUpdate {
-                    content: String::from_utf8_lossy(&update).into_owned(),
-                    details: None,
-                });
-            }
-            Ok(CommandOutput {
-                exit_code: output.status.code(),
-                stdout: output.stdout,
-                stderr: output.stderr,
-            })
+            execute_local_command(
+                command,
+                cwd,
+                timeout_seconds,
+                environment,
+                &cancellation,
+                updates,
+            )
         })
     }
+}
+
+/// Execute the local shell through the caller-owned tool future.
+///
+/// The child is deliberately the shell only. On cancellation it is reaped so
+/// the tool future settles, but detached descendants are not killed: a host
+/// may intentionally start a durable worker in the explicit workspace.
+fn execute_local_command(
+    command: &str,
+    cwd: &Path,
+    timeout_seconds: Option<f64>,
+    environment: &CommandEnvironment,
+    cancellation: &CancellationToken,
+    updates: ToolUpdateSink,
+) -> Result<CommandOutput, OperationError> {
+    if cancellation.is_cancelled() {
+        return Err(OperationError::new("cancelled"));
+    }
+    let (stdout_path, stdout) = command_capture_file("stdout")?;
+    let (stderr_path, stderr) = match command_capture_file("stderr") {
+        Ok(capture) => capture,
+        Err(error) => {
+            let _ = fs::remove_file(&stdout_path);
+            return Err(error);
+        }
+    };
+    let mut process = Command::new("bash");
+    process.arg("-c").arg(command).current_dir(cwd);
+    environment.apply(&mut process);
+    // Capture to private files rather than pipes.  A command such as
+    // `long_task &` can legitimately leave descendants running; those
+    // descendants inherit pipes from `Command::output`, which makes
+    // the caller wait for the background task rather than its shell.
+    // Files preserve foreground output while we wait only for the shell
+    // that this tool actually started.
+    process
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_file(&stdout_path);
+            let _ = fs::remove_file(&stderr_path);
+            return Err(OperationError::new(error.to_string()));
+        }
+    };
+    let status = wait_for_shell_or_cancellation(&mut child, cancellation)?;
+    let stdout = read_command_capture(&stdout_path);
+    let stderr = read_command_capture(&stderr_path);
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+    let stdout = stdout?;
+    let stderr = stderr?;
+    if cancellation.is_cancelled() {
+        return Err(OperationError::new("cancelled"));
+    }
+    if let Some(timeout) = timeout_seconds {
+        // Validation happens at the tool boundary. Retaining this branch
+        // documents that the local adapter does not claim to enforce a tool
+        // timeout after a blocking child has started.
+        let _ = timeout;
+    }
+    let mut update = Vec::new();
+    update.extend_from_slice(&stdout);
+    update.extend_from_slice(&stderr);
+    if !update.is_empty() {
+        updates.emit(ToolUpdate {
+            content: String::from_utf8_lossy(&update).into_owned(),
+            details: None,
+        });
+    }
+    Ok(CommandOutput {
+        exit_code: status.code(),
+        stdout,
+        stderr,
+    })
+}
+
+fn wait_for_shell_or_cancellation(
+    child: &mut Child,
+    cancellation: &CancellationToken,
+) -> Result<ExitStatus, OperationError> {
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| OperationError::new(error.to_string()))?
+        {
+            return Ok(status);
+        }
+        if cancellation.is_cancelled() {
+            // `kill` reports InvalidInput when the shell won the race and
+            // exited after `try_wait`; `wait` still reaps that shell and gives
+            // the caller one deterministic settlement path.
+            if let Err(error) = child.kill() {
+                if error.kind() != std::io::ErrorKind::InvalidInput {
+                    return Err(OperationError::new(error.to_string()));
+                }
+            }
+            return child
+                .wait()
+                .map_err(|error| OperationError::new(error.to_string()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Create a private output capture that is safe for commands that daemonize.
+fn command_capture_file(stream: &str) -> Result<(PathBuf, File), OperationError> {
+    for _ in 0..16 {
+        let sequence = COMMAND_CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "pi-agent-core-command-{}-{}-{stream}",
+            std::process::id(),
+            sequence,
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(OperationError::new(format!(
+                    "cannot create command capture: {error}"
+                )));
+            }
+        }
+    }
+    Err(OperationError::new(
+        "cannot allocate a unique command capture after 16 attempts",
+    ))
+}
+
+fn read_command_capture(path: &Path) -> Result<Vec<u8>, OperationError> {
+    let mut file = File::open(path)
+        .map_err(|error| OperationError::new(format!("cannot read command capture: {error}")))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| OperationError::new(format!("cannot read command capture: {error}")))?;
+    Ok(bytes)
 }
 
 /// The explicit batteries-included standard tool set.
@@ -1923,7 +2045,8 @@ mod tests {
     use crate::state::{SerializedJson, ToolCallId};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
 
@@ -2129,6 +2252,106 @@ mod tests {
             tools.workspace().as_path().to_string_lossy()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bash_returns_when_a_background_descendant_keeps_output_open() {
+        let root = workspace();
+        let tools = DefaultCodingTools::new(&root).unwrap();
+        let bash = tools.bash();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(smol::block_on(bash.execute(
+                    call(
+                        "bash",
+                        r#"{"command":"sh -c 'echo $$ > .background-pid; exec sleep 30' & echo launched"}"#,
+                    ),
+                    context(),
+                    ToolUpdateSink::disabled(),
+                )))
+                .expect("test receiver must remain open");
+        });
+
+        let result = match receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(result) => result.expect("bash should succeed"),
+            Err(error) => {
+                stop_background_test_process(&root);
+                let _ = receiver.recv_timeout(Duration::from_secs(1));
+                worker
+                    .join()
+                    .expect("bash worker should settle after cleanup");
+                panic!("bash waited for its background descendant: {error}");
+            }
+        };
+        assert_eq!(result.content, "launched");
+        stop_background_test_process(&root);
+        worker.join().expect("bash worker should settle");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bash_cancellation_kills_the_foreground_shell_and_settles_promptly() {
+        let root = workspace();
+        let tools = DefaultCodingTools::new(&root).unwrap();
+        let bash = tools.bash();
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(smol::block_on(bash.execute(
+                    call(
+                        "bash",
+                        r#"{"command":"echo $$ > .foreground-pid; exec sleep 30"}"#,
+                    ),
+                    ToolContext {
+                        cancellation: worker_cancellation,
+                        metadata: None,
+                    },
+                    ToolUpdateSink::disabled(),
+                )))
+                .expect("test receiver must remain open");
+        });
+
+        wait_for_test_process(&root, ".foreground-pid");
+        cancellation.cancel();
+        let result = match receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(result) => result,
+            Err(error) => {
+                stop_test_process(&root, ".foreground-pid");
+                let _ = receiver.recv_timeout(Duration::from_secs(1));
+                worker
+                    .join()
+                    .expect("bash worker should settle after cleanup");
+                panic!("bash did not settle after cancellation: {error}");
+            }
+        };
+        assert!(matches!(
+            result,
+            Err(ToolError::Cancelled { tool }) if tool == "bash"
+        ));
+        worker.join().expect("bash worker should settle");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn stop_background_test_process(root: &Path) {
+        stop_test_process(root, ".background-pid");
+    }
+
+    fn wait_for_test_process(root: &Path, filename: &str) {
+        for _ in 0..100 {
+            if root.join(filename).exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn stop_test_process(root: &Path, filename: &str) {
+        if let Ok(pid) = fs::read_to_string(root.join(filename)) {
+            let _ = Command::new("kill").arg("-TERM").arg(pid.trim()).status();
+        }
     }
 
     #[test]

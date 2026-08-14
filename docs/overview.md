@@ -1,0 +1,66 @@
+# pi-agent-core-rs
+
+`pi-agent-core-rs` is a small, headless Rust implementation of a pinned,
+useful subset of Pi's agent runtime. It is an execution microkernel, not a
+port of Pi's interactive application.
+
+The core reduces this explicit loop:
+
+```text
+model stream -> assistant response -> tool execution -> tool results -> next turn
+```
+
+It is designed for disposable agents in CI sandboxes, VM worlds, RL
+environments, and swarms. Pi is a behavioral oracle through an in-process,
+pinned SDK fixture harness; this project never launches the Pi CLI for parity
+or runtime behavior.
+
+## Design commitments
+
+- Rust owns state transitions, scheduling, cancellation, event settlement,
+  tracing boundaries, and resource ownership.
+- The embedding owns the executor, model transport, workspace, tools, policy,
+  credentials, and side effects.
+- The core has no ambient configuration, session storage, `$HOME` discovery,
+  package/plugin discovery, provider implementation, or background runtime.
+- The checked-in nightly in `rust-toolchain.toml` is authoritative. Tokio is
+  prohibited; applications commonly drive the core with Smol.
+- `pi-agent-protocol` uses Miniserde at the JSON boundary. Serde values are not
+  part of the public workspace contract.
+- The pinned Pi default coding profile is batteries-included but fully
+  replaceable. Its workspace and all filesystem/process authority are explicit.
+- `pi-agent-luau` is optional. A pure Rust agent neither links nor constructs a
+  scripting VM.
+
+## Crate direction
+
+```text
+pi-agent-protocol <- pi-agent-core <- pi-agent-luau
+                   <- pi-agent-trace
+```
+
+Arrows point from a dependency toward its dependent. The protocol provides
+stable data and event shapes; the core owns the loop; trace and Luau are
+downstream optional layers.
+
+## Documentation map
+
+- [Quickstart](quickstart.md) — build and run a first caller-owned agent.
+- [Scope and compatibility boundary](scope.md) — selected Pi subset and hard
+  exclusions.
+- [Architecture](architecture.md) — ownership, ports, state machine, and
+  scheduling.
+- [Runtime semantics](semantics.md) — observable lifecycle and cancellation
+  contracts.
+- [Pinned Pi SDK subset](pi-sdk-subset.md) and [parity ledger](parity-ledger.md)
+  — exact behavioral target and fixture evidence.
+- [Default coding profile](default-coding-profile.md) — captured prompt, tools,
+  operation adapters, and update procedure.
+- [Verification](verification.md) — required checks and completed V0 evidence.
+- [Tracing](trace.md) — optional trajectory observer boundary.
+- [Writing Luau extensions](luau-extensions.md) — current policy ABI.
+- [V1](../V1.md) — remaining optional Luau policy-plane work.
+
+The parity harness and fixtures have their own [guide](../parity/README.md).
+The end-to-end coding evaluation controller is documented in
+[`evals/README.md`](../evals/README.md).

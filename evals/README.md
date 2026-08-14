@@ -30,7 +30,7 @@ baselines. `interval-merge-v0` asks the model to write a single standard-library
 file once; it does not run a model-driven test process. The controller's hidden oracle imports and
 checks that file after settlement, so assistant final text remains non-authoritative. Its task cap
 is 60 seconds; the Rust adapter separately limits each OpenRouter HTTP request to 30 seconds. The local
-provider-specific JSON report is ignored by Git; [`../docs/v0-completion-audit.md`](../docs/v0-completion-audit.md)
+provider-specific JSON report is ignored by Git; [`../docs/verification.md`](../docs/verification.md)
 records the redacted summary and the exact rerun command below.
 
 `interval-merge-v0` declares the exact captured schemas of the active `read`, `bash`, `edit`, and

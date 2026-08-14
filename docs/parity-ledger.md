@@ -1,10 +1,9 @@
-# Milestone 0 parity ledger
+# Pi subset parity ledger
 
-This ledger is the index of intentional upstream behavior. `plan.md` requires every row to point
-to an upstream path and symbol plus a deterministic fixture. Status values are deliberately closed:
-`supported`, `deferred-to-v1`, `rejected`, and `investigating`. A row marked `supported` is a V0
-target even when its fixture is still to be checked in; it is not permission to infer missing
-semantics from source alone.
+This ledger is the index of intentional upstream behavior. Every supported row
+points to an upstream path and symbol plus a deterministic fixture. Status
+values are deliberately closed: `supported`, `deferred-to-v1`, `rejected`, and
+`investigating`. Source alone never authorizes an inferred semantic.
 
 The selected upstream checkout is `parity/upstream/source`; the pin metadata belongs in
 `parity/UPSTREAM_COMMIT`. Paths in this document are relative to that checkout unless noted.

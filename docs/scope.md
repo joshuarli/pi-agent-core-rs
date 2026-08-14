@@ -1,14 +1,14 @@
-# Milestone 0 scope
+# Scope and compatibility boundary
 
-This document freezes what the project means by “Pi parity” before the Rust runtime is
-implemented. `plan.md` is the authority for this milestone. `V1.md` describes the optional Luau
-policy plane and does not widen V0. The pinned upstream checkout and its fixture runner are the
-executable specification; prose in this document is a boundary, not a substitute for a fixture.
+This document defines what the project means by “Pi parity.” The pinned
+upstream checkout and its fixture runner are the executable specification;
+prose is a boundary, not a substitute for a fixture. [`V1.md`](../V1.md)
+describes optional Luau policy work and does not widen the completed core.
 
 ## Product boundary
 
-V0 is a pure Rust, headless agent execution microkernel plus an explicit default coding profile.
-The useful execution path is:
+The completed core is a pure Rust, headless agent execution microkernel plus
+an explicit default coding profile. The useful execution path is:
 
 ```text
 caller-owned model stream
@@ -103,23 +103,13 @@ such row has a fixture ID and a concrete exit condition. A fixture may normalize
 generated UUIDs, and durations only; it may not normalize semantic ordering, queue behavior,
 message content, tool results, state cleanup, or terminal outcomes.
 
-## Milestone 0 exit checklist
+## Completed V0 record
 
-Milestone 0 is complete only when all of the following have evidence:
-
-- `parity/UPSTREAM_COMMIT` records repository URL, exact commit, package version, Node version,
-  lockfile hash, and runner command.
-- `docs/pi-sdk-subset.md` names every selected public method, type, event, and profile symbol.
-- `docs/parity-ledger.md` has one row for every selected or excluded upstream semantic, with a
-  status from the four-value vocabulary and a fixture reference.
-- `docs/semantics.md` has a fixture-resolved active-run contract, event grammar, cancellation
-  checkpoints, observer settlement rule, queue drain points, and terminal-state invariant.
-- `docs/default-coding-profile.md` records active order, canonical schemas, prompt snippets,
-  guidelines, generated prompt bytes/hash, operation adapters, and behavior fixtures.
-- The deterministic upstream fixtures run in-process against the SDK; they do not invoke Pi CLI,
-  `pi-coding-agent`, or a real provider.
-- No Rust loop implementation is needed for this milestone; no dependency is added to produce the
-  specification.
+V0's core, profile, deterministic parity corpus, hardening, trace boundary,
+and final comparative coding evaluation are complete. The durable evidence and
+revalidation requirements live in [verification.md](verification.md). Future
+policy-plane expansion belongs in [`V1.md`](../V1.md); it does not change this
+scope without a new explicit contract.
 
 ## Exact new-ledger entry template
 

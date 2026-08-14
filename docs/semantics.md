@@ -1,9 +1,9 @@
-# Milestone 0 runtime semantics
+# Runtime semantics
 
-This is the contract to pin with deterministic in-process fixtures before substantial Rust loop
-work. Paths below refer to the checkout selected by `parity/UPSTREAM_COMMIT`. The current source
-provides useful evidence, but a fixture is required for every edge where a provider, observer,
-or callback can affect externally visible settlement.
+This is the contract pinned by deterministic in-process fixtures. Paths below
+refer to the checkout selected by `parity/UPSTREAM_COMMIT`. Source provides
+useful evidence, but a fixture is required for every edge where a provider,
+observer, or callback can affect externally visible settlement.
 
 ## Vocabulary and identity
 

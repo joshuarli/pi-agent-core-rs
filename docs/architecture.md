@@ -1,8 +1,9 @@
-# V0 architecture
+# Core architecture
 
-The implementation is an executor-owned Rust library with an explicit capability boundary. The
-architecture follows `plan.md`: Rust owns mechanism; callers own transports and capabilities; the
-optional Luau policy plane is downstream and cannot alter the V0 state machine.
+The implementation is an executor-owned Rust library with an explicit
+capability boundary. Rust owns mechanism; callers own transports and
+capabilities; the optional Luau policy plane is downstream and cannot alter
+the core state machine.
 
 ## Crate boundaries
 
@@ -12,19 +13,19 @@ pi-agent-protocol  -> serializable model/message/tool/event/error values
         |
 pi-agent-core      -> Agent state, Run lifecycle, loop, queues, hooks, tool scheduler
         |
-        +--> pi-agent-trace   (optional immutable event consumer; later V0 milestone)
+        +--> pi-agent-trace   (optional immutable event consumer)
         |
-        +--> pi-agent-luau    (optional V1 policy adapter; depends on core only)
+        +--> pi-agent-luau    (optional policy adapter; depends on core only)
 ```
 
-The planned workspace crates are:
+The workspace crates are:
 
 | Crate | Owns | Must not own |
 | --- | --- | --- |
 | `pi-agent-protocol` | `ModelDescriptor`, messages/content, tool definitions/results, events, usage, stop reasons, typed wire errors | Scheduler state, provider SDKs, Luau types, filesystem APIs |
 | `pi-agent-core` | Agent FSM, one-active-run ownership, context conversion boundary, model stream trait, tool validation/scheduling, hooks/queues, cancellation and settlement | HTTP/provider implementations, cwd/home/config discovery, sessions, TUI, VM/runtime, Tokio executor |
 | `pi-agent-trace` | Immutable event-to-linear-episode recorder, redaction and caller-selected JSONL/CBOR sinks | Agent state, session tree, replay mutations, sink-driven behavior |
-| `pi-agent-luau` (V1) | Hermetic VM, capability manifest/modules, policy hooks/tools, script error/limit translation | Core lifecycle/state/scheduling, ambient OS authority, event-loop ownership |
+| `pi-agent-luau` (optional policy) | Hermetic VM, capability manifest/modules, policy hooks/tools, script error/limit translation | Core lifecycle/state/scheduling, ambient OS authority, event-loop ownership |
 
 `PiDefaultCodingProfile` belongs with the explicit profile/tool adapters. It may be a module in
 `pi-agent-core` or a narrowly separated profile crate selected during implementation, but it must
@@ -212,16 +213,16 @@ episode, not a Pi session tree. Redaction is selected by the caller for prompts/
 trace sink failure is reported separately and cannot change the agent result. No trace, JSONL and
 CBOR runs must have identical core behavior.
 
-## V0/V1 boundary and dependency graph
+## Core and optional policy boundary
 
 ```text
-V0: protocol <- core <- caller provider/tools/hooks/profile
-                  |
-                  +-> optional trace
+Core: protocol <- core <- caller provider/tools/hooks/profile
+                    |
+                    +-> optional trace
 
-V1: protocol <- core <- luau adapter -> mlua/Luau VM
-                                  |
-                                  +-> host capability manifest/world/task/trace ports
+Policy: protocol <- core <- luau adapter -> mlua/Luau VM
+                                    |
+                                    +-> host capability manifest/world/task/trace ports
 ```
 
 `pi-agent-core` must compile and operate without `mlua`, Luau, world APIs, scripting types, Node,
@@ -230,10 +231,9 @@ core must not depend on it. V1 module resolution is host-controlled and closed, 
 filesystem, process, environment, network, home, cwd, clock, FFI, package registry, native plugin,
 or OS-command authority.
 
-## Architecture decision records to close in Milestone 0
+## Contract evidence
 
-These are small but contract-bearing choices and must be settled from fixtures or dependency
-review before implementation:
+These contract-bearing choices are settled by fixtures and dependency review:
 
 | Decision | Required evidence |
 | --- | --- |
@@ -246,5 +246,6 @@ review before implementation:
 | Exact generated default prompt bytes/hash and workspace substitution | `profile/default-prompt` |
 | Typed error hierarchy and failure-to-event mapping | `failure/provider-error`, `cancel/failure-shapes` |
 
-No decision may be resolved by an undocumented fallback. An unresolved item remains
-`investigating` in `docs/parity-ledger.md` and blocks the Milestone 0 exit criterion.
+No change may introduce an undocumented fallback. A newly unresolved behavior
+must be marked `investigating` in `docs/parity-ledger.md` and resolved before
+it becomes part of the supported contract.
