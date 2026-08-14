@@ -72,14 +72,19 @@ must match a preceding assistant tool call, so the adapter can preserve its
 tool name instead of guessing it.
 
 The gateway's `text-delta`, `tool-call`, `finish`, usage, error, and abort
-events map directly to core model-stream events. Gateway error payloads are
-redacted before entering agent state. Reasoning deltas are intentionally not
-retained: the current core model-stream contract has no separate reasoning
-content variant, so treating them as assistant text would corrupt the visible
-answer. This is a known API limitation rather than a hidden fallback. The
-current gateway may emit a `provider-metadata` envelope after `finish`; it is
-accepted as non-content metadata rather than misclassified as a second terminal
-event.
+events map directly to core model-stream events. Gateway error payloads stay
+generic before entering agent state, so a remote service cannot inject
+arbitrary error text into a transcript. A trusted host can instead call
+`CommandCodeProvider::last_error_report()` for the last failure's source,
+message, status, type, code, and retryability classification. The configured
+API key is redacted from this host-only report, but its remote message remains
+untrusted data and belongs only in private host diagnostics. Reasoning deltas
+are intentionally not retained: the current core model-stream contract has no
+separate reasoning content variant, so treating them as assistant text would
+corrupt the visible answer. This is a known API limitation rather than a hidden
+fallback. The current gateway may emit a `provider-metadata` envelope after
+`finish`; it is accepted as non-content metadata rather than misclassified as a
+second terminal event.
 
 The first adapters collect their bounded `curl` response before returning a
 finite core stream. They preserve event grammar and terminal validation, but

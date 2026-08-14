@@ -302,6 +302,23 @@ impl EvalProvider {
             Self::CommandCode(_) => None,
         }
     }
+
+    /// Preserve actionable Command Code failure classification in the controller artifact while
+    /// keeping its arbitrary remote message out of a broadly retained evaluation report.
+    fn error_json(&self) -> Option<Value> {
+        let Self::CommandCode(provider) = self else {
+            return None;
+        };
+        provider.last_error_report().map(|report| {
+            json!({
+                "source": report.source.as_str(),
+                "status_code": report.status_code,
+                "error_type": report.error_type,
+                "error_code": report.error_code,
+                "retryable": report.retryable,
+            })
+        })
+    }
 }
 
 fn terminal_status(result: &Result<(), pi_agent_core::CoreError>) -> &'static str {
@@ -459,6 +476,9 @@ fn main() -> Result<(), String> {
     });
     if let Some(cost) = provider.cost_json() {
         output["cost"] = cost;
+    }
+    if let Some(error) = provider.error_json() {
+        output["provider_error"] = error;
     }
     let encoded =
         serde_json::to_vec(&output).map_err(|_| "cannot encode evaluation result".to_owned())?;

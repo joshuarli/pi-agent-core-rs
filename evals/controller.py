@@ -429,6 +429,33 @@ def validate_adapter_result(
         raise ContractError("adapter result trace must be an array")
     if "cost" in result:
         validate_cost_report(result["cost"])
+    if "provider_error" in result:
+        validate_provider_error(result["provider_error"])
+
+
+def validate_provider_error(provider_error: Any) -> None:
+    """Validate optional provider classification without retaining remote response text."""
+    if not isinstance(provider_error, dict):
+        raise ContractError("adapter result provider_error must be an object")
+    allowed = {"source", "status_code", "error_type", "error_code", "retryable"}
+    if set(provider_error).difference(allowed):
+        raise ContractError("adapter result provider_error contains an unapproved field")
+    if provider_error.get("source") not in {"gateway", "adapter"}:
+        raise ContractError("adapter result provider_error source is invalid")
+    status_code = provider_error.get("status_code")
+    if status_code is not None and (
+        not isinstance(status_code, int)
+        or isinstance(status_code, bool)
+        or not 100 <= status_code <= 599
+    ):
+        raise ContractError("adapter result provider_error status_code is invalid")
+    for key in ("error_type", "error_code"):
+        value = provider_error.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ContractError(f"adapter result provider_error {key} must be a string or null")
+    retryable = provider_error.get("retryable")
+    if retryable is not None and not isinstance(retryable, bool):
+        raise ContractError("adapter result provider_error retryable must be a boolean or null")
 
 
 def validate_cost_report(cost: Any) -> None:

@@ -54,6 +54,77 @@ impl fmt::Display for CommandCodeConfigError {
 
 impl std::error::Error for CommandCodeConfigError {}
 
+/// Boundary at which a Command Code request failed.
+///
+/// `Gateway` details originated in a remote NDJSON `error` event. `Adapter` details are local
+/// validation, serialization, transport, or response-grammar failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandCodeErrorSource {
+    /// The gateway sent a terminal NDJSON `error` event.
+    Gateway,
+    /// The adapter could not form, send, or parse a request/response.
+    Adapter,
+}
+
+impl CommandCodeErrorSource {
+    /// Stable, lower-case spelling for a host log or structured artifact.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gateway => "gateway",
+            Self::Adapter => "adapter",
+        }
+    }
+}
+
+/// Structured diagnostic for the most recent Command Code failure.
+///
+/// The core's [`ModelStreamEvent::Error`] remains deliberately generic, so a remote provider
+/// cannot inject arbitrary text into agent state. Hosts that own a private diagnostic sink can
+/// instead read this report with [`CommandCodeProvider::last_error_report`]. The configured API
+/// key is redacted from text fields, but gateway messages are still untrusted remote data: do
+/// not write them to logs that are visible to an untrusted model or another tenant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandCodeErrorReport {
+    /// Whether this came from a gateway event or from the local adapter boundary.
+    pub source: CommandCodeErrorSource,
+    /// Gateway-provided message or a stable local adapter failure explanation.
+    pub message: String,
+    /// Gateway HTTP status, when supplied directly or embedded in its message.
+    pub status_code: Option<u16>,
+    /// Gateway error classification, when present.
+    pub error_type: Option<String>,
+    /// Gateway error code, when present.
+    pub error_code: Option<String>,
+    /// Whether the current Command Code client considers the failure retryable.
+    ///
+    /// This adapter records the classification but does not retry requests itself.
+    pub retryable: Option<bool>,
+}
+
+impl fmt::Display for CommandCodeErrorReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "source={} message={:?}",
+            self.source.as_str(),
+            self.message
+        )?;
+        if let Some(status_code) = self.status_code {
+            write!(formatter, " status_code={status_code}")?;
+        }
+        if let Some(error_type) = &self.error_type {
+            write!(formatter, " error_type={error_type:?}")?;
+        }
+        if let Some(error_code) = &self.error_code {
+            write!(formatter, " error_code={error_code:?}")?;
+        }
+        if let Some(retryable) = self.retryable {
+            write!(formatter, " retryable={retryable}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Caller-provided host metadata included in a Command Code gateway request.
 ///
 /// These values are deliberately explicit rather than discovered from the local process. A
@@ -244,6 +315,7 @@ impl fmt::Debug for CommandCodeConfig {
 pub struct CommandCodeProvider {
     config: CommandCodeConfig,
     usage: Mutex<Usage>,
+    last_error: Mutex<Option<CommandCodeErrorReport>>,
 }
 
 impl CommandCodeProvider {
@@ -252,6 +324,7 @@ impl CommandCodeProvider {
         Self {
             config,
             usage: Mutex::new(Usage::default()),
+            last_error: Mutex::new(None),
         }
     }
 
@@ -260,6 +333,17 @@ impl CommandCodeProvider {
         self.usage
             .lock()
             .expect("Command Code usage mutex poisoned")
+            .clone()
+    }
+
+    /// Return the most recent adapter or gateway failure observed by this provider.
+    ///
+    /// This is intentionally separate from the agent-facing stream error. See
+    /// [`CommandCodeErrorReport`] for the privacy boundary and host logging requirements.
+    pub fn last_error_report(&self) -> Option<CommandCodeErrorReport> {
+        self.last_error
+            .lock()
+            .expect("Command Code error mutex poisoned")
             .clone()
     }
 
@@ -274,24 +358,48 @@ impl CommandCodeProvider {
             };
         }
         match self.complete(request) {
-            Ok((mut events, usage)) => {
+            Ok(mut response) => {
+                if let Some(report) = response.error.take() {
+                    self.record_error(report);
+                }
+                let usage = response.usage;
                 self.record_usage(&usage);
                 if usage.input_tokens.is_some()
                     || usage.output_tokens.is_some()
                     || usage.reasoning_tokens.is_some()
                 {
-                    let terminal = events
+                    let terminal = response
+                        .events
                         .pop()
                         .expect("parsed Command Code response has terminal event");
-                    events.push(ModelStreamEvent::Usage(usage));
-                    events.push(terminal);
+                    response.events.push(ModelStreamEvent::Usage(usage));
+                    response.events.push(terminal);
                 }
-                ModelStream { events }
+                ModelStream {
+                    events: response.events,
+                }
             }
-            Err(message) => ModelStream {
-                events: vec![ModelStreamEvent::Error { message }],
-            },
+            Err(message) => {
+                self.record_error(CommandCodeErrorReport {
+                    source: CommandCodeErrorSource::Adapter,
+                    message: message.clone(),
+                    status_code: None,
+                    error_type: None,
+                    error_code: None,
+                    retryable: None,
+                });
+                ModelStream {
+                    events: vec![ModelStreamEvent::Error { message }],
+                }
+            }
         }
+    }
+
+    fn record_error(&self, report: CommandCodeErrorReport) {
+        *self
+            .last_error
+            .lock()
+            .expect("Command Code error mutex poisoned") = Some(report);
     }
 
     fn record_usage(&self, usage: &Usage) {
@@ -307,13 +415,13 @@ impl CommandCodeProvider {
             Some(totals.reasoning_tokens.unwrap_or(0) + usage.reasoning_tokens.unwrap_or(0));
     }
 
-    fn complete(&self, request: ModelRequest) -> Result<(Vec<ModelStreamEvent>, Usage), String> {
+    fn complete(&self, request: ModelRequest) -> Result<ParsedCommandCodeResponse, String> {
         self.validate_model(&request)?;
         let payload = self.build_payload(&request)?;
         let payload = serde_json::to_vec(&payload)
             .map_err(|_| "cannot serialize Command Code request".to_owned())?;
         let response = self.run_request(&payload)?;
-        parse_ndjson_response(&response)
+        parse_ndjson_response(&response, &self.config.api_key)
     }
 
     fn validate_model(&self, request: &ModelRequest) -> Result<(), String> {
@@ -657,12 +765,20 @@ fn string_or_null(object: &Map<String, Value>, key: &str) -> Result<String, Stri
         .to_owned())
 }
 
-fn parse_ndjson_response(bytes: &[u8]) -> Result<(Vec<ModelStreamEvent>, Usage), String> {
+#[derive(Debug)]
+struct ParsedCommandCodeResponse {
+    events: Vec<ModelStreamEvent>,
+    usage: Usage,
+    error: Option<CommandCodeErrorReport>,
+}
+
+fn parse_ndjson_response(bytes: &[u8], api_key: &str) -> Result<ParsedCommandCodeResponse, String> {
     let response = std::str::from_utf8(bytes)
         .map_err(|_| "Command Code returned a non-UTF-8 NDJSON response".to_owned())?;
     let mut events = Vec::new();
     let mut usage = Usage::default();
     let mut terminal = false;
+    let mut error = None;
     for line in response.lines().filter(|line| !line.trim().is_empty()) {
         let event: Value = serde_json::from_str(line)
             .map_err(|_| "Command Code returned invalid NDJSON".to_owned())?;
@@ -713,6 +829,7 @@ fn parse_ndjson_response(bytes: &[u8]) -> Result<(Vec<ModelStreamEvent>, Usage),
                 terminal = true;
             }
             "error" => {
+                error = Some(parse_gateway_error(event, api_key));
                 events.push(ModelStreamEvent::Error {
                     message: "Command Code provider returned an error".into(),
                 });
@@ -728,10 +845,143 @@ fn parse_ndjson_response(bytes: &[u8]) -> Result<(Vec<ModelStreamEvent>, Usage),
         }
     }
     if terminal {
-        Ok((events, usage))
+        Ok(ParsedCommandCodeResponse {
+            events,
+            usage,
+            error,
+        })
     } else {
         Err("Command Code stream ended without a terminal event".into())
     }
+}
+
+/// Parse the error conventions used by Command Code 1.24.0 without turning remote text into an
+/// agent-visible error. In addition to object fields, the client recognizes a message shaped as
+/// `<status> {\"error\": {\"type\": ..., \"message\": ...}}`; preserve that useful diagnostic
+/// structure for trusted hosts.
+fn parse_gateway_error(event: &Map<String, Value>, api_key: &str) -> CommandCodeErrorReport {
+    let (mut message, direct_status, direct_retryable, mut error_type, error_code) =
+        match event.get("error") {
+            Some(Value::String(message)) if !message.is_empty() => {
+                (message.to_owned(), None, None, None, None)
+            }
+            Some(Value::Object(error)) => (
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .filter(|message| !message.is_empty())
+                    .unwrap_or("Command Code gateway emitted an error without a message")
+                    .to_owned(),
+                status_code(error.get("statusCode")).or_else(|| status_code(error.get("status"))),
+                error.get("isRetryable").and_then(Value::as_bool),
+                diagnostic_text(error.get("type"), api_key),
+                diagnostic_text(error.get("code"), api_key),
+            ),
+            _ => (
+                "Command Code gateway emitted an error without diagnostic details".into(),
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+    if let Some(embedded) = parse_embedded_error(&message) {
+        message = embedded.message;
+        error_type = embedded.error_type.or(error_type);
+        let status_code = embedded.status_code.or(direct_status);
+        let retryable = is_retryable(status_code, direct_retryable, &message);
+        return CommandCodeErrorReport {
+            source: CommandCodeErrorSource::Gateway,
+            message: redact_diagnostic_text(&message, api_key),
+            status_code,
+            error_type: error_type.map(|value| redact_diagnostic_text(&value, api_key)),
+            error_code,
+            retryable: Some(retryable),
+        };
+    }
+    let retryable = is_retryable(direct_status, direct_retryable, &message);
+    CommandCodeErrorReport {
+        source: CommandCodeErrorSource::Gateway,
+        message: redact_diagnostic_text(&message, api_key),
+        status_code: direct_status,
+        error_type,
+        error_code,
+        retryable: Some(retryable),
+    }
+}
+
+struct EmbeddedGatewayError {
+    message: String,
+    status_code: Option<u16>,
+    error_type: Option<String>,
+}
+
+fn parse_embedded_error(message: &str) -> Option<EmbeddedGatewayError> {
+    let json_start = message.find('{')?;
+    let payload: Value = serde_json::from_str(&message[json_start..]).ok()?;
+    let error = payload.get("error")?.as_object()?;
+    let embedded_message = error.get("message")?.as_str()?.trim();
+    if embedded_message.is_empty() {
+        return None;
+    }
+    let prefix = message[..json_start].trim();
+    Some(EmbeddedGatewayError {
+        message: embedded_message.to_owned(),
+        status_code: prefix.parse::<u16>().ok(),
+        error_type: error
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn status_code(value: Option<&Value>) -> Option<u16> {
+    value
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+}
+
+fn diagnostic_text(value: Option<&Value>, api_key: &str) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| redact_diagnostic_text(value, api_key))
+}
+
+fn is_retryable(status_code: Option<u16>, reported: Option<bool>, message: &str) -> bool {
+    if reported == Some(true) {
+        return true;
+    }
+    if let Some(status_code) = status_code {
+        return status_code == 429 || (500..=599).contains(&status_code);
+    }
+    reported != Some(false) && !has_terminal_marker(message)
+}
+
+fn has_terminal_marker(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "premium_credits_exhausted",
+        "model_not_in_plan",
+        "insufficient credits",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker))
+}
+
+fn redact_diagnostic_text(value: &str, api_key: &str) -> String {
+    const MAX_DIAGNOSTIC_CHARS: usize = 4_096;
+    let value = if api_key.is_empty() {
+        value.to_owned()
+    } else {
+        value.replace(api_key, "[redacted]")
+    };
+    if value.chars().count() <= MAX_DIAGNOSTIC_CHARS {
+        return value;
+    }
+    let truncated = value.chars().take(MAX_DIAGNOSTIC_CHARS).collect::<String>();
+    format!("{truncated}… [truncated]")
 }
 
 fn finish_reason(value: Option<&Value>) -> StopReason {
@@ -835,27 +1085,28 @@ mod tests {
 
     #[test]
     fn translates_ndjson_text_tool_usage_and_finish() {
-        let (events, usage) = parse_ndjson_response(
+        let parsed = parse_ndjson_response(
             br#"{"type":"text-delta","text":"hi"}
 {"type":"reasoning-delta","text":"thinking"}
 {"type":"tool-call","toolCallId":"call-1","toolName":"read","input":{"path":"README.md"}}
 {"type":"finish","finishReason":"tool-calls","totalUsage":{"inputTokens":12,"outputTokens":4,"reasoningTokens":2}}
 {"type":"provider-metadata","provider":"command-code"}"#,
+            "test-key",
         )
         .expect("NDJSON response parses");
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[0], ModelStreamEvent::TextDelta("hi".into()));
+        assert_eq!(parsed.events.len(), 3);
+        assert_eq!(parsed.events[0], ModelStreamEvent::TextDelta("hi".into()));
         assert_eq!(
-            events[1],
+            parsed.events[1],
             ModelStreamEvent::ToolCall(AssistantToolCall {
                 id: ToolCallId::new("call-1").expect("call id"),
                 name: "read".into(),
                 arguments: SerializedJson::new(r#"{"path":"README.md"}"#),
             })
         );
-        assert_eq!(events[2], ModelStreamEvent::End(StopReason::ToolUse));
+        assert_eq!(parsed.events[2], ModelStreamEvent::End(StopReason::ToolUse));
         assert_eq!(
-            usage,
+            parsed.usage,
             Usage {
                 input_tokens: Some(12),
                 output_tokens: Some(4),
@@ -866,16 +1117,50 @@ mod tests {
 
     #[test]
     fn remote_error_body_is_not_exposed_to_the_agent() {
-        let (events, usage) = parse_ndjson_response(
+        let parsed = parse_ndjson_response(
             br#"{"type":"error","error":{"message":"key test-key leaked remotely"}}"#,
+            "test-key",
         )
         .expect("error is a terminal provider event");
-        assert_eq!(usage, Usage::default());
+        assert_eq!(parsed.usage, Usage::default());
         assert_eq!(
-            events,
+            parsed.events,
             vec![ModelStreamEvent::Error {
                 message: "Command Code provider returned an error".into(),
             }]
+        );
+        assert_eq!(
+            parsed.error,
+            Some(CommandCodeErrorReport {
+                source: CommandCodeErrorSource::Gateway,
+                message: "key [redacted] leaked remotely".into(),
+                status_code: None,
+                error_type: None,
+                error_code: None,
+                retryable: Some(true),
+            })
+        );
+    }
+
+    #[test]
+    fn remote_error_report_preserves_gateway_classification_and_retry_advice() {
+        let parsed = parse_ndjson_response(
+            br#"{"type":"error","error":{"message":"429 {\"error\":{\"type\":\"rate_limit\",\"message\":\"slow down\"}}","statusCode":500,"isRetryable":false,"code":"upstream_failed"}}"#,
+            "test-key",
+        )
+        .expect("error is a terminal provider event");
+        assert_eq!(
+            parsed.error,
+            Some(CommandCodeErrorReport {
+                source: CommandCodeErrorSource::Gateway,
+                message: "slow down".into(),
+                status_code: Some(429),
+                error_type: Some("rate_limit".into()),
+                error_code: Some("upstream_failed".into()),
+                // Match Command Code's 1.24.0 rule: a reported status takes precedence over
+                // an explicit false retry hint, and 429 is retryable.
+                retryable: Some(true),
+            })
         );
     }
 
@@ -884,6 +1169,7 @@ mod tests {
         let error = parse_ndjson_response(
             br#"{"type":"finish","finishReason":"stop"}
 {"type":"text-delta","text":"late content"}"#,
+            "test-key",
         )
         .expect_err("content after finish is not valid Command Code stream grammar");
         assert_eq!(

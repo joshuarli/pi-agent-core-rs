@@ -257,6 +257,34 @@ class ControllerContractTests(unittest.TestCase):
                 baseline_id="upstream",
             )
 
+    def test_adapter_provider_error_retains_only_safe_classification(self) -> None:
+        result = {
+            "schema_version": controller.RESULT_SCHEMA,
+            "attempt_id": "attempt",
+            "baseline_id": "rust",
+            "terminal": {"status": "failed"},
+            "final_text": "",
+            "turns": 1,
+            "tool_calls": 0,
+            "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+            "trace": [],
+            "provider_error": {
+                "source": "gateway",
+                "status_code": 429,
+                "error_type": "rate_limit",
+                "error_code": "upstream_failed",
+                "retryable": True,
+            },
+        }
+        controller.validate_adapter_result(result, attempt_id="attempt", baseline_id="rust")
+        result["provider_error"]["message"] = "arbitrary remote payload"
+        with self.assertRaises(controller.ContractError):
+            controller.validate_adapter_result(result, attempt_id="attempt", baseline_id="rust")
+        del result["provider_error"]["message"]
+        result["provider_error"]["status_code"] = 99
+        with self.assertRaises(controller.ContractError):
+            controller.validate_adapter_result(result, attempt_id="attempt", baseline_id="rust")
+
     def test_summary_reports_success_rate_and_latency_quantiles(self) -> None:
         records = [
             {"baseline_id": "rust", "status": "success", "elapsed_ms": 10, "turns": 1, "tool_calls": 2, "usage": {"input": 3, "output": 4, "cache_read": 0, "cache_write": 0}},

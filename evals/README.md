@@ -244,7 +244,7 @@ never sufficient for a coding success: `interval-merge-v0` imports the submitted
 in a fresh Python process and exercises additional edge cases that are not in the task's test
 prompt.
 
-The adapter result must have this shape:
+The adapter result must have this shape; `provider_error` is optional:
 
 ```json
 {
@@ -256,6 +256,7 @@ The adapter result must have this shape:
   "turns": 3,
   "tool_calls": 4,
   "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+  "provider_error": {"source": "gateway", "status_code": 429, "error_type": "rate_limit", "error_code": null, "retryable": true},
   "trace": []
 }
 ```
@@ -263,7 +264,8 @@ The adapter result must have this shape:
 `trace` is retained as typed, redacted adapter data. The controller records task and capability
 hashes, baseline/profile/revision metadata, workspace-input hash, terminal status, oracle result,
 elapsed time, turns, calls, usage, timeout/cancellation, and exit status. Provider responses and
-secrets do not belong in the result artifact.
+secrets do not belong in the result artifact. `provider_error` is optional and contains only
+safe provider classification; adapters must not include a remote error message or raw response.
 
 The controller validates the result schema and the explicit `attempt_id`/`baseline_id` identity
 against the current invocation before invoking an oracle. A result with a valid shape but the
