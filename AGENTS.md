@@ -1,8 +1,9 @@
 # pi-agent-core-rs
 
 This repository is a headless Rust agent execution microkernel with a pinned
-Pi default coding profile. It is not Pi's CLI, TUI, session system, or an
-ambient project configuration layer. Rust owns mechanism; optional Luau owns
+Pi default coding profile. It is not Pi's CLI, session system, or an ambient
+project configuration layer; it also contains a small, repository-owned
+terminal host in `crates/pi-agent-tui`. Rust owns mechanism; optional Luau owns
 policy; embeddings own model transport and world capabilities.
 
 Start with [docs/overview.md](docs/overview.md). The main routes are:
@@ -10,11 +11,15 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
 - [Quickstart](docs/quickstart.md) for an application integration.
 - [Scope](docs/scope.md), [architecture](docs/architecture.md), and
   [semantics](docs/semantics.md) for the durable core contract.
-- [fixture format](parity/fixture-format.md), [parity guide](parity/README.md),
-  and [verification](docs/verification.md) for compatibility evidence.
-- [Default coding profile](docs/default-coding-profile.md),
-  [provider adapters](docs/provider-adapters.md), [tracing](docs/trace.md),
-  and [Luau extensions](docs/luau-extensions.md) for optional layers.
+- [Default coding profile](docs/default-coding-profile.md) and
+  [provider adapters](docs/provider-adapters.md) for optional runtime layers.
+- [Tracing](docs/trace.md) and [Luau extensions](docs/luau-extensions.md) for
+  optional observability and policy layers.
+- [Terminal host](docs/tui.md) for the repository-owned `pi-agent` TUI.
+- [Quality evaluation](docs/quality-evaluation.md) and
+  [verification](docs/verification.md) for compatibility and quality evidence.
+- [fixture format](parity/fixture-format.md) and [parity guide](parity/README.md)
+  for fixture-based compatibility work.
 - [`V1.md`](V1.md) for remaining programmable-policy work.
 
 ## Working contract

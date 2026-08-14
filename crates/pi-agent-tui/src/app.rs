@@ -9,7 +9,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use pi_agent_core::compaction::CompactionHandle;
 use pi_agent_core::event::{AgentEventKind, CompactionOutcome};
 use pi_agent_core::provider::{
-    ConfiguredProvider, ProviderConfiguration, ProviderRegistry, RegistryError,
+    openai::OpenAiContextHook, ConfiguredProvider, ProviderConfiguration, ProviderRegistry,
+    RegistryError,
 };
 use pi_agent_core::state::AgentPhase;
 use pi_agent_core::{
@@ -19,7 +20,10 @@ use pi_agent_core::{
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
+use std::sync::{
+    mpsc::{sync_channel, Receiver, TryRecvError},
+    Arc,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Explicit command-line inputs accepted by the v0 terminal host.
@@ -225,8 +229,7 @@ pub struct TranscriptLine {
 }
 
 /// Presentation-only status for the fixed status line.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum UiStatus {
     /// No operation currently owns the core agent.
     #[default]
@@ -236,7 +239,6 @@ pub enum UiStatus {
     /// A concise local notice is displayed.
     Notice(String),
 }
-
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Picker {
@@ -581,9 +583,7 @@ impl App {
         let tools = DefaultCodingTools::new(&workspace)
             .map_err(|error| AppError::Setup(format!("invalid --cwd: {error}")))?;
         self.workspace = Some(tools.workspace().as_path().to_path_buf());
-        let builder = Agent::builder()
-            .pinned_default_coding_profile(tools)
-            .map_err(|error| AppError::Setup(error.to_string()))?;
+        let builder = build_host_agent(tools)?;
         self.attach_agent(builder.build());
 
         match (self.options.provider(), self.options.model()) {
@@ -1118,6 +1118,20 @@ fn os_text(value: &OsStr, flag: &str) -> Result<String, AppError> {
         .ok_or_else(|| AppError::Setup(format!("{flag} must be valid UTF-8")))
 }
 
+/// Build the agent shared by the interactive host and its headless tests.
+///
+/// Provider adapters consume the standard OpenAI-compatible context produced by the host
+/// policy hook. Keeping this assembly in one function makes a headless provider probe exercise
+/// the same boundary as the terminal application.
+pub fn build_host_agent(
+    tools: DefaultCodingTools,
+) -> Result<pi_agent_core::AgentBuilder, AppError> {
+    Agent::builder()
+        .hooks(Arc::new(OpenAiContextHook))
+        .pinned_default_coding_profile(tools)
+        .map_err(|error| AppError::Setup(error.to_string()))
+}
+
 fn provider_candidates(registry: &ProviderRegistry, filter: &str) -> Vec<String> {
     let filter = filter.to_ascii_lowercase();
     registry
@@ -1251,7 +1265,36 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pi_agent_core::scheduler::{
+        CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    };
     use pi_agent_core::state::{Message, MessageId};
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct ContextCheckingProvider;
+
+    impl ModelProvider for ContextCheckingProvider {
+        fn stream<'a>(
+            &'a self,
+            request: ModelRequest,
+            _cancellation: CancellationToken,
+        ) -> ModelFuture<'a> {
+            let events = if request.context == r#"[{"content":"hello","role":"user"}]"# {
+                vec![
+                    ModelStreamEvent::TextDelta("ok".into()),
+                    ModelStreamEvent::End(pi_agent_core::state::StopReason::EndTurn),
+                ]
+            } else {
+                vec![ModelStreamEvent::Error {
+                    message: "OpenRouter received invalid converted context".into(),
+                }]
+            };
+            Box::pin(std::future::ready(
+                Ok(Box::new(ModelStream { events }) as _),
+            ))
+        }
+    }
 
     #[test]
     fn cli_rejects_ambiguous_and_unknown_inputs() {
@@ -1316,6 +1359,30 @@ mod tests {
     fn civil_date_epoch_is_stable_without_a_time_dependency() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20_000), (2024, 10, 4));
+    }
+
+    #[test]
+    fn headless_host_agent_sends_openai_compatible_context() {
+        smol::block_on(async {
+            let workspace = std::env::current_dir().expect("test workspace");
+            let tools = DefaultCodingTools::new(workspace).expect("default tools");
+            let agent = build_host_agent(tools)
+                .expect("host agent builder")
+                .model(ModelDescriptor {
+                    provider: "openrouter".into(),
+                    model: "inclusionai/ling-3.0-tiny:free".into(),
+                    revision: None,
+                })
+                .model_provider(Arc::new(ContextCheckingProvider))
+                .build();
+
+            agent
+                .start_prompt("hello")
+                .expect("start prompt")
+                .drive()
+                .await
+                .expect("headless host request should be valid JSON");
+        });
     }
 
     #[test]

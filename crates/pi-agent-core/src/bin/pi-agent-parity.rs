@@ -1368,6 +1368,9 @@ fn normalize_event(
     turn_offset: u64,
 ) -> Result<JsonValue, String> {
     let (kind, data) = match &event.kind {
+        AgentEventKind::CompactionStart { .. } => ("compaction_start", empty_object()),
+        AgentEventKind::CompactionResult { .. } => ("compaction_result", empty_object()),
+        AgentEventKind::CompactionEnd { .. } => ("compaction_end", empty_object()),
         AgentEventKind::AgentStart => ("agent_start", empty_object()),
         AgentEventKind::AgentEnd { .. } => ("agent_end", empty_object()),
         AgentEventKind::TurnStart { turn_id } => (

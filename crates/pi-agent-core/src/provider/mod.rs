@@ -7,6 +7,9 @@
 mod registry;
 mod retry;
 
+#[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
+pub mod openai;
+
 pub use registry::{
     ConfiguredProvider, ModelDescriptor, ModelSelection, ProviderCapabilities,
     ProviderConfiguration, ProviderConfigurationKind, ProviderEntry, ProviderRegistry,

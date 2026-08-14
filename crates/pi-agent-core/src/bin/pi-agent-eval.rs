@@ -6,10 +6,10 @@
 //! explicit workspace, profile, and Smol-owned execution boundaries.
 
 use pi_agent_core::event::AgentEventKind;
-use pi_agent_core::hooks::{AfterToolCall, BeforeToolCall, ContextEnvelope, HookSet, NextTurn};
 use pi_agent_core::provider::commandcode::{
     CommandCodeConfig, CommandCodeHostContext, CommandCodeProvider,
 };
+use pi_agent_core::provider::openai::OpenAiContextHook;
 use pi_agent_core::provider::openrouter::{
     OpenRouterConfig, OpenRouterCostReport, OpenRouterProvider,
 };
@@ -124,122 +124,11 @@ impl Args {
     }
 }
 
-/// The exact context-to-OpenAI-message conversion needed by this evaluation transport.
-///
-/// It is an adapter hook, not core behavior. The durable core transcript remains its own typed
-/// data; this hook serializes a narrow, standard Chat Completions message array for the selected
-/// OpenRouter transport.
-#[derive(Debug, Default)]
-struct OpenAiContextHook;
-
-impl HookSet for OpenAiContextHook {
-    fn before_tool_call(
-        &self,
-        _call: &pi_agent_core::tool::ToolCall,
-    ) -> Result<BeforeToolCall, pi_agent_core::error::HookError> {
-        Ok(BeforeToolCall::Allow)
-    }
-
-    fn after_tool_call(
-        &self,
-        _call: &pi_agent_core::tool::ToolCall,
-        _result: &pi_agent_core::tool::ToolResult,
-    ) -> Result<AfterToolCall, pi_agent_core::error::HookError> {
-        Ok(AfterToolCall::default())
-    }
-
-    fn transform_context(
-        &self,
-        context: ContextEnvelope,
-    ) -> Result<ContextEnvelope, pi_agent_core::error::HookError> {
-        Ok(context)
-    }
-
-    fn convert_to_llm(
-        &self,
-        context: ContextEnvelope,
-    ) -> Result<String, pi_agent_core::error::HookError> {
-        let messages = context
-            .messages
-            .iter()
-            .map(openai_message)
-            .collect::<Result<Vec<_>, _>>()?;
-        JsonValue::Array(messages)
-            .to_json_string()
-            .map_err(|error| {
-                pi_agent_core::error::HookError::new("convert_to_llm", error.to_string())
-            })
-    }
-
-    fn should_stop_after_turn(
-        &self,
-        _context: &ContextEnvelope,
-    ) -> Result<bool, pi_agent_core::error::HookError> {
-        Ok(false)
-    }
-
-    fn prepare_next_turn(
-        &self,
-        _context: ContextEnvelope,
-    ) -> Result<NextTurn, pi_agent_core::error::HookError> {
-        Ok(NextTurn::default())
-    }
-}
-
-fn openai_message(message: &Message) -> Result<JsonValue, pi_agent_core::error::HookError> {
-    match message {
-        Message::User { content, .. } => Ok(JsonValue::object([
-            ("role", JsonValue::from("user")),
-            ("content", JsonValue::from(content.clone())),
-        ])),
-        Message::Assistant {
-            content,
-            tool_calls,
-            ..
-        } => {
-            let calls = tool_calls
-                .iter()
-                .map(|call| {
-                    JsonValue::object([
-                        ("id", JsonValue::from(call.id.as_str())),
-                        ("type", JsonValue::from("function")),
-                        (
-                            "function",
-                            JsonValue::object([
-                                ("name", JsonValue::from(call.name.clone())),
-                                ("arguments", JsonValue::from(call.arguments.as_str())),
-                            ]),
-                        ),
-                    ])
-                })
-                .collect::<Vec<_>>();
-            Ok(JsonValue::object([
-                ("role", JsonValue::from("assistant")),
-                (
-                    "content",
-                    if content.is_empty() {
-                        JsonValue::Null
-                    } else {
-                        JsonValue::from(content.clone())
-                    },
-                ),
-                ("tool_calls", JsonValue::Array(calls)),
-            ]))
-        }
-        Message::ToolResult {
-            tool_call_id,
-            content,
-            ..
-        } => Ok(JsonValue::object([
-            ("role", JsonValue::from("tool")),
-            ("tool_call_id", JsonValue::from(tool_call_id.as_str())),
-            ("content", JsonValue::from(content.clone())),
-        ])),
-    }
-}
-
 fn event_name(event: &AgentEventKind) -> &'static str {
     match event {
+        AgentEventKind::CompactionStart { .. } => "compaction_start",
+        AgentEventKind::CompactionResult { .. } => "compaction_result",
+        AgentEventKind::CompactionEnd { .. } => "compaction_end",
         AgentEventKind::AgentStart => "agent_start",
         AgentEventKind::TurnStart { .. } => "turn_start",
         AgentEventKind::MessageStart { .. } => "message_start",
@@ -407,6 +296,8 @@ fn terminal_code(result: &Result<(), pi_agent_core::CoreError>) -> Option<&'stat
         Err(pi_agent_core::CoreError::ActiveRun { .. }) => Some("active_run"),
         Err(pi_agent_core::CoreError::InvalidTransition(_)) => Some("invalid_transition"),
         Err(pi_agent_core::CoreError::RunFinished { .. }) => Some("run_finished"),
+        Err(pi_agent_core::CoreError::Compaction(_)) => Some("compaction"),
+        Err(pi_agent_core::CoreError::MissingCompactor) => Some("missing_compactor"),
     }
 }
 

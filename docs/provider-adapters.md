@@ -117,6 +117,12 @@ command-line harness practical.
 
 ## Context and stream mapping
 
+Hosts using either concrete adapter should install
+`pi_agent_core::provider::openai::OpenAiContextHook` on the agent. It converts
+the core transcript to the standard Chat Completions message array consumed by
+both adapters. The core default `NoHooks` value is intentionally diagnostic
+Rust text and is not a provider wire format.
+
 The Command Code adapter consumes a caller-converted standard Chat
 Completions JSON message array from `ModelRequest.context`. It maps textual
 user/assistant messages and function-style assistant tool calls into the

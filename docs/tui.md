@@ -48,6 +48,23 @@ variables, but it must never log them or move credential discovery into core.
 No preferences, keys, model choices, themes, keymaps, or sessions are
 persisted.
 
+For a reproducible provider check without terminal state, use the headless
+probe. It assembles the same default profile and OpenAI-compatible context
+hook as `pi-agent`, then drives one OpenRouter prompt and prints the assistant
+text. The probe does not read `.env`; source that file explicitly at the shell
+boundary:
+
+```bash
+set -a
+. ./.env
+set +a
+make tui-smoke
+```
+
+Provider failures are returned as a non-zero process result with their local
+error classification, which makes this a useful first check before debugging
+terminal rendering or input handling.
+
 The registry is checked-in, feature-selected Rust data. It exposes stable
 provider/model identifiers, optional source-backed context capacity, explicit
 custom-model resolution, configuration family, and provider capabilities. It
