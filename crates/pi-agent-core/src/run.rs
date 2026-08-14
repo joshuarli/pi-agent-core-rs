@@ -798,7 +798,51 @@ impl RunHandle {
         while !pending.is_empty() {
             match next_parallel_step(&mut pending, &updates).await {
                 ParallelToolStep::Updates(pending_updates) => {
+                    let update_call_ids = pending_updates
+                        .iter()
+                        .map(|(tool_call_id, _, _)| tool_call_id.clone())
+                        .collect::<std::collections::BTreeSet<_>>();
                     self.emit_tool_updates(agent, pending_updates).await?;
+                    if self.cancellation.is_cancelled() {
+                        // Pi's parallel scheduler gives the sibling calls a
+                        // terminal result before it settles the call whose
+                        // update requested cancellation. Keeping that call
+                        // pending retains its normal completion semantics.
+                        // A sibling is polled once only: an already-ready
+                        // result is safe to preserve, while a pending future
+                        // is dropped and turned into a cancellation result so
+                        // a cancellation-unaware tool cannot hold the run.
+                        let mut still_running = Vec::new();
+                        for mut pending_call in std::mem::take(&mut pending) {
+                            if update_call_ids.contains(&pending_call.call.id) {
+                                still_running.push(pending_call);
+                                continue;
+                            }
+                            let execution = std::future::poll_fn(|context| {
+                                match pending_call.future.as_mut().poll(context) {
+                                    Poll::Ready(result) => Poll::Ready(Some(result)),
+                                    Poll::Pending => Poll::Ready(None),
+                                }
+                            })
+                            .await;
+                            updates.close(&pending_call.call.id);
+                            self.flush_tool_updates(agent, &updates).await?;
+                            let (result, terminate) = match execution {
+                                Some(result) => {
+                                    self.finalize_executed_tool(agent, &pending_call.call, result)
+                                        .await?
+                                }
+                                None => (
+                                    error_tool_result(&pending_call.call, "Operation aborted"),
+                                    false,
+                                ),
+                            };
+                            self.emit_tool_execution_end(agent, &pending_call.call, &result)
+                                .await?;
+                            completions[pending_call.source_index] = Some((result, terminate));
+                        }
+                        pending = still_running;
+                    }
                 }
                 ParallelToolStep::Completed {
                     completed,

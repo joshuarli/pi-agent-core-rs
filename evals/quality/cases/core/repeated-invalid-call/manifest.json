@@ -1,0 +1,114 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "repeated-invalid-call",
+  "description": "The model repeats the same schema-invalid write call three times before sending one corrected call; host mutation must remain single-shot.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 5501,
+    "issue_url": "https://github.com/earendil-works/pi/issues/5501",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Keep reporting validation errors without mutating state; accept the first valid write.",
+    "model": { "provider": "fixture", "id": "quality-repeated-invalid-call" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "write_value",
+        "description": "Store one deterministic value at a logical path.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "value": { "type": "string" }
+          },
+          "required": ["path", "value"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Repeat the invalid call until it is corrected." }
+  ],
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1 },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-invalid-repeat-001", "name": "write_value", "arguments": { "value": "one" } },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 2 },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-invalid-repeat-002", "name": "write_value", "arguments": { "value": "one" } },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 3 },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-invalid-repeat-003", "name": "write_value", "arguments": { "value": "one" } },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 4 },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-valid-repeat-001", "name": "write_value", "arguments": { "path": "/logical/output", "value": "one" } },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 5 },
+      "emit": [
+        { "type": "text_delta", "text": "one mutation" },
+        { "type": "done", "stop_reason": "stop" }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "write_value",
+        "calls": [
+          {
+            "arguments": { "path": "/logical/output", "value": "one" },
+            "result": {
+              "is_error": false,
+              "content": [{ "type": "text", "text": "stored once" }]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "observations": {
+    "measure": [
+      "whether each invalid call is rejected before execution",
+      "whether each error remains associated with its own call id",
+      "whether the repeated invalid arguments remain byte-for-byte identical",
+      "whether the valid call mutates the host exactly once and settles"
+    ],
+    "metrics": ["consecutive_identical_tool_error_count", "identical_invalid_call_retries", "duplicate_mutating_calls", "tool_validation_errors", "max_consecutive_tool_errors", "model_calls"],
+    "invariants": ["no_invalid_call_executes", "no_mutation_before_valid_call", "valid_mutation_count_is_one", "run_settled"]
+  }
+}

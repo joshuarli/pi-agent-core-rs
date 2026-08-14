@@ -1,0 +1,51 @@
+{
+  "format_version": 1,
+  "kind": "quality_coding_case",
+  "id": "express-3936-medium",
+  "scope": "coding",
+  "description": "res.cookie must ignore null and undefined maxAge without invalid dates.",
+  "source": {
+    "repository": "https://github.com/kyuz0/pi-bench.git",
+    "commit": "8fbd7c6015a1ebaf1fd1d2bf257d066106aa3bb5",
+    "path": "tasks/curated/medium.json",
+    "task_id": "express-3936-medium"
+  },
+  "baseline": {
+    "repository": "https://github.com/expressjs/express.git",
+    "commit": "1cc816993832eba829a2f556f7c08e27e6371301",
+    "fix_commit": "5855339455a7f60774bef4166829e742a5056fa8",
+    "fix_parent": "1cc816993832eba829a2f556f7c08e27e6371301",
+    "fix_summary": "Fix behavior of null/undefined as maxAge in res.cookie"
+  },
+  "task": {
+    "prompt": "Fix the behavior of `null` and `undefined` when passed as `maxAge` in `res.cookie`. Currently, if `maxAge` is present in the options but null or undefined, the calculation `Date.now() + opts.maxAge` can result in `NaN` or incorrect values. Ensure that `maxAge` is parsed and validated as a real number before using it to calculate `opts.expires` and updating `opts.maxAge`.",
+    "expected_behavior": "res.cookie should safely ignore or parse maxAge if null/undefined without crashing or producing NaN dates."
+  },
+  "setup": {
+    "clean_worktree": true,
+    "network": false,
+    "tools": ["read", "bash", "edit", "write"],
+    "dependency_cache": "package-lock-sha256"
+  },
+  "validators": {
+    "full": {
+      "audit_command": "npm install && npm test",
+      "commands": [["npm", "install"], ["npm", "test"]],
+      "timeout_seconds": 900
+    },
+    "fast": {
+      "script": "fast-validator.js",
+      "command": ["node", "{validator_script}", "{workspace}"],
+      "timeout_seconds": 60,
+      "evidence": {
+        "baseline": "fails",
+        "known_correct": "passes",
+        "direct_regression": true,
+        "baseline_exit_code": 1,
+        "known_correct_exit_code": 0,
+        "baseline_commit": "1cc816993832eba829a2f556f7c08e27e6371301",
+        "known_correct_commit": "5855339455a7f60774bef4166829e742a5056fa8"
+      }
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "partial-tool-call-stream-error",
+  "description": "A tool call starts and receives an incomplete argument fragment before the provider stream fails; a later prompt probes pending-call cleanup.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 6019,
+    "issue_url": "https://github.com/earendil-works/pi/issues/6019",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Do not execute an incomplete tool call; settle the failed stream and remain reusable.",
+    "model": { "provider": "fixture", "id": "quality-partial-tool-call-stream-error" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "write_value",
+        "description": "Store one deterministic value at a logical path.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "value": { "type": "string" }
+          },
+          "required": ["path", "value"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Begin a write, then fail before its arguments finish." },
+    { "kind": "prompt", "text": "Probe the agent after the incomplete call failed." }
+  ],
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-partial-001", "name": "write_value" },
+        { "type": "tool_call_delta", "id": "call-partial-001", "arguments_delta": "{\"path\":\"/logical/output\"" },
+        {
+          "type": "stream_error",
+          "reason": "transport",
+          "code": "FIXTURE_STREAM_BROKEN_AFTER_TOOL_START",
+          "message": "stream ended before tool call finalization"
+        }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 2, "message_roles": ["system", "user", "assistant", "user"] },
+      "emit": [
+        { "type": "text_delta", "text": "no pending write" },
+        { "type": "done", "stop_reason": "stop" }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      { "name": "write_value", "calls": [] }
+    ]
+  },
+  "observations": {
+    "measure": [
+      "whether the incomplete call is ever passed to the tool executor",
+      "pending-tool state and assistant-message representation at stream failure",
+      "terminal stop reason and settlement events",
+      "whether the second prompt can run without stale partial-call state"
+    ],
+    "metrics": ["tool_calls_total", "tool_execution_start_count", "pending_tools_at_end", "pending_model_stream_at_end", "agent_reusable_after_error", "model_calls"],
+    "invariants": ["incomplete_tool_never_executes", "no_orphan_pending_tool_at_end", "run_settled", "no_events_after_agent_end"]
+  }
+}

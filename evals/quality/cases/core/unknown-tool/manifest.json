@@ -1,0 +1,107 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "unknown-tool",
+  "description": "A non-empty tool name that is absent from the registered capability set is followed by a valid corrective call.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": null,
+    "source_note": "Synthetic separation of the unknown-name validation path required by the quality-suite contract; no issue report is treated as an expected-output specification.",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "parity/fixtures/declarative/unknown-tool-continues.json",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "When a tool is unavailable, report the error and use an available tool.",
+    "model": { "provider": "fixture", "id": "quality-unknown-tool" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return the supplied text.",
+        "parameters": {
+          "type": "object",
+          "properties": { "text": { "type": "string" } },
+          "required": ["text"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Try the unavailable tool, then recover." }
+  ],
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        {
+          "type": "tool_call_start",
+          "id": "call-unknown-001",
+          "name": "definitely_not_registered",
+          "arguments": { "text": "first attempt" }
+        },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 2, "message_roles": ["system", "user", "assistant", "tool"] },
+      "emit": [
+        {
+          "type": "tool_call_start",
+          "id": "call-echo-001",
+          "name": "echo",
+          "arguments": { "text": "corrected" }
+        },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 3, "message_roles": ["system", "user", "assistant", "tool", "assistant", "tool"] },
+      "emit": [
+        { "type": "text_delta", "text": "recovered" },
+        { "type": "done", "stop_reason": "stop" }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "echo",
+        "calls": [
+          {
+            "arguments": { "text": "corrected" },
+            "result": {
+              "is_error": false,
+              "content": [{ "type": "text", "text": "corrected" }]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "observations": {
+    "measure": [
+      "the unknown-tool validation path and error representation",
+      "whether any host executor is invoked for call-unknown-001",
+      "the error toolResult and its association in the next request",
+      "whether the corrective echo call executes and how many model calls recover"
+    ],
+    "metrics": ["model_calls", "unknown_tool_errors", "tool_execution_errors", "tool_calls_to_recovery", "turns_to_recovery"],
+    "invariants": ["unknown_tool_never_executes", "every_tool_result_matches_a_call", "run_settled"]
+  }
+}

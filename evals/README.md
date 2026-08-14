@@ -1,4 +1,101 @@
-# Comparative coding evaluations
+# Evaluation and quality gates
+
+This directory contains the repository's small, evidence-first evaluation
+gates. They validate the Rust port against pinned upstream Pi behavior; they
+are not a leaderboard or a port of Pi's interactive product.
+
+## Quality-suite contract
+
+The quality suite separates two parity targets which must not be conflated:
+
+- `upstream-core` compares the pinned `pi-agent-core` source with Rust on
+  provider-free scripted model/tool scenarios. It is the strict oracle for
+  state transitions, model context, validation/recovery, stream settlement,
+  cancellation, lifecycle, and tool ordering.
+- `upstream-coding-profile` compares Pi's pinned default coding prompt/tool
+  profile with Rust on three real Express fixes. It is an ecological outcome
+  check, not a byte-identical trajectory test.
+
+Neither target invokes a host `pi` executable or includes TUI/session-product
+behavior: tree navigation, rendering, themes, keyboard handling, persistent
+Pi sessions, extension UI, and session JSONL are all outside the contract.
+Issue reports may inspire deterministic cases, but the oracle is always the
+behavior of the current pinned upstream source captured by the adapter.
+
+## Quality tiers
+
+`fast` is the normal, provider-free parity gate. It currently contains ten
+strict scenarios: malformed/unknown tools, invalid-argument recovery and
+retries, stream errors, empty tool-use, partial calls, parallel ordering, and
+single/parallel cancellation.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality fast --out /tmp/pi-quality-fast
+PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality replay /tmp/pi-quality-fast/unknown-tool/report.json
+```
+
+Every run retains the case manifest, shared fixture, pinned adapter results,
+canonical traces, normalized request fingerprints, first-divergence report,
+metrics, and per-adapter process peak RSS. Replay is offline: it verifies the
+stored request fingerprints and rebuilds the trace report without adapters,
+credentials, or network access.
+
+`coding` is a manual provider-opt-in check for exactly three pinned `pi-bench`
+Express tasks: `express-4744-easy`, `express-3936-medium`, and
+`express-4205-hard`. Success is determined by the selected deterministic fast
+or full test validator, never an LLM judge. Each adapter gets a fresh detached
+exact-commit worktree; only lockfile-keyed npm download content is shared.
+
+```sh
+python3 -m evals.quality prepare-cache --cache-root /tmp/pi-quality-cache
+python3 -m evals.quality coding --allow-provider \
+  --model deepseek/deepseek-v4-flash-0731 \
+  --cache-root /tmp/pi-quality-cache \
+  --workspace-root /tmp/pi-quality-workspaces \
+  --out /tmp/pi-quality-coding --validator fast
+```
+
+`full` adds all deterministic core cases and the original `npm install && npm
+test` audit validators. Live adapters are explicitly launched through
+`vault OPENROUTER_API_KEY -- …`; the evaluator never reads or forwards the
+secret.
+
+## Metrics and resource interpretation
+
+For deterministic cases, exact comparison includes event/lifecycle state,
+request fingerprints, tool calls/results/error classes, retries, and
+source/start/completion/context-result ordering. The report leads with the
+first semantic divergence rather than an aggregate similarity score.
+
+The suite also records peak RSS for each upstream/Rust adapter process and
+offers a Rust-only allocation probe:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality resources --out /tmp/pi-quality-resources.json
+```
+
+`rustybench::AllocProfiler` reports Rust allocation count/bytes and peak live
+allocation bytes for one provider-free harness turn. Node has no equivalent
+instrumentation here, so allocation counts are not cross-language metrics.
+RSS/timing are diagnostic only and do not gate semantic parity.
+
+The upstream coding-profile adapter builds the prompt and `read`, `bash`,
+`edit`, and `write` tools from pinned Pi source, then normalizes only
+installation-specific documentation paths to the captured profile's fixed
+virtual paths. It does not load ambient Pi settings/resources or expose the
+Vault key to child tools. It intentionally does not import
+`createAgentSession`: the shallow upstream pin lacks an unrelated generated
+model-catalog file needed merely to import that factory, and hydrating it would
+mutate the pin and add a hidden network prerequisite.
+
+The exact Pi coding tools are not filesystem sandboxed. Run the live tier only
+inside a disposable sandbox/VM with dedicated cache and workspace paths.
+
+For implementation detail and commands, see
+[`quality/README.md`](quality/README.md). Rust uses the repository's pinned
+`nightly-2026-07-24`, never stable, and no evaluation adapter uses Tokio.
+
+## Comparative coding evaluation controller
 
 This directory is the final V0 quality gate. It is an end-to-end comparison of the pinned
 upstream headless Pi SDK profile and `PiDefaultCodingProfile`; it is not another semantic parity

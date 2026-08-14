@@ -57,6 +57,8 @@ downstream optional layers.
 - [Default coding profile](default-coding-profile.md) — captured prompt, tools,
   operation adapters, and update procedure.
 - [Verification](verification.md) — required checks and completed V0 evidence.
+- [Quality evaluation](quality-evaluation.md) — deterministic trace parity,
+  three pinned Express tasks, replay artifacts, and resource diagnostics.
 - [Tracing](trace.md) — optional trajectory observer boundary.
 - [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
   bindings, coroutine-backed tools, limits, and review rules.

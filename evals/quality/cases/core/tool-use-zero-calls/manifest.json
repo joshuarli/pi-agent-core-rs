@@ -1,0 +1,55 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "tool-use-zero-calls",
+  "description": "The provider returns a tool-use stop reason with an explicitly empty tool-call list, allowing current termination semantics to be captured.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 2119,
+    "issue_url": "https://github.com/earendil-works/pi/issues/2119",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Record the provider result exactly, including an empty tool-use turn.",
+    "model": { "provider": "fixture", "id": "quality-tool-use-zero-calls" },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Return an empty tool-use result." }
+  ],
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        { "type": "done", "stop_reason": "tool_use", "tool_calls": [] }
+      ]
+    }
+  ],
+  "host": { "tools": [] },
+  "observations": {
+    "measure": [
+      "whether another model turn is attempted despite zero calls",
+      "whether the run terminates and which events are emitted",
+      "final state, stop reason, and pending-tool count"
+    ],
+    "metrics": ["model_calls", "tool_calls_total", "turn_end_count", "agent_end_count", "pending_tools_at_end"],
+    "invariants": ["no_host_tool_executor_invocation", "run_settled", "no_pending_tools_at_end"]
+  }
+}

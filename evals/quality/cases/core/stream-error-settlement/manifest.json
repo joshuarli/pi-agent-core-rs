@@ -1,0 +1,71 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "stream-error-settlement",
+  "description": "The provider emits a partial text response and then a deterministic transport error; a later prompt probes settlement and reuse.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 2119,
+    "issue_url": "https://github.com/earendil-works/pi/issues/2119",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Settle every provider stream and remain reusable after a transport error.",
+    "model": { "provider": "fixture", "id": "quality-stream-error-settlement" },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Trigger one partial provider response." },
+    { "kind": "prompt", "text": "Use the same agent after the provider error." }
+  ],
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        { "type": "text_delta", "text": "partial" },
+        {
+          "type": "stream_error",
+          "reason": "transport",
+          "code": "FIXTURE_STREAM_BROKEN",
+          "message": "deterministic stream failure"
+        }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 2, "message_roles": ["system", "user", "assistant", "user"] },
+      "emit": [
+        { "type": "text_delta", "text": "reusable" },
+        { "type": "done", "stop_reason": "stop" }
+      ]
+    }
+  ],
+  "host": { "tools": [] },
+  "observations": {
+    "measure": [
+      "whether the run settles within the watchdog",
+      "terminal agent event count and whether streaming is cleared",
+      "pending tools and asynchronous tasks at settlement",
+      "the partial assistant representation and provider error class",
+      "whether the second prompt invokes the provider and reaches a settled run"
+    ],
+    "metrics": ["run_settled", "run_timeout", "agent_end_count", "pending_model_stream_at_end", "agent_reusable_after_error", "model_calls"],
+    "invariants": ["no_hang", "exactly_one_terminal_settlement_per_run", "no_events_after_agent_end"]
+  }
+}

@@ -23,6 +23,10 @@ smol = { workspace = true, optional = true }
 
 [dev-dependencies]
 smol = { workspace = true }
+# Quality-only allocation profiling. This is the same `AllocProfiler::system()`
+# global-allocator pattern used by the local `e` project; it is never linked
+# into the core library or production adapters.
+rustybench = "=0.1.0"
 
 [[bin]]
 name = "pi-agent-parity"
@@ -33,3 +37,7 @@ required-features = ["parity-runner"]
 name = "pi-agent-eval"
 path = "src/bin/pi-agent-eval.rs"
 required-features = ["eval-runner"]
+
+[[bench]]
+name = "quality_memory"
+harness = false

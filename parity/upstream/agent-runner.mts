@@ -438,27 +438,51 @@ function makeStreamFunction(
 	abortCurrentRun: () => void,
 	onRequest: () => void,
 	requestTrace: JsonObject[],
+	captureRequests: boolean,
 ) {
 	let callIndex = 0;
-	return (model: { provider: string; id: string }, context: { messages: unknown[] }, options?: { signal?: AbortSignal; reasoning?: string }) => {
+	return (
+		model: { provider: string; id: string },
+		context: { systemPrompt?: string; messages: unknown[]; tools?: unknown[] },
+		options?: { signal?: AbortSignal; reasoning?: string },
+	) => {
 		onRequest();
-		const requestContext = context.messages
-			.map((message) => {
-				const value = object(message, "request context message");
-				const content = array(value.content, "request context message.content");
-				return content
-					.map((part) => {
-						const text = object(part, "request context content").text;
-						return typeof text === "string" ? text : "";
-					})
-					.join("");
-			})
-			.join("|");
-		requestTrace.push({
-			context: requestContext,
-			model: { provider: model.provider, id: model.id },
-			thinking_level: options?.reasoning ?? "off",
-		});
+		if (captureRequests) {
+			requestTrace.push({
+				system_prompt: context.systemPrompt ?? "",
+				messages: context.messages.map(normalizeMessage),
+				host_messages: [],
+				tools: (context.tools ?? []).map((tool) => {
+					const value = object(tool, "request tool");
+					return {
+						name: string(value.name, "request tool.name"),
+						description: string(value.description, "request tool.description"),
+						parameters: object(value.parameters, "request tool.parameters"),
+					};
+				}),
+				model: { provider: model.provider, id: model.id },
+				thinking_level: options?.reasoning ?? "off",
+			});
+		}
+		if (!captureRequests) {
+			const requestContext = context.messages
+				.map((message) => {
+					const value = object(message, "request context message");
+					const content = array(value.content, "request context message.content");
+					return content
+						.map((part) => {
+							const text = object(part, "request context content").text;
+							return typeof text === "string" ? text : "";
+						})
+						.join("");
+				})
+				.join("|");
+			requestTrace.push({
+				context: requestContext,
+				model: { provider: model.provider, id: model.id },
+				thinking_level: options?.reasoning ?? "off",
+			});
+		}
 		const rawTurn = modelScript[callIndex++];
 		if (!rawTurn) invalid("agent made more model requests than model_script provides");
 		const turn = object(rawTurn, "model_script[*]");
@@ -613,10 +637,11 @@ async function main(): Promise<void> {
 	const modelScript = array(fixture.model_script, "model_script");
 	let streamRequests = 0;
 	const requestTrace: JsonObject[] = [];
+	const qualityCaptureRequests = process.env.PI_AGENT_QUALITY_CAPTURE === "1";
 	const initialModel = fixtureModel(string(model.provider, "setup.model.provider"), string(model.id, "setup.model.id"));
 	const streamFn = makeStreamFunction(modelScript, requestCancellation, () => {
 		streamRequests += 1;
-	}, requestTrace);
+	}, requestTrace, qualityCaptureRequests);
 
 	const agent = new Agent({
 		streamFn,
@@ -790,7 +815,7 @@ async function main(): Promise<void> {
 		},
 		error: null,
 	};
-	if (contextHooks !== undefined) result.request_trace = requestTrace;
+	if (contextHooks !== undefined || qualityCaptureRequests) result.request_trace = requestTrace;
 	if (observerGate) {
 		result.observer_settlement = {
 			agent_end_observed: true,

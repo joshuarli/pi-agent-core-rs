@@ -1,0 +1,51 @@
+{
+  "format_version": 1,
+  "kind": "quality_coding_case",
+  "id": "express-4205-hard",
+  "scope": "coding",
+  "description": "Unanchored regexp middleware must match only a path prefix before trimming req.url.",
+  "source": {
+    "repository": "https://github.com/kyuz0/pi-bench.git",
+    "commit": "8fbd7c6015a1ebaf1fd1d2bf257d066106aa3bb5",
+    "path": "tasks/curated/hard.json",
+    "task_id": "express-4205-hard"
+  },
+  "baseline": {
+    "repository": "https://github.com/expressjs/express.git",
+    "commit": "bdc2c973a468d83f3af7d57d862f74ca97e71322",
+    "fix_commit": "99a369f3d51bafcf0c09657250067249f19d04f5",
+    "fix_parent": "a1dbb113779c45a10f56a910de1bc5f7e750eaea",
+    "fix_summary": "Fix incorrect middleware execution with unanchored RegExps"
+  },
+  "task": {
+    "prompt": "Fix incorrect middleware execution with unanchored RegExps in the router. When a route uses a RegExp without the '^' anchor, the path matching can incorrectly slice the URL, causing downstream middleware to receive malformed paths. Update the router's `handle` method in `lib/router/index.js` to correctly extract the path from the unanchored match so that it doesn't leave remnants of the match in the req.url for downstream routes.",
+    "expected_behavior": "Unanchored regexes should not cause incorrect URL slicing for downstream middleware."
+  },
+  "setup": {
+    "clean_worktree": true,
+    "network": false,
+    "tools": ["read", "bash", "edit", "write"],
+    "dependency_cache": "package-lock-sha256"
+  },
+  "validators": {
+    "full": {
+      "audit_command": "npm install && npm test",
+      "commands": [["npm", "install"], ["npm", "test"]],
+      "timeout_seconds": 900
+    },
+    "fast": {
+      "script": "fast-validator.js",
+      "command": ["node", "{validator_script}", "{workspace}"],
+      "timeout_seconds": 60,
+      "evidence": {
+        "baseline": "fails",
+        "known_correct": "passes",
+        "direct_regression": true,
+        "baseline_exit_code": 1,
+        "known_correct_exit_code": 0,
+        "baseline_commit": "bdc2c973a468d83f3af7d57d862f74ca97e71322",
+        "known_correct_commit": "99a369f3d51bafcf0c09657250067249f19d04f5"
+      }
+    }
+  }
+}

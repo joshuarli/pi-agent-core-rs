@@ -143,6 +143,10 @@ struct FixtureHooks {
     after_tool_replace: Option<FixtureAfterToolReplace>,
     context_hooks: Option<FixtureContextHooks>,
     should_stop_after_turn: bool,
+    /// The quality adapter enables this explicitly to retain the logical
+    /// pre-conversion request envelope. Normal parity output remains byte-for-
+    /// byte stable unless `PI_AGENT_QUALITY_CAPTURE=1` is set.
+    request_contexts: Option<Arc<Mutex<Vec<ContextEnvelope>>>>,
 }
 
 /// A deterministic, explicitly held `agent_end` observer used to prove that terminal
@@ -268,6 +272,12 @@ impl HookSet for FixtureHooks {
         &self,
         context: ContextEnvelope,
     ) -> Result<String, pi_agent_core::error::HookError> {
+        if let Some(request_contexts) = &self.request_contexts {
+            request_contexts
+                .lock()
+                .expect("fixture quality request-context mutex poisoned")
+                .push(context.clone());
+        }
         if let Some(policy) = &self.context_hooks {
             let host_messages = context
                 .host_messages
@@ -980,6 +990,10 @@ async fn run_fixture(fixture: Fixture) -> Result<JsonValue, String> {
         streams: Mutex::new(streams.into()),
         requests: Arc::new(Mutex::new(Vec::new())),
     });
+    let quality_capture_requests =
+        env::var("PI_AGENT_QUALITY_CAPTURE").ok().as_deref() == Some("1");
+    let quality_request_contexts =
+        quality_capture_requests.then(|| Arc::new(Mutex::new(Vec::new())));
     let active_queue_target = Arc::new(Mutex::new(None));
     let observer_gate = hold_agent_end_observer.then(|| Arc::new(FixtureObserverGate::default()));
     if observer_gate.is_some()
@@ -1006,12 +1020,14 @@ async fn run_fixture(fixture: Fixture) -> Result<JsonValue, String> {
         || after_tool_replace.is_some()
         || context_hooks.is_some()
         || should_stop_after_turn
+        || quality_capture_requests
     {
         builder = builder.hooks(Arc::new(FixtureHooks {
             before_tool_policy,
             after_tool_replace,
             context_hooks: context_hooks.clone(),
             should_stop_after_turn,
+            request_contexts: quality_request_contexts.clone(),
         }));
     }
     if let Some(context_hooks) = &context_hooks {
@@ -1214,6 +1230,29 @@ async fn run_fixture(fixture: Fixture) -> Result<JsonValue, String> {
             "request_trace",
             JsonValue::Array(requests.iter().map(normalize_request).collect()),
         ));
+    } else if quality_capture_requests {
+        let requests = model_provider
+            .requests
+            .lock()
+            .expect("fixture model request mutex poisoned");
+        let contexts = quality_request_contexts
+            .as_ref()
+            .expect("quality request capture must allocate contexts")
+            .lock()
+            .expect("fixture quality request-context mutex poisoned");
+        if requests.len() != contexts.len() {
+            return Err("quality request capture count does not match model request count".into());
+        }
+        result_fields.push((
+            "request_trace",
+            JsonValue::Array(
+                requests
+                    .iter()
+                    .zip(contexts.iter())
+                    .map(|(request, context)| normalize_quality_request(request, context))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        ));
     }
     if observer_gate.is_some() {
         result_fields.push((
@@ -1252,6 +1291,75 @@ fn normalize_request(request: &ModelRequest) -> JsonValue {
             JsonValue::from(thinking_level_name(request.thinking_level)),
         ),
     ])
+}
+
+/// Normalize the request at the shared logical boundary before a provider
+/// adapter serializes it. The upstream runner captures this same semantic
+/// surface, so request fingerprints retain ordering and schemas without
+/// conflating a transport's wire format with core parity.
+fn normalize_quality_request(
+    request: &ModelRequest,
+    context: &ContextEnvelope,
+) -> Result<JsonValue, String> {
+    Ok(JsonValue::object([
+        (
+            "system_prompt",
+            JsonValue::from(request.system_prompt.clone()),
+        ),
+        (
+            "messages",
+            JsonValue::Array(
+                context
+                    .messages
+                    .iter()
+                    .map(normalize_message)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        ),
+        (
+            "host_messages",
+            JsonValue::Array(
+                context
+                    .host_messages
+                    .iter()
+                    .map(|message| JsonValue::from(message.as_str().to_owned()))
+                    .collect(),
+            ),
+        ),
+        (
+            "tools",
+            JsonValue::Array(
+                request
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        JsonValue::object([
+                            ("name", JsonValue::from(tool.name.clone())),
+                            ("description", JsonValue::from(tool.description.clone())),
+                            ("parameters", tool.schema.clone()),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "model",
+            request
+                .model
+                .as_ref()
+                .map(|model| {
+                    JsonValue::object([
+                        ("provider", JsonValue::from(model.provider.clone())),
+                        ("id", JsonValue::from(model.model.clone())),
+                    ])
+                })
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "thinking_level",
+            JsonValue::from(thinking_level_name(request.thinking_level)),
+        ),
+    ]))
 }
 
 fn normalize_event(

@@ -21,6 +21,18 @@ source-profile gates in [`parity/README.md`](../parity/README.md) and
 [`parity/profile/README.md`](../parity/profile/README.md). A new supported
 behavior requires a ledger row and deterministic fixture before implementation.
 
+For the trace-first quality gate, run:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality fast
+PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality resources
+```
+
+The live three-Express-task check is manual and requires explicit provider
+authorization. Its hermetic adapter, cache procedure, full validator, replay,
+and resource interpretation are documented in
+[`evals/quality/README.md`](../evals/quality/README.md).
+
 ## Completion evidence
 
 - The parity corpus compares the pinned upstream SDK, Rust runner, and checked

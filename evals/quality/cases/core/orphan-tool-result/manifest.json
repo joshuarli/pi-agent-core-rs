@@ -1,0 +1,44 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "orphan-tool-result",
+  "description": "Optional probe for an initial toolResult without a preceding assistant tool call; retained as excluded metadata because the public agent API cannot construct this state.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 2119,
+    "issue_url": "https://github.com/earendil-works/pi/issues/2119",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "informational",
+  "status": "excluded",
+  "oracle": {
+    "kind": "not_applicable_until_public_construction_exists",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "excluded",
+  "execution": {
+    "enabled": false,
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "reason": "No supported public constructor injects an initial orphan toolResult; do not add a production test-only escape hatch."
+  },
+  "scenario": {
+    "initial_messages": [
+      { "role": "tool_result", "tool_call_id": "call-orphan-001", "is_error": false, "content": "orphan result" }
+    ],
+    "next_operation": "start_model_request"
+  },
+  "observations": {
+    "measure": [
+      "whether a future public API can construct the initial state",
+      "once constructible, whether upstream sanitizes, rejects, forwards, or fails before provider invocation"
+    ],
+    "metrics": ["orphan_tool_results", "model_calls"],
+    "invariants": ["excluded_from_core_parity_gate", "no_private_api_or_test_only_production_hook"]
+  }
+}

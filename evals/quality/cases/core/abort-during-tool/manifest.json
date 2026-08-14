@@ -1,0 +1,89 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "abort-during-tool",
+  "description": "A single tool signals that execution started and waits on an explicit abort barrier; cancellation is injected at that boundary.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 5177,
+    "issue_url": "https://github.com/earendil-works/pi/issues/5177",
+    "source_note": "The issue is used only to motivate programmatic cancellation of active tool work; interactive key handling is out of scope.",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Start the gate tool and observe programmatic cancellation.",
+    "model": { "provider": "fixture", "id": "quality-abort-during-tool" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "gate",
+        "description": "Signal start, then wait for the run's abort barrier.",
+        "parameters": { "type": "object", "additionalProperties": false }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Start gate and cancel after it begins." }
+  ],
+  "control": {
+    "cancel": {
+      "after_event": "tool_execution_start",
+      "tool": "gate",
+      "release_barrier": "abort-during-tool"
+    }
+  },
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-gate-001", "name": "gate", "arguments": {} },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "gate",
+        "calls": [
+          {
+            "arguments": {},
+            "start_signal": "gate-started",
+            "wait_for_barrier": "abort-during-tool",
+            "on_cancel": "return_cancelled_result",
+            "result": {
+              "is_error": true,
+              "content": [{ "type": "text", "text": "gate observed cancellation" }]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "observations": {
+    "measure": [
+      "whether the tool receives cancellation and whether it finishes anyway",
+      "toolResult presence, error/cancel status, and call association",
+      "assistant/tool messages retained after abort",
+      "stop reason, agent_end timing, pending tools, and reusability after cancellation"
+    ],
+    "metrics": ["tool_cancellations", "tool_execution_errors", "pending_tools_at_end", "agent_reusable_after_cancel", "cancel_to_settlement_latency"],
+    "invariants": ["no_tool_starts_after_cancel", "run_settled", "no_events_after_agent_end"]
+  }
+}

@@ -640,6 +640,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "lexopt"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "803ec87c9cfb29b9d2633f20cba1f488db3fd53f2158b1024cbefb47ba05d413"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -869,6 +875,7 @@ dependencies = [
  "jsonschema",
  "pi-agent-protocol",
  "pi-agent-trace",
+ "rustybench",
  "serde_json",
  "smol",
 ]
@@ -1039,6 +1046,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1068,6 +1081,24 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rustybench"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b30d630ac8c78e1d96607fcbb39803f30c641602723f4fea9ee5e7fb99f000d"
+dependencies = [
+ "lexopt",
+ "miniserde",
+ "regex-lite",
+ "rustybench-macros",
+]
+
+[[package]]
+name = "rustybench-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "909f333eabde4ac2811394ae88d2cf3f4273bc7a7dceb4508a229e7d0860e843"
 
 [[package]]
 name = "scopeguard"

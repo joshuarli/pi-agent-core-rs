@@ -1,0 +1,134 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "abort-during-parallel-tools",
+  "description": "A parallel assistant batch prepares A, B, and C; A starts immediately while B and C wait, then cancellation is injected at A's start barrier.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 5177,
+    "issue_url": "https://github.com/earendil-works/pi/issues/5177",
+    "source_note": "The issue is reduced to structured core cancellation; interactive Escape/Ctrl-C and TUI state are excluded.",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Prepare A, B, and C in parallel and record exactly what cancellation interrupts.",
+    "model": { "provider": "fixture", "id": "quality-abort-during-parallel-tools" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "A",
+        "description": "Immediate parallel worker that waits for cancellation.",
+        "execution_mode": "parallel",
+        "parameters": { "type": "object", "additionalProperties": false }
+      },
+      {
+        "name": "B",
+        "description": "Prepared parallel worker waiting for the cancellation barrier.",
+        "execution_mode": "parallel",
+        "parameters": { "type": "object", "additionalProperties": false }
+      },
+      {
+        "name": "C",
+        "description": "Prepared parallel worker waiting for the cancellation barrier.",
+        "execution_mode": "parallel",
+        "parameters": { "type": "object", "additionalProperties": false }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Start the parallel batch, then abort at A's start." }
+  ],
+  "control": {
+    "cancel": {
+      "after_event": "tool_execution_start",
+      "tool": "A",
+      "release_barrier": "abort-parallel-tools"
+    }
+  },
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        { "type": "tool_call_start", "id": "call-A-abort-001", "name": "A", "arguments": {} },
+        { "type": "tool_call_start", "id": "call-B-abort-001", "name": "B", "arguments": {} },
+        { "type": "tool_call_start", "id": "call-C-abort-001", "name": "C", "arguments": {} },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    }
+  ],
+  "host": {
+    "parallel_batch": {
+      "prepare_order": ["A", "B", "C"],
+      "start_policy": {
+        "A": "immediate",
+        "B": "wait_for:abort-parallel-tools",
+        "C": "wait_for:abort-parallel-tools"
+      },
+      "cancel_after": "A.tool_execution_start"
+    },
+    "tools": [
+      {
+        "name": "A",
+        "calls": [
+          {
+            "arguments": {},
+            "start_signal": "A-started",
+            "wait_for_barrier": "abort-parallel-tools",
+            "on_cancel": "return_cancelled_result",
+            "result": { "is_error": true, "content": [{ "type": "text", "text": "A observed cancellation" }] }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "calls": [
+          {
+            "arguments": {},
+            "prepared_signal": "B-prepared",
+            "wait_for_barrier": "abort-parallel-tools",
+            "status_if_not_started": "cancelled_before_start",
+            "result": { "is_error": true, "content": [{ "type": "text", "text": "B did not start before cancellation" }] }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "calls": [
+          {
+            "arguments": {},
+            "prepared_signal": "C-prepared",
+            "wait_for_barrier": "abort-parallel-tools",
+            "status_if_not_started": "cancelled_before_start",
+            "result": { "is_error": true, "content": [{ "type": "text", "text": "C did not start before cancellation" }] }
+          }
+        ]
+      }
+    ]
+  },
+  "observations": {
+    "measure": [
+      "which calls were prepared and which actually started",
+      "which tools observed cancellation and whether any started after abort",
+      "events emitted after cancellation and result-message insertion",
+      "final pending-tool state and terminal settlement"
+    ],
+    "metrics": ["parallel_batches", "max_parallel_width", "tool_calls_started_after_cancel", "tool_cancellations", "pending_tools_at_end", "agent_end_count"],
+    "invariants": ["no_tool_starts_after_cancel", "no_leaked_pending_tool_task", "run_settled", "no_events_after_agent_end"]
+  }
+}

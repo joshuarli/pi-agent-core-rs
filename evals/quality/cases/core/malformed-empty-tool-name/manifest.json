@@ -1,0 +1,85 @@
+{
+  "format_version": 1,
+  "kind": "quality_core_case",
+  "id": "malformed-empty-tool-name",
+  "description": "A provider stream contains a tool call with a known id, an empty name, and a minimal argument object; a second scripted request makes in-memory continuation observable.",
+  "source": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "issue": 3108,
+    "issue_url": "https://github.com/earendil-works/pi/issues/3108",
+    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
+    "role": "scenario_inspiration",
+    "historical_behavior_is_oracle": false
+  },
+  "scope": "core",
+  "parity": "strict",
+  "oracle": {
+    "kind": "current_pinned_upstream_capture",
+    "historical_issue_expectation": "not_an_oracle"
+  },
+  "adapter_fixture": "generated",
+  "execution": {
+    "deterministic": true,
+    "network": false,
+    "wall_clock": false,
+    "watchdog_ms": 1000
+  },
+  "setup": {
+    "system_prompt": "Validate every assistant tool call before continuing.",
+    "model": { "provider": "fixture", "id": "quality-malformed-empty-tool-name" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return the supplied text.",
+        "parameters": {
+          "type": "object",
+          "properties": { "text": { "type": "string" } },
+          "required": ["text"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Handle the malformed call, then continue." }
+  ],
+  "model_script": [
+    {
+      "expect_request": { "ordinal": 1, "message_roles": ["system", "user"] },
+      "emit": [
+        {
+          "type": "tool_call_start",
+          "id": "call-empty-name-001",
+          "name": "",
+          "arguments": {}
+        },
+        { "type": "done", "stop_reason": "tool_use" }
+      ]
+    },
+    {
+      "expect_request": { "ordinal": 2, "message_roles": ["system", "user", "assistant"] },
+      "emit": [
+        { "type": "text_delta", "text": "continuation observed" },
+        { "type": "done", "stop_reason": "stop" }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      { "name": "echo", "calls": [] }
+    ]
+  },
+  "observations": {
+    "measure": [
+      "whether the empty-name call enters stored assistant message state",
+      "whether validation synthesizes a toolResult/error for call-empty-name-001",
+      "whether a second model request is attempted",
+      "the exact normalized context sent to that second request",
+      "the terminal stop reason and lifecycle settlement"
+    ],
+    "metrics": ["model_calls", "tool_validation_errors", "malformed_name_errors", "tool_calls_after_terminal_condition"],
+    "invariants": ["run_settled", "no_pending_tools_at_end", "no_events_after_agent_end"]
+  }
+}
