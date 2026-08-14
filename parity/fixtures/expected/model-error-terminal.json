@@ -1,0 +1,33 @@
+{
+  "format_version": 1,
+  "kind": "canonical_parity_result",
+  "fixture_id": "model-error-terminal",
+  "outcome": "completed",
+  "settled": true,
+  "state": {
+    "system_prompt": "Return an answer if the model accepts the request.",
+    "model": { "provider": "fixture", "id": "deterministic-model-error" },
+    "thinking_level": "off",
+    "tool_names": [],
+    "pending_tool_calls": []
+  },
+  "events": [
+    { "seq": 0, "type": "agent_start", "data": {} },
+    { "seq": 1, "type": "turn_start", "data": { "turn": 0 } },
+    { "seq": 2, "type": "message_start", "data": { "role": "user" } },
+    { "seq": 3, "type": "message_end", "data": { "role": "user" } },
+    { "seq": 4, "type": "message_start", "data": { "role": "assistant" } },
+    { "seq": 5, "type": "message_update", "data": { "role": "assistant", "delta": "partial response" } },
+    { "seq": 6, "type": "message_end", "data": { "role": "assistant" } },
+    { "seq": 7, "type": "turn_end", "data": { "stop_reason": "error" } },
+    { "seq": 8, "type": "agent_end", "data": {} },
+    { "seq": 9, "type": "agent_settled", "data": { "outcome": "completed" } }
+  ],
+  "messages": [
+    { "role": "user", "content": [{ "type": "text", "text": "Trigger the deterministic provider failure." }] },
+    { "role": "assistant", "content": [{ "type": "text", "text": "partial response" }] }
+  ],
+  "last_response": { "api": "fixture", "stop_reason": "error" },
+  "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 },
+  "error": null
+}

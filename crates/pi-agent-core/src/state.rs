@@ -70,12 +70,18 @@ pub enum ThinkingLevel {
     Default,
     /// Disable additional reasoning where the provider supports it.
     Off,
+    /// Request the smallest explicit reasoning budget.
+    Minimal,
     /// Request a low reasoning budget.
     Low,
     /// Request a medium reasoning budget.
     Medium,
     /// Request a high reasoning budget.
     High,
+    /// Request an extra-high reasoning budget.
+    XHigh,
+    /// Request the maximum reasoning budget.
+    Max,
 }
 
 /// Provider-independent model identity.
@@ -120,6 +126,11 @@ pub enum Message {
         id: MessageId,
         content: String,
         tool_calls: Vec<AssistantToolCall>,
+        /// Terminal model stop reason, when this is the finalized assistant message.
+        /// `None` is used for a partial streaming snapshot.
+        stop_reason: Option<StopReason>,
+        /// Provider/model diagnostic for an error or aborted response.
+        error_message: Option<String>,
     },
     /// Result injected after a tool invocation.
     ToolResult {
@@ -127,6 +138,9 @@ pub enum Message {
         tool_call_id: ToolCallId,
         tool_name: String,
         content: String,
+        details: Option<SerializedJson>,
+        usage: Option<Usage>,
+        added_tool_names: Vec<String>,
         is_error: bool,
     },
 }
@@ -160,6 +174,10 @@ pub enum StopReason {
     EndTurn,
     /// The provider requested tool execution.
     ToolUse,
+    /// The provider stopped because the output token limit was reached.
+    Length,
+    /// The provider aborted generation independently of host cancellation.
+    Aborted,
     /// The host cancelled the run.
     Cancelled,
     /// The provider or host failed.
@@ -212,6 +230,12 @@ pub struct AgentState {
     pub thinking_level: ThinkingLevel,
     /// Canonical conversation history.
     pub messages: Vec<Message>,
+    /// Explicit host-only context retained beside the transcript.
+    ///
+    /// The core does not invent a UI-message type or send these values to a
+    /// provider by default. A context hook may filter or convert them at the
+    /// model boundary.
+    pub host_messages: Vec<SerializedJson>,
     /// Current ownership phase.
     pub phase: AgentPhase,
     /// Partial assistant content while a model stream is active.
@@ -232,6 +256,7 @@ impl Default for AgentState {
             model: None,
             thinking_level: ThinkingLevel::Default,
             messages: Vec::new(),
+            host_messages: Vec::new(),
             phase: AgentPhase::Idle,
             partial_response: None,
             is_streaming: false,
@@ -257,6 +282,7 @@ impl AgentState {
             model: self.model.clone(),
             thinking_level: self.thinking_level,
             messages: self.messages.clone(),
+            host_messages: self.host_messages.clone(),
             phase: self.phase,
             partial_response: self.partial_response.clone(),
             is_streaming: self.is_streaming,
@@ -277,6 +303,8 @@ pub struct AgentSnapshot {
     pub thinking_level: ThinkingLevel,
     /// Canonical conversation history.
     pub messages: Vec<Message>,
+    /// Explicit host-only context retained beside the transcript.
+    pub host_messages: Vec<SerializedJson>,
     /// Current ownership phase.
     pub phase: AgentPhase,
     /// Partial assistant content, if streaming.

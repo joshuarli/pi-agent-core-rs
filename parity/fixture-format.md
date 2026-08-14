@@ -76,22 +76,42 @@ normalized output. It must not contain a path escape, an absolute path, or a pro
 Tool definitions are only capabilities supplied to the agent. They do not grant ambient
 filesystem, process, clock, network, or environment access.
 
+`setup.context_hooks` is an optional, closed V0 fixture adapter for the context boundary. It
+exists to compare the pinned SDK and Rust without embedding runner-specific callbacks in a case.
+When present it requires:
+
+```json
+{
+  "host_messages": ["host-only"],
+  "transform_append_host_message": "transformed",
+  "convert_prefix": "converted:",
+  "prepare_next_turn": {
+    "host_messages": ["replacement"],
+    "model": {"provider": "replacement-provider", "id": "replacement-model"},
+    "thinking_level": "high"
+  }
+}
+```
+
+The runners retain these values as explicit host context, append the transform value before each
+conversion, and record the resulting request context, model, and thinking level in canonical
+`request_trace`. `prepare_next_turn` replaces those three values only for the following request.
+This directive is deliberately data-only; arbitrary callback source remains out of the format.
+
 ### `actions`
 
 Actions are applied in order. Version 1 defines:
 
 * `{ "kind": "prompt", "text": string }` — add a user message and start inference.
 * `{ "kind": "continue" }` — continue from the settled state without adding a user message.
-* `{ "kind": "cancel", "boundary": string }` — request cancellation at the named deterministic
-  boundary (`model_stream`, `tool_prepare`, `tool_execute`, or `between_turns`).
 
 An action consumes one `model_script` turn when inference is started. A fixture must provide
 enough turns for its actions. Extra turns are an error, rather than silently ignored input.
 
 The currently checked-in V0 adapters implement a deliberately closed action slice: ordered
-`steer`, `follow_up`, `prompt`, and `continue` actions. They reject `cancel` until a differential
-case extends both adapters. The format reserves cancellation boundaries so fixture data does not
-need a schema migration when that work lands.
+`steer`, `follow_up`, `prompt`, and `continue` actions. Deterministic model-stream cancellation
+uses the explicit `model_script[*].cancel_after` checkpoint described below; arbitrary timing,
+wall-clock cancellation, and ambient provider behavior remain outside this format.
 
 ### `model_script`
 
@@ -100,15 +120,20 @@ translate it into their respective provider-stream interfaces. Each entry is one
 `chunks` are emitted in order. Version 1 chunk kinds are:
 
 * `text_delta` with a string `text`;
-* `thinking_delta` with a string `text`;
 * `tool_call` with a stable fixture-local `id`, `name`, and JSON `arguments`;
-* `done` with `stop_reason` (`stop`, `tool_call`, `length`, or `error`) and a complete `usage`
+* `done` with `stop_reason` (`stop`, `tool_call`, or `length`) and a complete `usage`
   object;
-* `error` with a typed `kind` and stable `message`.
+* `error` with `reason` (`error` or `aborted`), stable `message`, and complete `usage`.
 
 Every turn ends in exactly one `done` or `error` chunk. A `tool_call` done turn is followed by
-the tool result and, unless the fixture cancels, the next scripted inference turn. Scripted
+the tool result and, unless the fixture reaches a terminal condition, the next scripted inference turn. Scripted
 arguments are data, not executable code.
+
+`cancel_after` is an optional adapter-owned deterministic cancellation checkpoint. V0 supports
+`"cancel_after": "text_delta"`: after the first scripted text delta, both adapters truncate the
+response, request host cancellation, and settle an `aborted` assistant turn with the stable
+diagnostic `Operation aborted`. This is a fixture scheduling directive, not a wall-clock delay or
+provider behavior. A later action may start another prompt to verify reuse after cancellation.
 
 ### `host`
 
@@ -140,11 +165,43 @@ turn before returning, allowing a fixture to assert completion ordering without 
 exists to exercise `tool_execution_update` ordering and is runner data rather than an ambient
 progress channel.
 
+`enqueue_during_execution` is an optional closed queue-arrival directive with
+`{ "kind": "steer" | "follow_up", "text": string }`. It requires `yield_once: true`, so the
+message is enqueued after one deterministic poll/microtask while the tool and its owning run are
+still active. `steer` is drained before the immediate tool-continuation request; `follow_up`
+waits until that continuation would otherwise leave the run idle. It is a fixture host callback,
+not an ambient concurrent user-input source.
+
+`result.terminate` is an optional boolean batch hint. A completed tool batch suppresses its next
+model request only when every finalized result has `terminate: true`; omitted is false. The value
+is scheduler metadata, not an extra transcript field.
+
+`cancel_after_update: true` is an optional deterministic cancellation checkpoint on a host tool
+call. It is valid only when that call supplies at least one `updates` value: both adapters emit the
+first update, request cancellation through the active run scope, and preserve the pinned lifecycle
+that follows. It is not a timeout and does not use a wall clock.
+
 For the current hook slice, `host.before_tool_call` may be `{ "tool_name": string, "reason":
-string }`. It blocks exactly that named call after schema validation and creates the stated error
-tool result. `host.after_tool_call` may be `{ "tool_name": string, "content": string,
-"is_error": boolean }`; it replaces those terminal result fields after execution. Other hook
-behavior is added only with an upstream differential fixture.
+string, "terminate"?: boolean, "yield_once"?: boolean, "cancel_after_yield"?: boolean }`. It
+blocks exactly that named call after schema validation and creates the stated error tool result;
+`terminate: true` replaces its batch hint. `yield_once` makes the before-hook await one
+deterministic executor turn. `cancel_after_yield: true` requires `yield_once: true`, requests
+cancellation from the active run after that await, and then returns `Allow`; the subsequent
+tool preparation records `Operation aborted` and the next model request observes the cancelled
+scope. `host.after_tool_call` may be `{ "tool_name": string, "content": string,
+"is_error": boolean, "terminate"?: boolean }`; it replaces those terminal result fields after
+execution. When supplied, `terminate` replaces the finalized batch hint. Other hook behavior is
+added only with an upstream differential fixture.
+
+`host.should_stop_after_turn` may be a boolean. When true, it stops the run immediately after
+the current `turn_end`, before queue polling or another model request.
+
+`host.observer` may be `{ "hold_agent_end": true }`. The runners register an awaited listener
+that pauses exactly at `agent_end`; after observing that the agent is still active, the fixture
+releases it and verifies idle settlement. Canonical output gains `observer_settlement` with the
+three booleans `agent_end_observed`, `active_before_release`, and `idle_after_release`. This
+closed directive tests listener settlement, not the intentionally separate lossy subscription
+channel.
 
 ### `assertions`
 
@@ -155,6 +212,10 @@ Assertions are intentionally a small projection of the canonical result. They ma
 Missing assertion fields mean “do not assert this field”; they do not mean “ignore a required
 canonical result field.” For a complete golden result, put the full canonical result in
 `fixtures/expected/<id>.json`.
+
+Canonical output contains `request_trace` only for fixtures using `setup.context_hooks`. Each
+entry contains the converted context plus the request model and thinking level, so a later-turn
+replacement cannot be masked by matching terminal text alone.
 
 ## Fixture classes
 

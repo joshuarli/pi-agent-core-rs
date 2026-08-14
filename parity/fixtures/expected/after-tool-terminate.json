@@ -1,0 +1,58 @@
+{
+  "format_version": 1,
+  "kind": "canonical_parity_result",
+  "fixture_id": "after-tool-terminate",
+  "outcome": "completed",
+  "settled": true,
+  "state": {
+    "system_prompt": "Use the supplied tool once.",
+    "model": { "provider": "fixture", "id": "deterministic-after-terminate" },
+    "thinking_level": "off",
+    "tool_names": ["echo"],
+    "pending_tool_calls": []
+  },
+  "events": [
+    { "seq": 0, "type": "agent_start", "data": {} },
+    { "seq": 1, "type": "turn_start", "data": { "turn": 0 } },
+    { "seq": 2, "type": "message_start", "data": { "role": "user" } },
+    { "seq": 3, "type": "message_end", "data": { "role": "user" } },
+    { "seq": 4, "type": "message_start", "data": { "role": "assistant" } },
+    { "seq": 5, "type": "message_end", "data": { "role": "assistant" } },
+    {
+      "seq": 6,
+      "type": "tool_execution_start",
+      "data": { "tool_call_id": "call-after-terminate", "tool_name": "echo" }
+    },
+    {
+      "seq": 7,
+      "type": "tool_execution_end",
+      "data": { "tool_call_id": "call-after-terminate", "tool_name": "echo", "is_error": false }
+    },
+    { "seq": 8, "type": "message_start", "data": { "role": "tool_result" } },
+    { "seq": 9, "type": "message_end", "data": { "role": "tool_result" } },
+    { "seq": 10, "type": "turn_end", "data": { "stop_reason": "tool_call" } },
+    { "seq": 11, "type": "agent_end", "data": {} },
+    { "seq": 12, "type": "agent_settled", "data": { "outcome": "completed" } }
+  ],
+  "messages": [
+    { "role": "user", "content": [{ "type": "text", "text": "Echo once." }] },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_call",
+          "id": "call-after-terminate",
+          "name": "echo",
+          "arguments": { "text": "input" }
+        }
+      ]
+    },
+    {
+      "role": "tool_result",
+      "content": [{ "type": "text", "text": "final policy result" }]
+    }
+  ],
+  "last_response": { "api": "fixture", "stop_reason": "tool_call" },
+  "usage": { "input": 3, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 4 },
+  "error": null
+}

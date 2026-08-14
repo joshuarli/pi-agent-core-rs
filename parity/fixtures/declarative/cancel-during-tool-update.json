@@ -1,0 +1,59 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "cancel-during-tool-update",
+  "description": "A tool progress callback requests cancellation while tool work is active; the current run settles without another model request.",
+  "setup": {
+    "system_prompt": "Use the supplied progress tool.",
+    "model": { "provider": "fixture", "id": "deterministic-tool-cancellation" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "progress",
+        "description": "Emit one deterministic progress update.",
+        "parameters": { "type": "object", "additionalProperties": false }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Start progress then cancel." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call_cancel_tool_001", "name": "progress", "arguments": {} },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "progress",
+        "calls": [
+          {
+            "arguments": {},
+            "updates": ["working"],
+            "cancel_after_update": true,
+            "result": {
+              "is_error": false,
+              "content": [{ "type": "text", "text": "completed after cancellation" }]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": { "outcome": "cancelled" }
+}

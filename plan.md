@@ -358,9 +358,9 @@ executor-owning: it may compose `Send` futures but must not call `smol::block_on
 executor, spawn background work, or expose Tokio types. Applications create and drive the Smol
 executor. Parallel tool work is composed within the run rather than detached from it.
 
-Cancellation is a structured, executor-agnostic protocol concern. Select its small concrete
-implementation during the dependency review; its public behavior must not depend on Tokio or
-on a global runtime.
+Cancellation is a structured, executor-agnostic protocol concern. V0 uses its small in-core
+`CancellationToken`, whose `cancelled()` future wakes provider/tool/hook adapters without a Tokio
+type or global runtime.
 
 Compile and test against the checked-in nightly toolchain in `rust-toolchain.toml`. There is no
 stable-Rust or MSRV compatibility target.
@@ -368,9 +368,16 @@ stable-Rust or MSRV compatibility target.
 For example:
 
 ```rust
-type ModelFuture<'a> = Pin<Box<dyn Future<Output = Result<AssistantStream, ModelTransportError>> + Send + 'a>>;
+type ModelFuture<'a> = Pin<Box<dyn Future<Output = Result<Box<dyn ModelEventStream>, SchedulerError>> + Send + 'a>>;
 
-pub trait ModelStream: Send + Sync {
+pub trait ModelEventStream: Send {
+    fn next_event<'a>(
+        &'a mut self,
+        cancel: CancellationToken,
+    ) -> ModelEventFuture<'a>;
+}
+
+pub trait ModelProvider: Send + Sync {
     fn stream<'a>(
         &'a self,
         request: ModelRequest,
@@ -378,6 +385,10 @@ pub trait ModelStream: Send + Sync {
     ) -> ModelFuture<'a>;
 }
 ```
+
+The provider future resolves once the response source exists; the core reduces one event before
+polling for the next. `ModelStream` remains a finite deterministic replay adapter, not the
+production streaming contract.
 
 `ModelRequest` should contain only what the agent loop actually needs:
 
@@ -959,10 +970,10 @@ Do not call the parity milestone complete until these pass.
 
 # 23. Concurrency and race testing
 
-After semantic parity, run focused tests plus `cargo fmt`, `cargo clippy`, `cargo nextest`,
+After semantic parity, run focused tests plus `cargo fmt`, `cargo clippy`, `cargo test`,
 coverage, and Miri where practical. Consider `loom` only for the narrow synchronization boundary
 where deterministic interleaving exploration adds value. The core contains no unsafe Rust and
-compiles with warnings denied.
+compiles with warnings denied. Do not add a test-runner dependency merely to replace `cargo test`.
 
 Stress the pure Rust runtime with 100 and 1,000 deterministic agents, parallel tool batches,
 high cancellation churn, repeated reuse after failure, slow and dropped event observers, and
@@ -973,11 +984,12 @@ workspaces; it must not create sessions or consult host configuration.
 
 # 24. Fuzz/property testing
 
-Use `proptest` for source-ordered tool-result insertion regardless of completion order;
-terminal-state cleanup (`is_streaming == false`, no pending calls); cancellation settlement and
-reuse; balanced message/event lifecycles; and profile composition where active tools determine
-the generated prompt. Every run starts and ends exactly once; every tool start has at most one
-terminal end.
+Use deterministic property-style matrices—permuted completion orders, bounded cancellation
+checkpoints, and profile compositions—for source-ordered tool-result insertion; terminal-state
+cleanup (`is_streaming == false`, no pending calls); cancellation settlement and reuse; balanced
+message/event lifecycles; and profile composition where active tools determine the generated
+prompt. Every run starts and ends exactly once; every tool start has at most one terminal end.
+Do not add a property-testing dependency unless it is separately approved.
 
 ---
 

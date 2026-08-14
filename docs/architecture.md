@@ -52,10 +52,13 @@ the upstream SDK or make upstream source a runtime dependency.
   no HTTP in core    explicit capabilities  no hidden mailbox
 ```
 
-The core consumes a `ModelStream` port with a request containing only model descriptor, system
-prompt, converted messages, ordered tool definitions, thinking level, stream options, and child
-cancellation. A provider adapter may use HTTP, a native model, a world runtime, or a deterministic
-fixture; none of those mechanisms appears in core state.
+The core consumes a `ModelProvider` port with a request containing only model descriptor, system
+prompt, converted messages, ordered tool definitions, thinking level, and child cancellation. Its
+`stream` future resolves once a response source exists; the returned `ModelEventStream` is then
+polled one event at a time. The reducer applies each delta before requesting the next one, so a
+partial assistant message is observable while the provider source remains open. A provider adapter
+may use HTTP, a native model, a world runtime, or a deterministic fixture; none of those mechanisms
+appears in core state.
 
 Tools expose name, description, raw JSON Schema, execution mode, and an async execute operation.
 Preparation/validation and scheduling are generic. A tool receives a call ID, validated JSON,
@@ -171,11 +174,13 @@ hold resource ownership, or emit post-settlement events.
 
 ## Cancellation and resource ownership
 
-The run's child cancellation scope is passed to provider stream, tool preparation/execution,
-updates, hooks, and queue wait points. Cancellation must settle pending futures and observers,
-prevent post-terminal events, clear pending call IDs, and leave the agent reusable. No operation is
-detached from the run. The application may choose how to run parallel futures on Smol, but the core
-does not spawn or own an executor.
+The run's child cancellation scope is passed to provider stream polling, tool preparation/execution,
+updates, hooks, and queue wait points. `CancellationToken::cancelled()` is an executor-neutral
+future, so an adapter races it with its own I/O rather than polling an atomic or importing a
+runtime-specific token. Cancellation must settle pending futures and observers, prevent
+post-terminal events, clear pending call IDs, and leave the agent reusable. No operation is detached
+from the run. The application may choose how to run parallel futures on Smol, but the core does not
+spawn or own an executor.
 
 The core has no unsafe Rust and no Tokio type in public or private APIs. Dependency review must
 keep cancellation executor-agnostic and isolate the chosen token implementation behind the core
@@ -232,11 +237,11 @@ review before implementation:
 
 | Decision | Required evidence |
 | --- | --- |
-| Stable run/turn/message ID representation and normalization | `identity/plain-and-tool-run` |
-| Awaited observer versus non-blocking subscription API and overflow behavior | `events/observer-edge-cases` |
-| Drop unfinished run policy | `cancel/drop-and-observer` |
+| Stable run/turn/message ID representation and normalization | `tests::generated_run_message_and_event_ids_are_monotonic_after_cancellation` |
+| Awaited observer versus non-blocking subscription API and overflow behavior | `tests::runtime_subscription_is_reentrant_and_drop_unsubscribes_for_future_events`, `tests::nonblocking_subscription_is_ordered_lossy_and_never_delays_settlement` |
+| Drop unfinished run policy | `tests::agent_allows_one_run_and_drop_settles_cancellation` |
 | Cancellation token implementation without Tokio | dependency review + `cancel/checkpoints` |
-| Mixed per-tool sequential override behavior | `tools/mixed-execution` |
+| Mixed per-tool sequential override behavior | `parity/fixtures/declarative/mixed-tool-execution.json` |
 | Canonical JSON Schema serialization/hash | `profile/definitions` |
 | Exact generated default prompt bytes/hash and workspace substitution | `profile/default-prompt` |
 | Typed error hierarchy and failure-to-event mapping | `failure/provider-error`, `cancel/failure-shapes` |

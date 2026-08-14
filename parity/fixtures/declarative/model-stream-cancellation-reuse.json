@@ -1,0 +1,77 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "model-stream-cancellation-reuse",
+  "description": "After a deterministic model-stream cancellation, the same agent accepts and completes a later prompt.",
+  "setup": {
+    "system_prompt": "Answer each prompt briefly.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-model-stream-reuse"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Cancel this response."
+    },
+    {
+      "kind": "prompt",
+      "text": "Reuse the agent after cancellation."
+    }
+  ],
+  "model_script": [
+    {
+      "cancel_after": "text_delta",
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "cancelled prefix"
+        },
+        {
+          "kind": "text_delta",
+          "text": " discarded suffix"
+        },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 1,
+            "output": 2,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 3
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "reused response"
+        },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 5,
+            "output": 2,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 7
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": []
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "reused response"
+  }
+}

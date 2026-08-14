@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "after-tool-terminate",
+  "description": "An after-tool hook can replace the final termination hint and suppress the next model request.",
+  "setup": {
+    "system_prompt": "Use the supplied tool once.",
+    "model": { "provider": "fixture", "id": "deterministic-after-terminate" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return text.",
+        "parameters": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "text": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Echo once." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call-after-terminate", "name": "echo", "arguments": { "text": "input" } },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 3, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 4 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "after_tool_call": {
+      "tool_name": "echo",
+      "content": "final policy result",
+      "is_error": false,
+      "terminate": true
+    },
+    "tools": [
+      {
+        "name": "echo",
+        "calls": [
+          {
+            "arguments": { "text": "input" },
+            "result": { "is_error": false, "content": [{ "type": "text", "text": "host result" }] }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": { "outcome": "completed" }
+}

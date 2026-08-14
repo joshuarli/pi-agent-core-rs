@@ -8,7 +8,7 @@
 
 use crate::error::ToolError;
 use crate::scheduler::CancellationToken;
-use crate::state::{SerializedJson, ToolCallId};
+use crate::state::{SerializedJson, ToolCallId, Usage};
 use pi_agent_protocol::JsonValue;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -48,6 +48,17 @@ pub struct ToolResult {
     pub content: String,
     /// Optional serialized host details.
     pub details: Option<SerializedJson>,
+    /// Optional provider/accounting usage attached by the capability.
+    pub usage: Option<Usage>,
+    /// Names of capabilities added for a later model request, when an explicit
+    /// host policy supports dynamic tool exposure.
+    pub added_tool_names: Vec<String>,
+    /// Whether this finalized result asks to stop after the current batch.
+    ///
+    /// The scheduler stops before another model request only when every
+    /// finalized call in the batch has this flag set. An after-tool hook may
+    /// replace the flag explicitly.
+    pub terminate: bool,
     /// Whether the result represents a tool failure.
     pub is_error: bool,
 }

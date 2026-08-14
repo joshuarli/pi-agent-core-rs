@@ -1,0 +1,57 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "active-steering-during-tool",
+  "description": "A steering message arrives from an active tool after a deterministic yield and is injected before the tool-continuation request.",
+  "setup": {
+    "system_prompt": "Use the supplied tool, then respond.",
+    "model": { "provider": "fixture", "id": "deterministic-active-steering" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "work",
+        "description": "Complete the deterministic unit of work.",
+        "parameters": { "type": "object", "additionalProperties": false }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Start the work." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call_active_steer", "name": "work", "arguments": {} },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "steering was included" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "work",
+        "calls": [
+          {
+            "arguments": {},
+            "yield_once": true,
+            "enqueue_during_execution": { "kind": "steer", "text": "interrupt while working" },
+            "result": { "is_error": false, "content": [{ "type": "text", "text": "work complete" }] }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": { "outcome": "completed", "assistant_text": "steering was included" }
+}

@@ -5,21 +5,41 @@
 //! in actual completion order, and context results are recovered in source order.
 
 use crate::error::SchedulerError;
-use crate::state::{AssistantToolCall, ToolCallId};
+use crate::state::{AssistantToolCall, ModelDescriptor, ThinkingLevel, ToolCallId};
 use crate::tool::{ToolCall, ToolDefinition, ToolExecutionMode, ToolResult};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 /// A boxed provider stream operation, driven by the embedding executor.
 pub type ModelFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<ModelStream, SchedulerError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<Box<dyn ModelEventStream>, SchedulerError>> + Send + 'a>>;
+
+/// One asynchronously delivered provider event.
+pub type ModelEventFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<ModelStreamEvent>, SchedulerError>> + Send + 'a>>;
+
+/// Caller-polled assistant response event source.
+///
+/// A provider must resolve [`ModelProvider::stream`] as soon as it has a response source, then
+/// yield each available event through this trait. The core never buffers a provider response
+/// before reducing its deltas, and the provider receives the run's cancellation scope for every
+/// poll. Implementations may bridge an HTTP body, a native model, a world RPC, or the finite
+/// [`ModelStream`] test adapter without imposing a runtime on the core.
+pub trait ModelEventStream: Send {
+    /// Wait for the next event, or return `Ok(None)` when the source closes.
+    ///
+    /// A well-formed assistant response still needs a terminal [`ModelStreamEvent::End`],
+    /// [`ModelStreamEvent::Error`], or [`ModelStreamEvent::Aborted`] before closing.
+    fn next_event<'a>(&'a mut self, cancellation: CancellationToken) -> ModelEventFuture<'a>;
+}
 
 /// A model response stream abstraction.  The provider owns transport and retry policy.
 pub trait ModelProvider: Send + Sync {
-    /// Start one inference request.
+    /// Start one inference request and return its incrementally polled event source.
     fn stream<'a>(
         &'a self,
         request: ModelRequest,
@@ -36,8 +56,13 @@ pub struct ModelRequest {
     pub context: String,
     /// Prompt-facing executable capabilities in registry/source order.
     pub tools: Vec<ToolDefinition>,
-    /// Serialized model descriptor or provider options.
-    pub model: Option<String>,
+    /// Provider-independent model identity selected for this request.
+    pub model: Option<ModelDescriptor>,
+    /// Reasoning level selected for this request.
+    ///
+    /// This is request-scoped: a `prepare_next_turn` hook may replace it for a
+    /// later turn without mutating the agent's configured default.
+    pub thinking_level: ThinkingLevel,
 }
 
 /// Provider events consumed by the run loop.
@@ -49,20 +74,68 @@ pub enum ModelStreamEvent {
     ToolCall(AssistantToolCall),
     /// Provider usage update.
     Usage(crate::state::Usage),
+    /// Provider/model failure represented as a terminal assistant response.
+    ///
+    /// This is distinct from a rejected [`ModelProvider::stream`] future: the
+    /// provider successfully returned a response stream, and its final
+    /// assistant message carries this diagnostic with `StopReason::Error`.
+    Error {
+        /// Redacted provider/model diagnostic.
+        message: String,
+    },
+    /// Provider/model cancellation represented as a terminal assistant response.
+    ///
+    /// This is distinct from host cancellation: the provider independently
+    /// stopped the response and supplied the final assistant diagnostic.
+    Aborted {
+        /// Redacted provider/model diagnostic.
+        message: String,
+    },
     /// Normal stream settlement.
     End(crate::state::StopReason),
 }
 
-/// A finite provider event stream.  Polling/async adaptation is owned by the provider boundary.
+/// A finite provider event stream for deterministic tests and recorded replays.
+///
+/// Production adapters normally return their own [`ModelEventStream`] implementation. This
+/// concrete type deliberately remains available so fixture providers can construct an exact,
+/// dependency-free sequence with a struct literal.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ModelStream {
     /// Events in provider order for a recorded or deterministic provider.
     pub events: Vec<ModelStreamEvent>,
 }
 
+impl ModelEventStream for ModelStream {
+    fn next_event<'a>(&'a mut self, _cancellation: CancellationToken) -> ModelEventFuture<'a> {
+        let event = if self.events.is_empty() {
+            None
+        } else {
+            Some(self.events.remove(0))
+        };
+        Box::pin(std::future::ready(Ok(event)))
+    }
+}
+
 /// Shared cancellation state with idempotent cancellation.
-#[derive(Clone, Debug, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
+#[derive(Clone, Default)]
+pub struct CancellationToken(Arc<CancellationState>);
+
+#[derive(Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    next_waiter_id: std::sync::atomic::AtomicU64,
+    waiters: Mutex<Vec<(u64, Waker)>>,
+}
+
+impl std::fmt::Debug for CancellationToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CancellationToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
+}
 
 impl CancellationToken {
     /// Create a fresh uncancelled token.
@@ -72,12 +145,86 @@ impl CancellationToken {
 
     /// Request cancellation.  Repeated calls are harmless.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        if self.0.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let waiters = std::mem::take(
+            &mut *self
+                .0
+                .waiters
+                .lock()
+                .expect("cancellation waiter mutex poisoned"),
+        );
+        for (_, waiter) in waiters {
+            waiter.wake();
+        }
     }
 
     /// Check whether cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Return a future that resolves as soon as this token is cancelled.
+    ///
+    /// Provider, tool, and hook adapters can race this future against their own I/O without
+    /// polling an atomic or depending on any executor-specific cancellation primitive.
+    pub fn cancelled(&self) -> CancellationWait {
+        CancellationWait {
+            token: self.clone(),
+            waiter_id: self.0.next_waiter_id.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+/// Future returned by [`CancellationToken::cancelled`].
+#[derive(Debug)]
+pub struct CancellationWait {
+    token: CancellationToken,
+    waiter_id: u64,
+}
+
+impl Future for CancellationWait {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+        let mut waiters = self
+            .token
+            .0
+            .waiters
+            .lock()
+            .expect("cancellation waiter mutex poisoned");
+        if self.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+        if let Some((_, waiter)) = waiters
+            .iter_mut()
+            .find(|(waiter_id, _)| *waiter_id == self.waiter_id)
+        {
+            if !waiter.will_wake(context.waker()) {
+                *waiter = context.waker().clone();
+            }
+        } else {
+            waiters.push((self.waiter_id, context.waker().clone()));
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for CancellationWait {
+    fn drop(&mut self) {
+        if self.token.is_cancelled() {
+            return;
+        }
+        self.token
+            .0
+            .waiters
+            .lock()
+            .expect("cancellation waiter mutex poisoned")
+            .retain(|(waiter_id, _)| *waiter_id != self.waiter_id);
     }
 }
 

@@ -1,0 +1,60 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "schema-validation-continues",
+  "description": "A schema-invalid tool call is rejected before host execution and the next turn receives its error result.",
+  "setup": {
+    "system_prompt": "Only call tools with valid arguments.",
+    "model": { "provider": "fixture", "id": "deterministic-schema-validation" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Echo text.",
+        "parameters": {
+          "type": "object",
+          "properties": { "text": { "type": "string" } },
+          "required": ["text"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Call echo without its required text." }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call-invalid", "name": "echo", "arguments": {} },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 5, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 6 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "I will provide valid arguments next time." },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": { "input": 10, "output": 7, "cache_read": 0, "cache_write": 0, "total_tokens": 17 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "echo",
+        "calls": []
+      }
+    ]
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "I will provide valid arguments next time."
+  }
+}

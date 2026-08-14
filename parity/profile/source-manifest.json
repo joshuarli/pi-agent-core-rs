@@ -1,0 +1,57 @@
+{
+  "format_version": 1,
+  "kind": "pinned_profile_source_manifest",
+  "upstream": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "commit": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "package": "@earendil-works/pi-coding-agent",
+    "package_version": "0.84.1"
+  },
+  "files": [
+    {
+      "path": "packages/coding-agent/src/core/system-prompt.ts",
+      "role": "default system prompt builder",
+      "sha256": "e8b06a0f093c83fd7660a3eae331d5f8ee917702763b1e5044f5c5306e9c1d00"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/index.ts",
+      "role": "coding and standard tool factory order",
+      "sha256": "afeb406e0f5edde143aaac51b9c928cb497bfb8216c04ac9242bfd0f9241ffe1"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/read.ts",
+      "role": "read definition, prompt contribution, and operation boundary",
+      "sha256": "1020a1a8237ed20fae100b3d1602004ffeb7170f588f04a4dfa6ec6834a2d85b"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/bash.ts",
+      "role": "bash definition, prompt contribution, and operation boundary",
+      "sha256": "fda5085d875558be189f852de012301d2067ef919fb97149baab546a2c80e65d"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/edit.ts",
+      "role": "edit definition, prompt contribution, and operation boundary",
+      "sha256": "3c66e14da0990b5f4f9b783747a31ee6dc3fc00f468e7b81b14de4cc5c1d000a"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/write.ts",
+      "role": "write definition, prompt contribution, and operation boundary",
+      "sha256": "bf5ec70a331cb7f6a5f4078468bf5e49b322ea65d916c7ce30ddc1540d89b720"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/grep.ts",
+      "role": "grep definition, prompt contribution, and operation boundary",
+      "sha256": "102814acd9b220eb16e87f9f18b4e0957699a5188bd5cff80ac0af03634d7c24"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/find.ts",
+      "role": "find definition, prompt contribution, and operation boundary",
+      "sha256": "557ef716bcf3e26f7086153c4ff8fdac7ebc9f9a04026b666d05860c0592a022"
+    },
+    {
+      "path": "packages/coding-agent/src/core/tools/ls.ts",
+      "role": "ls definition, prompt contribution, and operation boundary",
+      "sha256": "e03428bd7e7d26ee6fbbe981948e80b05a99536d35372d52aa21e2725a8aa263"
+    }
+  ]
+}

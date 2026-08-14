@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "async-before-tool-cancellation",
+  "description": "An async before-tool hook yields once, cancels the active run, then allows the call; preparation records the cancellation and the next request aborts.",
+  "setup": {
+    "system_prompt": "Use the supplied tool.",
+    "model": { "provider": "fixture", "id": "deterministic-async-hook-cancellation" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return the supplied text.",
+        "parameters": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "text": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Run the tool after the policy check." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call_async_hook_001", "name": "echo", "arguments": { "text": "hello" } },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "kind": "error",
+          "reason": "aborted",
+          "message": "Operation aborted",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "before_tool_call": {
+      "tool_name": "echo",
+      "reason": "policy would block without cancellation",
+      "yield_once": true,
+      "cancel_after_yield": true
+    },
+    "tools": []
+  },
+  "assertions": { "outcome": "cancelled" }
+}

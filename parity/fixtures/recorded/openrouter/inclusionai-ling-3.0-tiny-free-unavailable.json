@@ -4,6 +4,7 @@
   "capture": {
     "pi_agent_core_version": "0.84.1",
     "pi_commit": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+    "captured_on": "2026-08-14",
     "capture_runner": "pinned-source-agent-sdk",
     "provider": "openrouter",
     "model": "inclusionai/ling-3.0-tiny:free",

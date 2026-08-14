@@ -533,7 +533,7 @@ calls Rust async host function
       ↓
 coroutine yields
       ↓
-Tokio schedules other work
+Smol schedules other work
       ↓
 future resolves
       ↓
@@ -544,7 +544,7 @@ Avoid introducing an unnecessary JavaScript-style Promise abstraction unless Lua
 
 The scripting language should feel simple.
 
-The concurrency implementation remains Rust/Tokio.
+The concurrency implementation remains Rust/Smol.
 
 ---
 
@@ -554,7 +554,7 @@ Luau coroutines are a suspension mechanism.
 
 They must not become the primary scheduler.
 
-Tokio remains the scheduler for:
+Smol remains the scheduler for:
 
 ```text
 model streams
@@ -1193,7 +1193,7 @@ It may depend on:
 ```text
 pi-agent-core
 mlua
-tokio
+smol
 ```
 
 but:
@@ -1205,6 +1205,8 @@ pi-agent-core
 must not depend on it.
 
 Keep mlua types out of core public APIs.
+Tokio is prohibited from every workspace crate; the caller-owned Smol executor remains the only
+runtime integration point.
 
 ---
 
@@ -1482,7 +1484,7 @@ The project is complete when:
 5. Luau uses explicit capabilities rather than ambient host access.
 6. The host module surface is small and intentionally designed.
 7. Model/tool/world operations can suspend Luau coroutines over asynchronous Rust futures.
-8. Tokio remains the authoritative scheduler.
+8. Smol remains the authoritative scheduler.
 9. Cancellation propagates cleanly across Rust/Luau boundaries.
 10. Luau scripts cannot directly violate agent-state invariants.
 11. Luau tools become ordinary Rust-scheduled agent tools.

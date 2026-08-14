@@ -1,0 +1,63 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "all-tools-terminate",
+  "description": "A tool batch stops before another model request only when every finalized result requests termination.",
+  "setup": {
+    "system_prompt": "Run both tools and respect their explicit termination hints.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-termination"
+    },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "first",
+        "description": "First terminating tool.",
+        "parameters": { "type": "object", "additionalProperties": false }
+      },
+      {
+        "name": "second",
+        "description": "Second terminating tool.",
+        "parameters": { "type": "object", "additionalProperties": false }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Run both terminating tools." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call_first_001", "name": "first", "arguments": {} },
+        { "kind": "tool_call", "id": "call_second_001", "name": "second", "arguments": {} },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "first",
+        "calls": [
+          {
+            "arguments": {},
+            "result": { "is_error": false, "terminate": true, "content": [{ "type": "text", "text": "first done" }] }
+          }
+        ]
+      },
+      {
+        "name": "second",
+        "calls": [
+          {
+            "arguments": {},
+            "result": { "is_error": false, "terminate": true, "content": [{ "type": "text", "text": "second done" }] }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": { "outcome": "completed" }
+}

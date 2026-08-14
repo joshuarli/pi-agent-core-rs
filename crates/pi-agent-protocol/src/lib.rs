@@ -4,7 +4,7 @@
 //! describes values and boundaries; executors and provider transports belong
 //! in crates above it. Its JSON text codec uses Miniserde, but the types here
 //! do not expose provider SDK types, Serde traits, `serde_json` values, or
-//! Tokio cancellation tokens. The small adapter traits in [`json`] and
+//! runtime-specific cancellation tokens. The small adapter traits in [`json`] and
 //! [`schema`] are the seam where integrations can be added without changing
 //! the kernel-facing protocol.
 //!

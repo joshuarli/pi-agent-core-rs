@@ -12,4 +12,5 @@ evidence:
 
 Keep one fixture ID and filename across `declarative/`, `expected/`, and `normalized/`. Recorded
 captures may use a provider-specific filename and format. The V0 closed slice currently covers
-text, tools (including error and parallel ordering), and queued steering/follow-up cases.
+text, deterministic model-stream cancellation/reuse, tools (including error and parallel
+ordering), and queued steering/follow-up cases.

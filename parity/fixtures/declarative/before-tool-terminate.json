@@ -1,0 +1,45 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "before-tool-terminate",
+  "description": "A before-tool policy can block a call and terminate the resulting one-call batch.",
+  "setup": {
+    "system_prompt": "Use policy-managed tools.",
+    "model": { "provider": "fixture", "id": "deterministic-before-terminate" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "guarded",
+        "description": "A policy guarded tool.",
+        "parameters": {
+          "type": "object",
+          "required": ["value"],
+          "properties": { "value": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Try the guarded tool." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call-before-terminate", "name": "guarded", "arguments": { "value": "x" } },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 2, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 3 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "before_tool_call": {
+      "tool_name": "guarded",
+      "reason": "policy ended this run",
+      "terminate": true
+    },
+    "tools": [{ "name": "guarded", "calls": [] }]
+  },
+  "assertions": { "outcome": "completed" }
+}

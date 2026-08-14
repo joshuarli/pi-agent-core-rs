@@ -1,0 +1,49 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "model-error-terminal",
+  "description": "A provider-returned terminal error preserves its partial assistant response and settles lifecycle events without another model turn.",
+  "setup": {
+    "system_prompt": "Return an answer if the model accepts the request.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-model-error"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Trigger the deterministic provider failure."
+    }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "partial response"
+        },
+        {
+          "kind": "error",
+          "reason": "error",
+          "message": "fixture provider rejected the request",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": []
+  },
+  "assertions": {
+    "outcome": "completed"
+  }
+}

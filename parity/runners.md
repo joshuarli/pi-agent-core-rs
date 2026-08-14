@@ -42,12 +42,16 @@ against a seeded text or deterministic-tool fixture with:
 ```
 
 It supports ordered queued `steer`/`follow_up`, text `prompt`, and `continue` fixture actions,
-scripted text/tool-call turns, default-parallel and explicitly sequential deterministic host tools
-(including tool errors), and a normal final turn. It intentionally rejects cancellation, provider
-errors, and other unimplemented grammar with exit status `2`; extend it together with the next
-upstream/Rust differential case. The separate
+scripted text/tool-call turns, deterministic `cancel_after: "text_delta"` model checkpoints,
+default-parallel and explicitly sequential deterministic host tools (including tool errors), and
+reuse after a cancelled prompt. Provider errors remain stream data; other unimplemented grammar
+still exits with status `2`. The separate
 [`upstream/profile-runner.mts`](upstream/profile-runner.mts) emits the pinned default coding
-profile and is not an agent lifecycle fixture runner.
+profile and is not an agent lifecycle fixture runner. Its companion profile gate is
+[`run-profile.sh`](run-profile.sh): it invokes the pinned factories in-process, never Pi. The
+`grep` factory's source-owned `rg` subprocess is the sole documented exception to virtual
+operation isolation; it is run only in a disposable workspace with an empty
+`PI_CODING_AGENT_DIR`, and it must resolve PATH `rg` rather than a host-managed Pi binary.
 
 ## Rust runner
 
@@ -67,10 +71,11 @@ cargo +nightly-2026-07-24 run -p pi-agent-core --features parity-runner \
   --bin pi-agent-parity -- parity/fixtures/declarative/single-turn-text.json
 ```
 
-It supports the same queued-action, text, and tool-continuation slice, including default-parallel
-and explicitly sequential tool batches plus tool failures, as the upstream runner. It currently
-rejects cancellation, provider errors, and other unimplemented fixture semantics with exit status
-`2`. The Rust runner's adapter is responsible
+It supports the same queued-action, text, tool-continuation, deterministic
+`cancel_after: "text_delta"`, and post-cancellation reuse slice, including default-parallel and
+explicitly sequential tool batches plus tool failures, as the upstream runner. Provider/model
+errors and cancellation are normalized as settled terminal data; other unimplemented fixture
+semantics still exit with status `2`. The Rust runner's adapter is responsible
 for mapping Rust events and errors to the canonical shape. It must not change agent semantics to
 make a result match upstream. If the two adapters need different setup, that setup belongs in the
 runner boundary and must be documented.
@@ -89,6 +94,26 @@ compares the complete shape. It does not rerun a fixture or apply a second set o
 exceptions. A mismatch report should identify the JSON path, expected value, and actual value;
 array order and event order are significant. Exit status `0` means equal and `1` means mismatch;
 malformed input is `2`.
+
+## Full corpus command
+
+The repeatable corpus check is [`run-declarative.sh`](run-declarative.sh). It first verifies that
+`parity/upstream/source` is clean and detached at the commit recorded in [`UPSTREAM_COMMIT`](UPSTREAM_COMMIT),
+then builds the Rust adapter with the pinned nightly toolchain. For every JSON fixture under
+`fixtures/declarative/`, it runs both adapters, canonicalizes their JSON with `jq -S -c`, and compares
+each result against `fixtures/expected/` and against the other adapter. Temporary output is removed
+on exit; the checked-in fixture tree is never written.
+
+Run it from any working directory with:
+
+```text
+./parity/run-declarative.sh
+```
+
+The upstream `tsx` executable must already exist under the pinned checkout's `node_modules`; the
+script does not install dependencies or contact the network. Runner exit status `1` (a fixture's
+model/tool error or cancellation outcome) is accepted as data, while status `2` or a malformed
+canonical result fails the corpus check. The command does not execute `pi` or any Pi CLI.
 
 ## Recorded evidence
 

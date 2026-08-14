@@ -2,8 +2,7 @@
 name = "pi-agent-core"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
-description = "Dependency-free state-machine scaffold for the Pi agent runtime"
+description = "Nightly Rust state-machine kernel for the Pi agent runtime"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -12,10 +11,13 @@ path = "src/lib.rs"
 [features]
 default = []
 parity-runner = ["dep:smol"]
+eval-runner = ["dep:smol"]
+trace = ["dep:pi-agent-trace"]
 
 [dependencies]
 jsonschema = { workspace = true }
 pi-agent-protocol = { path = "../pi-agent-protocol" }
+pi-agent-trace = { path = "../pi-agent-trace", optional = true }
 serde_json = { workspace = true }
 smol = { workspace = true, optional = true }
 
@@ -26,3 +28,8 @@ smol = { workspace = true }
 name = "pi-agent-parity"
 path = "src/bin/pi-agent-parity.rs"
 required-features = ["parity-runner"]
+
+[[bin]]
+name = "pi-agent-eval"
+path = "src/bin/pi-agent-eval.rs"
+required-features = ["eval-runner"]

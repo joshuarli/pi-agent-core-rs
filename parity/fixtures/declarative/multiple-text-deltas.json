@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "multiple-text-deltas",
+  "description": "The assistant message and update events preserve each text delta in source order.",
+  "setup": {
+    "system_prompt": "Reply concisely.",
+    "model": { "provider": "fixture", "id": "multi-delta" },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [{ "kind": "prompt", "text": "Count to three." }],
+  "model_script": [{
+    "chunks": [
+      { "kind": "text_delta", "text": "one" },
+      { "kind": "text_delta", "text": ", two" },
+      { "kind": "text_delta", "text": ", three" },
+      {
+        "kind": "done",
+        "stop_reason": "stop",
+        "usage": { "input": 3, "output": 3, "cache_read": 0, "cache_write": 0, "total_tokens": 6 }
+      }
+    ]
+  }],
+  "stream_comparison": "exact",
+  "host": { "tools": [] },
+  "assertions": { "outcome": "completed" }
+}

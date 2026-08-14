@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "unknown-tool-continues",
+  "description": "An unknown assistant tool call becomes an error tool result and inference continues.",
+  "setup": {
+    "system_prompt": "Answer after observing tool errors.",
+    "model": { "provider": "fixture", "id": "deterministic-unknown-tool" },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    { "kind": "prompt", "text": "Try the unavailable capability." }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call-missing", "name": "missing", "arguments": {} },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 4, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 5 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "The requested tool is unavailable." },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": { "input": 9, "output": 6, "cache_read": 0, "cache_write": 0, "total_tokens": 15 }
+        }
+      ]
+    }
+  ],
+  "host": { "tools": [] },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "The requested tool is unavailable."
+  }
+}

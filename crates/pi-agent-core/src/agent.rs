@@ -4,6 +4,7 @@
 //! It has no executor and no provider implementation; callers configure those explicit
 //! capabilities and drive the run from their own async environment.
 
+use crate::default_tools::DefaultCodingTools;
 use crate::error::CoreError;
 use crate::event::EventObserver;
 use crate::hooks::{HookSet, NoHooks};
@@ -16,6 +17,7 @@ use crate::state::{
 };
 use crate::tool::{AgentTool, ToolRegistry};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
@@ -38,7 +40,13 @@ pub(crate) struct AgentInner {
     /// Hooks are held for the run loop boundary.
     pub(crate) hooks: Arc<dyn HookSet>,
     /// Awaited observers in registration order.
-    pub(crate) observers: Vec<Arc<dyn EventObserver>>,
+    pub(crate) observers: Mutex<Vec<ObserverRegistration>>,
+    /// Monotonic process-local observer registrations.
+    pub(crate) next_observer_id: AtomicU64,
+    /// Non-blocking event subscribers that do not participate in settlement.
+    pub(crate) subscribers: Mutex<Vec<SubscriberRegistration>>,
+    /// Monotonic process-local non-blocking subscription registrations.
+    pub(crate) next_subscriber_id: AtomicU64,
     /// Monotonic process-local run IDs.
     pub(crate) next_run_id: AtomicU64,
     /// Wakers awaiting the post-settlement idle boundary.
@@ -87,6 +95,95 @@ pub struct Agent {
     pub(crate) inner: Arc<AgentInner>,
 }
 
+/// An owned registration for an awaited lifecycle observer.
+///
+/// Dropping this value removes the observer.  The removal affects events that
+/// have not yet begun observer delivery; an observer snapshot already being
+/// delivered remains stable for that event.  This makes unsubscribe from an
+/// observer callback safe and deterministic without holding the registry lock
+/// across an awaited callback.
+#[must_use = "drop the subscription to unsubscribe, or retain it for the desired observation lifetime"]
+pub struct ObserverSubscription {
+    agent: std::sync::Weak<AgentInner>,
+    id: u64,
+}
+
+impl std::fmt::Debug for ObserverSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObserverSubscription")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ObserverSubscription {
+    fn drop(&mut self) {
+        if let Some(agent) = self.agent.upgrade() {
+            let mut observers = agent.observers.lock().expect("observer mutex poisoned");
+            observers.retain(|registration| registration.id != self.id);
+        }
+    }
+}
+
+/// One observer retained by the agent.
+#[derive(Clone)]
+pub(crate) struct ObserverRegistration {
+    pub(crate) id: u64,
+    pub(crate) observer: Arc<dyn EventObserver>,
+}
+
+/// A bounded, non-blocking lifecycle-event subscription.
+///
+/// Unlike [`ObserverSubscription`], receiving events from this subscription
+/// never keeps an agent run active. A full queue drops the new event and
+/// increments [`Self::dropped_events`], preserving source order for events
+/// that are retained without creating backpressure in the run loop.
+#[must_use = "drop the subscription to stop receiving events"]
+pub struct EventSubscription {
+    agent: std::sync::Weak<AgentInner>,
+    id: u64,
+    receiver: Receiver<crate::event::AgentEvent>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for EventSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventSubscription")
+            .field("id", &self.id)
+            .field("dropped_events", &self.dropped_events())
+            .finish_non_exhaustive()
+    }
+}
+
+impl EventSubscription {
+    /// Return the next queued event without waiting.
+    pub fn try_recv(&self) -> Result<crate::event::AgentEvent, TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    /// Number of events discarded because this subscription's queue was full.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        if let Some(agent) = self.agent.upgrade() {
+            let mut subscribers = agent.subscribers.lock().expect("subscriber mutex poisoned");
+            subscribers.retain(|registration| registration.id != self.id);
+        }
+    }
+}
+
+/// One bounded non-blocking event subscription retained by the agent.
+#[derive(Clone)]
+pub(crate) struct SubscriberRegistration {
+    pub(crate) id: u64,
+    pub(crate) sender: SyncSender<crate::event::AgentEvent>,
+    pub(crate) dropped: Arc<AtomicU64>,
+}
+
 impl std::fmt::Debug for Agent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Agent")
@@ -123,6 +220,61 @@ impl Agent {
     /// Clone the host policy handle used at the run-loop boundary.
     pub fn hooks(&self) -> Arc<dyn HookSet> {
         Arc::clone(&self.inner.hooks)
+    }
+
+    /// Register an awaited lifecycle observer.
+    ///
+    /// Observers are invoked in registration order for every future event and
+    /// are awaited as part of the run.  Keep the returned subscription alive
+    /// for as long as observation is wanted; dropping it unsubscribes.  A
+    /// registration made from an observer callback begins with the next event.
+    pub fn subscribe(&self, observer: Arc<dyn EventObserver>) -> ObserverSubscription {
+        let id = self
+            .inner
+            .next_observer_id
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.inner
+            .observers
+            .lock()
+            .expect("observer mutex poisoned")
+            .push(ObserverRegistration { id, observer });
+        ObserverSubscription {
+            agent: Arc::downgrade(&self.inner),
+            id,
+        }
+    }
+
+    /// Subscribe to a bounded, non-blocking copy of future lifecycle events.
+    ///
+    /// This is separate from [`Self::subscribe`]. Events are sent after
+    /// awaited observer delivery with a bounded `try_send`; a slow consumer
+    /// can neither delay settlement nor cause a background task. When the
+    /// queue is full, the new event is dropped and
+    /// [`EventSubscription::dropped_events`] records it.
+    pub fn subscribe_nonblocking(&self, capacity: std::num::NonZeroUsize) -> EventSubscription {
+        let id = self
+            .inner
+            .next_subscriber_id
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let (sender, receiver) = sync_channel(capacity.get());
+        let dropped = Arc::new(AtomicU64::new(0));
+        self.inner
+            .subscribers
+            .lock()
+            .expect("subscriber mutex poisoned")
+            .push(SubscriberRegistration {
+                id,
+                sender,
+                dropped: Arc::clone(&dropped),
+            });
+        EventSubscription {
+            agent: Arc::downgrade(&self.inner),
+            id,
+            receiver,
+            dropped,
+        }
     }
 
     /// Resolve after the active run has fully settled and the agent is idle.
@@ -222,6 +374,7 @@ impl Agent {
         if let AgentPhase::Running(active) | AgentPhase::Cancelling(active) = state.phase {
             return Err(CoreError::ActiveRun { run_id: active });
         }
+        let message_start_index = state.messages.len();
         let initial_messages = initial_contents
             .into_iter()
             .map(|content| Message::User {
@@ -252,6 +405,7 @@ impl Agent {
             state: run_state,
             cancellation,
             initial_messages,
+            message_start_index,
             skip_initial_steering,
         })
     }
@@ -367,6 +521,7 @@ impl Agent {
         match state.phase {
             AgentPhase::Idle => {
                 state.messages.clear();
+                state.host_messages.clear();
                 state.partial_response = None;
                 state.is_streaming = false;
                 state.pending_tool_calls.clear();
@@ -454,6 +609,7 @@ pub struct AgentBuilder {
     system_prompt: String,
     model: Option<ModelDescriptor>,
     thinking_level: ThinkingLevel,
+    host_messages: Vec<crate::state::SerializedJson>,
     tools: ToolRegistry,
     provider: Option<Arc<dyn ModelProvider>>,
     hooks: Option<Arc<dyn HookSet>>,
@@ -492,6 +648,15 @@ impl AgentBuilder {
         self
     }
 
+    /// Add one explicit host-only context value.
+    ///
+    /// Host messages are not ambient configuration and are not converted to a
+    /// provider request unless the configured context hook chooses to do so.
+    pub fn host_message(mut self, message: crate::state::SerializedJson) -> Self {
+        self.host_messages.push(message);
+        self
+    }
+
     /// Replace the complete executable tool registry.
     pub fn tools(mut self, tools: ToolRegistry) -> Self {
         self.tools = tools;
@@ -501,6 +666,16 @@ impl AgentBuilder {
     /// Add one executable tool while preserving insertion order.
     pub fn tool(mut self, tool: Arc<dyn AgentTool>) -> Self {
         self.tools.insert(tool);
+        self
+    }
+
+    /// Remove one named executable capability before building the agent.
+    ///
+    /// This makes profile composition explicit: callers may start with the
+    /// batteries-included set and deliberately omit a capability without
+    /// changing its prompt or scheduler implementation behind the scenes.
+    pub fn remove_tool(mut self, name: &str) -> Self {
+        self.tools.remove(name);
         self
     }
 
@@ -540,12 +715,33 @@ impl AgentBuilder {
         self
     }
 
+    /// Apply the pinned Pi coding prompt and its explicit executable default tools.
+    ///
+    /// `tools` is constructed by the embedding with an explicit workspace and
+    /// capability adapter. This convenience method never discovers a cwd,
+    /// home directory, Pi installation, or authority on the caller's behalf.
+    /// Subsequent [`Self::tool`] calls replace/extend individual tools and
+    /// [`Self::remove_tool`] deliberately removes them.
+    pub fn pinned_default_coding_profile(
+        mut self,
+        tools: DefaultCodingTools,
+    ) -> Result<Self, crate::error::ProfileError> {
+        let profile = PiDefaultCodingProfile::pinned_default()?;
+        let registry = tools.registry();
+        profile.validate_registry(&registry)?;
+        self.system_prompt = profile.system_prompt_for_workspace(tools.workspace().as_path());
+        self.tools = registry;
+        Ok(self)
+    }
+
     /// Build an owned agent.
     pub fn build(self) -> Agent {
+        let next_observer_id = self.observers.len() as u64;
         let mut state = AgentState::default();
         state.system_prompt = self.system_prompt;
         state.model = self.model;
         state.thinking_level = self.thinking_level;
+        state.host_messages = self.host_messages;
         Agent {
             inner: Arc::new(AgentInner {
                 state: Mutex::new(state),
@@ -556,7 +752,19 @@ impl AgentBuilder {
                 follow_up_mode: Mutex::new(self.follow_up_mode),
                 provider: self.provider,
                 hooks: self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),
-                observers: self.observers,
+                observers: Mutex::new(
+                    self.observers
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, observer)| ObserverRegistration {
+                            id: (index as u64).saturating_add(1),
+                            observer,
+                        })
+                        .collect(),
+                ),
+                next_observer_id: AtomicU64::new(next_observer_id),
+                subscribers: Mutex::new(Vec::new()),
+                next_subscriber_id: AtomicU64::new(0),
                 next_run_id: AtomicU64::new(0),
                 idle_notifier: IdleNotifier::default(),
             }),

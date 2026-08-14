@@ -14,31 +14,13 @@ observers, and terminal settlement caused by that invocation. A **turn** starts 
 A **message** is a transcript item; a **tool call** is an assistant content block and has the
 provider-supplied `toolCallId`.
 
-The upstream public events do not currently carry run, turn, or message IDs. V0 protocol events
-must still have stable correlation IDs. The upstream fixture adapter assigns deterministic IDs in
-source order and records the mapping; the comparator strips only those adapter-generated IDs when
-the upstream event has no equivalent. `toolCallId` is semantic and is never normalized.
-
-### Identity fixture to resolve
-
-```json
-{
-  "scenario": "identity/plain-and-tool-run",
-  "prompt": "first",
-  "provider_script": ["assistant text", "assistant tool call", "assistant text"],
-  "expected": {
-    "run_ids": ["<stable-per-run>", "<new-on-next-run>"],
-    "turn_ids": ["<one-per-turn>"],
-    "message_ids": ["<source-order-or-provider-id>"],
-    "tool_call_ids": ["<provider-id-preserved>"],
-    "normalization": ["generated-id"]
-  }
-}
-```
-
-The fixture must answer whether IDs are monotonic counters, UUID-like values, or adapter-only
-correlation fields. It must also prove that a second run receives a distinct run ID and that IDs
-are not reused after cancellation.
+The upstream public events do not currently carry run, turn, or message IDs. V0 therefore makes
+the Rust adaptation explicit: `RunId` is a process-local monotonic counter; `TurnId` begins at
+one within a run; `MessageId` is a durable agent-local monotonic counter; and `EventSequence`
+begins at one within a run. A cancelled prompt keeps any already-retained message IDs, and later
+runs never reuse them. The upstream adapter normalizes only these upstream-absent generated IDs.
+`toolCallId` is provider data and is never normalized. The invariant is covered by
+`tests::generated_run_message_and_event_ids_are_monotonic_after_cancellation`.
 
 ## Agent state and snapshots
 
@@ -95,13 +77,17 @@ blurred by an async Rust API.
 | `abort` active | Idempotently signal the child cancellation scope | One terminal outcome and no duplicate settlement |
 | `wait_for_idle` idle | Resolve immediately | No active run |
 | `wait_for_idle` active | Resolve only after terminal event observers settle | Delayed `agent_end` observer holds logical busy state |
-| Drop unfinished run | **Fixture required:** cancel-and-settle or reject/drop prohibition | No orphaned work either way |
+| Drop unfinished run | `RunHandle::drop` requests cancel-and-settle; an un-driven handle settles immediately, while a driven handle settles at its cancellation-aware boundary | No orphaned active ownership |
 | Finish | Clear transient state before making the agent idle; resolve run exactly once | Next prompt can run normally |
 
 The current upstream `Agent` rejects direct `prompt`/`continue` while `activeRun` exists, exposes
-`abort`, and awaits `subscribe` listeners in registration order. The fixture must pin error shape,
-drop behavior, reentrancy, observer failure, and whether a callback may enqueue messages before the
-next drain point.
+`abort`, and awaits `subscribe` listeners in registration order. Rust preserves that awaited path
+as `Agent::subscribe`, whose RAII `ObserverSubscription` can safely be dropped from a callback:
+changes apply to the next event. An observer error returns a typed run error but still produces one
+terminal `agent_end` and releases active ownership. Rust also offers the explicitly distinct
+`Agent::subscribe_nonblocking`: it uses a caller-selected bounded queue, `try_send`, and a dropped
+event counter, so it never participates in settlement or creates a task. The corresponding core
+tests pin error, reentrancy, unsubscribe, overflow, and drop behavior.
 
 ### Exact active-run fixture template
 
@@ -222,8 +208,9 @@ observer-unsubscribe-during-callback
 slow/dropped observational subscriber capacity and overflow
 ```
 
-The last two subscription cases are `investigating` until an upstream-compatible Rust contract is
-recorded. A non-blocking subscriber must never hold a run open indefinitely.
+`Agent::subscribe_nonblocking` resolves the last two cases: a full queue drops the new event and
+increments `dropped_events`; a dropped receiver unregisters itself. Neither case can hold a run
+open indefinitely.
 
 ## Streaming and context boundary
 
@@ -233,10 +220,18 @@ converted messages, and ordered tool definitions. A transform can prune/inject h
 conversion can filter them or map them to user/assistant/tool-result messages. No UI/session
 message type is invented by the core.
 
-The provider stream is a caller-supplied abstraction. It reports assistant start/partial/update/end
-or a final error/aborted message. The core owns the partial-message snapshot and updates transcript
-state only through event reduction. Provider transport details and `pi-ai` types do not cross the
-Rust core boundary.
+The provider stream is a caller-supplied abstraction. `ModelProvider::stream` resolves to a
+`ModelEventStream`, then the core awaits exactly one `next_event` call at a time. It reduces each
+event before polling again: a `TextDelta` therefore updates `partial_response`, the transcript, and
+the observable `message_update` event while the source is still open. `ModelStream` is only the
+finite replay/test adapter; production adapters implement `ModelEventStream` directly. An explicit
+`ModelStreamEvent::Error` is retained as a finalized assistant message with `StopReason::Error` and
+`error_message`; it is distinct from a rejected provider future (`CoreError::ModelProvider`). A
+`StopReason::Length` response is a normal terminal turn when it has no tool calls. If it contains
+tool calls, every call is refused with an error tool result (the arguments may be truncated), then
+the loop may continue with the next model turn. The core owns the partial-message snapshot and
+updates transcript state only through event reduction. Provider transport details and `pi-ai` types
+do not cross the Rust core boundary.
 
 ## Queues and turn transitions
 
@@ -259,7 +254,9 @@ messages each require a declarative fixture.
 ## Cancellation and failure
 
 Cancellation is a child scope owned by the run and passed to model streaming, tool preparation,
-tool execution, hooks, and queue waits. Required deterministic checkpoints are:
+tool execution, hooks, and queue waits. `CancellationToken::cancelled()` is the executor-neutral
+wakeable future that an adapter races with I/O or a host capability future. Required deterministic
+checkpoints are:
 
 ```text
 before first model token

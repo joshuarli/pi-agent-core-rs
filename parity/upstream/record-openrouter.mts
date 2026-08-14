@@ -3,7 +3,8 @@
  *
  * Run only from `parity/upstream/source` with the caller's secret injector:
  *
- *   vault OPENROUTER_API_KEY -- ./node_modules/.bin/tsx ../record-openrouter.mts
+ *   vault OPENROUTER_API_KEY -- env OPENROUTER_MODEL=poolside/laguna-xs-2.1 \
+ *     ./node_modules/.bin/tsx ../record-openrouter.mts
  *
  * This imports the pinned Agent and OpenAI-compatible Pi provider adapter directly. It never
  * invokes a host-installed `pi` executable, writes no files, and prints no credential.
@@ -12,9 +13,13 @@
 import { Agent } from "./source/packages/agent/src/agent.ts";
 import { stream as openAICompletionsStream } from "./source/packages/ai/src/api/openai-completions.ts";
 
+// The model is explicit command input rather than a property of a host Pi installation. Keep
+// the old unavailable-model default so re-running the documented command without a model does
+// not silently overwrite that error-path fixture.
+const modelId = process.env.OPENROUTER_MODEL ?? "inclusionai/ling-3.0-tiny:free";
 const model = {
-	id: "inclusionai/ling-3.0-tiny:free",
-	name: "inclusionai/ling-3.0-tiny:free",
+	id: modelId,
+	name: modelId,
 	api: "openai-completions",
 	provider: "openrouter",
 	baseUrl: "https://openrouter.ai/api/v1",
@@ -76,6 +81,7 @@ async function main(): Promise<void> {
 		capture: {
 			pi_agent_core_version: "0.84.1",
 			pi_commit: "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
+			captured_on: new Date().toISOString().slice(0, 10),
 			capture_runner: "pinned-source-agent-sdk",
 			provider: "openrouter",
 			model: model.id,

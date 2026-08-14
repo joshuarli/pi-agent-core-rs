@@ -11,6 +11,7 @@ From `parity/upstream/source`, regenerate and validate it with:
 npm ci --ignore-scripts
 ./node_modules/.bin/tsx ../profile-runner.mts > ../../profile/default-profile.json
 jq empty ../../profile/default-profile.json
+./node_modules/.bin/tsx ../../profile/verify-profile.mts
 ```
 
 `profile-runner.mts` imports `buildSystemPrompt`, `createCodingToolDefinitions`, and
@@ -27,3 +28,10 @@ serialization order and hashed separately.
 The fixture's `upstream` object, active-tool order, serialized schema hashes, and system-prompt
 hash are its quick integrity checks. The more complete behavioral contract remains in
 [`../../docs/default-coding-profile.md`](../../docs/default-coding-profile.md).
+
+`verify-profile.mts` imports the same pinned factories and prompt builder and compares their
+serialized output to the checked-in capture. It also verifies the source hashes in
+[`source-manifest.json`](source-manifest.json) and the required success/invalid-input/host-error
+case coverage in [`behavior-manifest.json`](behavior-manifest.json). This is an SDK-source
+parity check only: it does not start the Pi CLI, instantiate an agent, execute a tool, or contact
+a provider.

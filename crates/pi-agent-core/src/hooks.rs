@@ -5,8 +5,18 @@
 //! settlement policy.
 
 use crate::error::HookError;
-use crate::state::{Message, SerializedJson, Usage};
+use crate::scheduler::CancellationToken;
+use crate::state::{Message, ModelDescriptor, SerializedJson, ThinkingLevel, Usage};
 use crate::tool::{ToolCall, ToolResult};
+use std::future::Future;
+use std::pin::Pin;
+
+/// A caller-driven asynchronous hook operation.
+///
+/// The core only awaits this future on the embedding executor. Hooks receive
+/// the run cancellation token and must settle after cancellation rather than
+/// spawning detached work.
+pub type HookFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, HookError>> + Send + 'a>>;
 
 /// Decision made before a tool is executed.
 #[allow(missing_docs)]
@@ -41,6 +51,10 @@ pub struct AfterToolCall {
     pub is_error: Replacement<bool>,
     /// Usage replacement for providers that attach usage to tool results.
     pub usage: Replacement<Usage>,
+    /// Dynamic capability names attached to the result for a subsequent host
+    /// policy decision. The core records them but never silently registers a
+    /// capability it was not explicitly given.
+    pub added_tool_names: Replacement<Vec<String>>,
     /// Optional replacement for the batch early-termination hint.
     ///
     /// Only `Some(true)` participates in Pi's rule that every finalized call in a batch must
@@ -57,6 +71,23 @@ pub struct ContextEnvelope {
     pub messages: Vec<Message>,
     /// Optional serialized host-only additions.
     pub host_messages: Vec<SerializedJson>,
+}
+
+/// Optional request-scoped replacements selected after a completed turn.
+///
+/// The upstream Pi loop applies these values after `turn_end` and before
+/// `shouldStopAfterTurn`, steering polling, and the next provider request.
+/// They belong to a run rather than durable [`AgentState`](crate::state::AgentState): a
+/// subsequent `prompt` begins again from the builder-supplied model and
+/// thinking defaults.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NextTurn {
+    /// Replacement conversation envelope for the next request.
+    pub context: Option<ContextEnvelope>,
+    /// Replacement model identity for the next request.
+    pub model: Option<ModelDescriptor>,
+    /// Replacement reasoning level for the next request.
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 /// Hook trait implemented by the embedding policy layer.
@@ -77,9 +108,70 @@ pub trait HookSet: Send + Sync {
     fn should_stop_after_turn(&self, _context: &ContextEnvelope) -> Result<bool, HookError> {
         Ok(false)
     }
-    /// Prepare the next turn's context.
-    fn prepare_next_turn(&self, context: ContextEnvelope) -> Result<ContextEnvelope, HookError> {
-        Ok(context)
+    /// Prepare request-scoped context, model, or reasoning replacements for the next turn.
+    fn prepare_next_turn(&self, _context: ContextEnvelope) -> Result<NextTurn, HookError> {
+        Ok(NextTurn::default())
+    }
+
+    /// Asynchronous, cancellation-aware form of [`Self::before_tool_call`].
+    ///
+    /// Existing synchronous policy remains useful for cheap decisions. An
+    /// asynchronous policy can override this method to await an explicit
+    /// capability without changing scheduler ownership.
+    fn before_tool_call_async<'a>(
+        &'a self,
+        call: &'a ToolCall,
+        _context: ContextEnvelope,
+        _cancellation: CancellationToken,
+    ) -> HookFuture<'a, BeforeToolCall> {
+        Box::pin(std::future::ready(self.before_tool_call(call)))
+    }
+
+    /// Asynchronous, cancellation-aware form of [`Self::after_tool_call`].
+    fn after_tool_call_async<'a>(
+        &'a self,
+        call: &'a ToolCall,
+        result: &'a ToolResult,
+        _context: ContextEnvelope,
+        _cancellation: CancellationToken,
+    ) -> HookFuture<'a, AfterToolCall> {
+        Box::pin(std::future::ready(self.after_tool_call(call, result)))
+    }
+
+    /// Asynchronous, cancellation-aware form of [`Self::transform_context`].
+    fn transform_context_async<'a>(
+        &'a self,
+        context: ContextEnvelope,
+        _cancellation: CancellationToken,
+    ) -> HookFuture<'a, ContextEnvelope> {
+        Box::pin(std::future::ready(self.transform_context(context)))
+    }
+
+    /// Asynchronous, cancellation-aware form of [`Self::convert_to_llm`].
+    fn convert_to_llm_async<'a>(
+        &'a self,
+        context: ContextEnvelope,
+        _cancellation: CancellationToken,
+    ) -> HookFuture<'a, String> {
+        Box::pin(std::future::ready(self.convert_to_llm(context)))
+    }
+
+    /// Asynchronous, cancellation-aware form of [`Self::should_stop_after_turn`].
+    fn should_stop_after_turn_async<'a>(
+        &'a self,
+        context: &'a ContextEnvelope,
+        _cancellation: CancellationToken,
+    ) -> HookFuture<'a, bool> {
+        Box::pin(std::future::ready(self.should_stop_after_turn(context)))
+    }
+
+    /// Asynchronous, cancellation-aware form of [`Self::prepare_next_turn`].
+    fn prepare_next_turn_async<'a>(
+        &'a self,
+        context: ContextEnvelope,
+        _cancellation: CancellationToken,
+    ) -> HookFuture<'a, NextTurn> {
+        Box::pin(std::future::ready(self.prepare_next_turn(context)))
     }
 }
 

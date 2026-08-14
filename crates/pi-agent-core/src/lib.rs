@@ -9,6 +9,7 @@
 #![warn(missing_docs)]
 
 pub mod agent;
+pub mod default_tools;
 pub mod error;
 pub mod event;
 pub mod hooks;
@@ -19,11 +20,16 @@ pub mod scheduler;
 mod schema_validation;
 pub mod state;
 pub mod tool;
+#[cfg(feature = "trace")]
+pub mod trace;
 
 #[cfg(test)]
 mod tests;
 
-pub use agent::{Agent, AgentBuilder};
+pub use agent::{Agent, AgentBuilder, EventSubscription, ObserverSubscription};
+pub use default_tools::{
+    CodingOperations, DefaultCodingTools, LocalCodingOperations, WorkspaceRoot,
+};
 pub use error::CoreError;
 pub use event::{AgentEvent, AgentEventKind, EventObserver, EventSequence, ObserverFuture};
 pub use run::RunHandle;

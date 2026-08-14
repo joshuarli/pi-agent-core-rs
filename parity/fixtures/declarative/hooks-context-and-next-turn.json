@@ -1,0 +1,73 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "hooks-context-and-next-turn",
+  "description": "Context transformation and conversion reach two sequential requests, with a next-turn context, model, and thinking replacement.",
+  "setup": {
+    "system_prompt": "Use the echo tool, then finish.",
+    "model": { "provider": "fixture", "id": "deterministic-context" },
+    "thinking_level": "low",
+    "context_hooks": {
+      "host_messages": ["host-only"],
+      "transform_append_host_message": "transformed",
+      "convert_prefix": "converted:",
+      "prepare_next_turn": {
+        "host_messages": ["replacement"],
+        "model": { "provider": "replacement-provider", "id": "replacement-model" },
+        "thinking_level": "high"
+      }
+    },
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return the supplied text.",
+        "parameters": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "text": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Echo hello, then finish." }],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "tool_call", "id": "call-context", "name": "echo", "arguments": { "text": "hello" } },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 1, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 2 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "done" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": { "input": 2, "output": 1, "cache_read": 0, "cache_write": 0, "total_tokens": 3 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "echo",
+        "calls": [
+          {
+            "arguments": { "text": "hello" },
+            "result": { "is_error": false, "content": [{ "type": "text", "text": "echoed: hello" }] }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "done"
+  }
+}

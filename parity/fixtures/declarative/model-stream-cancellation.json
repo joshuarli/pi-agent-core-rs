@@ -1,0 +1,54 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "model-stream-cancellation",
+  "description": "A deterministic model-stream checkpoint cancels after the first text delta and settles the partial assistant response.",
+  "setup": {
+    "system_prompt": "Answer briefly unless the response is cancelled.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-model-stream-cancellation"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Trigger the deterministic stream cancellation."
+    }
+  ],
+  "model_script": [
+    {
+      "cancel_after": "text_delta",
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "partial response"
+        },
+        {
+          "kind": "text_delta",
+          "text": " that must not be delivered"
+        },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 3,
+            "output": 4,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 7
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": []
+  },
+  "assertions": {
+    "outcome": "cancelled",
+    "assistant_text": "partial response"
+  }
+}

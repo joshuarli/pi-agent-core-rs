@@ -18,7 +18,7 @@ The checked-in source currently reports:
 | Node requirement | `>=22.19.0` from root/package engines |
 | Lockfile | `parity/upstream/source/package-lock.json` |
 | Lockfile SHA-256 | `01bb5df57ed0de4f308ed1b88b4536e43a0b61ce82b0eff3fcb1b922176c3c4c` |
-| Runner | `<fill exact command used by the in-process fixture runner>` |
+| Runner | `cd parity/upstream/source && ./node_modules/.bin/tsx ../agent-runner.mts ../../fixtures/declarative/<fixture>.json` |
 | Recorded at | `2026-08-13` |
 
 The canonical machine-readable copy belongs in `parity/UPSTREAM_COMMIT`; if it differs from this

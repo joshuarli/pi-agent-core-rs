@@ -37,7 +37,17 @@ pub enum AgentEventKind {
     /// A message became visible.
     MessageStart { message: Message },
     /// A partial message update.
-    MessageUpdate { message: Message },
+    ///
+    /// `text_delta` is the provider event payload, while `message` is the
+    /// reduced assistant snapshot after that delta. Keeping both prevents an
+    /// observer from having to diff snapshots (which is wrong for repeated
+    /// text, thinking, or future interleaved content blocks).
+    MessageUpdate {
+        /// Reduced message snapshot after this update.
+        message: Message,
+        /// Exact text fragment delivered by the current V0 stream event.
+        text_delta: Option<String>,
+    },
     /// A message settled.
     MessageEnd { message: Message },
     /// Tool execution began.
@@ -74,9 +84,10 @@ pub type ObserverFuture<'a> = Pin<Box<dyn Future<Output = Result<(), CoreError>>
 ///
 /// Observers see state after the event reducer has applied the event. Their
 /// futures are awaited in registration order, including for `AgentEnd`, so an
-/// unfinished terminal observer keeps the run active. A non-blocking
-/// subscription is a distinct future adapter and must never be silently
-/// substituted for this contract.
+/// unfinished terminal observer keeps the run active. The bounded,
+/// non-blocking [`crate::EventSubscription`] returned by
+/// [`crate::Agent::subscribe_nonblocking`] is a separate lossy channel
+/// contract and must never be silently substituted for this one.
 pub trait EventObserver: Send + Sync {
     /// Observe one reduced event using the run's cancellation scope.
     fn observe<'a>(

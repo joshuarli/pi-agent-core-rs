@@ -7,19 +7,20 @@
 use crate::agent::AgentInner;
 use crate::error::CoreError;
 use crate::event::{AgentEvent, AgentEventKind, EventSequence};
-use crate::hooks::{AfterToolCall, BeforeToolCall, Replacement};
-use crate::scheduler::CancellationToken;
-use crate::scheduler::{ModelRequest, ModelStreamEvent};
+use crate::hooks::{AfterToolCall, BeforeToolCall, NextTurn, Replacement};
+use crate::scheduler::{CancellationToken, ModelEventStream, ModelRequest, ModelStreamEvent};
 use crate::schema_validation::validate_tool_arguments;
 use crate::state::{
-    AgentPhase, AssistantToolCall, Message, RunId, RunPhase, RunSnapshot, RunState, StopReason,
-    TurnId,
+    AgentPhase, AssistantToolCall, Message, ModelDescriptor, RunId, RunPhase, RunSnapshot,
+    RunState, StopReason, ThinkingLevel, ToolCallId, TurnId,
 };
 use crate::tool::{
     AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdate, ToolUpdateSink,
 };
+use std::collections::BTreeSet;
+use std::sync::mpsc::TrySendError;
 use std::sync::{Arc, Mutex, Weak};
-use std::task::Poll;
+use std::task::{Poll, Waker};
 
 enum PreparedToolCall {
     Immediate { result: ToolResult, terminate: bool },
@@ -32,18 +33,73 @@ struct PreparedToolExecution {
     preparation: PreparedToolCall,
 }
 
+/// One update captured by a tool callback and waiting for lifecycle delivery.
+type PendingToolUpdate = (ToolCallId, String, ToolUpdate);
+
+/// Tool updates captured by capability callbacks.
+///
+/// The callback API is synchronous, while lifecycle observers are awaited. The
+/// queue bridges those boundaries without requiring a runtime: callbacks wake
+/// the caller-owned run future, which drains updates as a first-class scheduler
+/// step before polling another tool or settling the current tool. Call IDs are
+/// closed as soon as their futures resolve so late callbacks are ignored, as in
+/// Pi's `executePreparedToolCall` lifecycle.
+#[derive(Clone, Default)]
+struct PendingToolUpdates {
+    state: Arc<Mutex<PendingToolUpdateState>>,
+}
+
+#[derive(Default)]
+struct PendingToolUpdateState {
+    updates: Vec<PendingToolUpdate>,
+    closed_calls: BTreeSet<ToolCallId>,
+    waker: Option<Waker>,
+}
+
+impl PendingToolUpdates {
+    fn push(&self, update: PendingToolUpdate) {
+        let waker = {
+            let mut state = self.state.lock().expect("tool update mutex poisoned");
+            if state.closed_calls.contains(&update.0) {
+                return;
+            }
+            state.updates.push(update);
+            state.waker.clone()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn take(&self) -> Option<Vec<PendingToolUpdate>> {
+        let mut state = self.state.lock().expect("tool update mutex poisoned");
+        if state.updates.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut state.updates))
+        }
+    }
+
+    fn close(&self, call_id: &ToolCallId) {
+        let mut state = self.state.lock().expect("tool update mutex poisoned");
+        state.closed_calls.insert(call_id.clone());
+    }
+
+    fn register_waker(&self, waker: &Waker) {
+        self.state.lock().expect("tool update mutex poisoned").waker = Some(waker.clone());
+    }
+}
+
 struct PendingToolExecution<'a> {
     source_index: usize,
     call: ToolCall,
     future: ToolFuture<'a>,
-    updates: Arc<Mutex<Vec<ToolUpdate>>>,
 }
 
 struct CompletedToolExecution {
     source_index: usize,
     call: ToolCall,
     result: Result<ToolResult, crate::error::ToolError>,
-    updates: Arc<Mutex<Vec<ToolUpdate>>>,
 }
 
 /// A handle to the one run currently owning an agent.
@@ -52,6 +108,9 @@ pub struct RunHandle {
     pub(crate) state: Arc<Mutex<RunState>>,
     pub(crate) cancellation: CancellationToken,
     pub(crate) initial_messages: Vec<Message>,
+    /// Index of the first message created by this invocation. `AgentEnd`
+    /// reports this suffix, matching Pi continuation semantics.
+    pub(crate) message_start_index: usize,
     pub(crate) skip_initial_steering: bool,
 }
 
@@ -121,6 +180,8 @@ impl RunHandle {
                 id: state.allocate_message_id(),
                 content: String::new(),
                 tool_calls: Vec::new(),
+                stop_reason: Some(StopReason::Error),
+                error_message: Some(error.to_string()),
             };
             state.partial_response = None;
             state.pending_tool_calls.clear();
@@ -149,12 +210,7 @@ impl RunHandle {
                 },
             )
             .await;
-        let messages = agent
-            .state
-            .lock()
-            .expect("agent state mutex poisoned")
-            .messages
-            .clone();
+        let messages = self.new_messages(&agent);
         let _ = self
             .emit(&agent, AgentEventKind::AgentEnd { messages })
             .await;
@@ -170,7 +226,8 @@ impl RunHandle {
 
         {
             let state = agent.state.lock().expect("agent state mutex poisoned");
-            if !matches!(state.phase, AgentPhase::Running(id) if id == run_id) {
+            if !matches!(state.phase, AgentPhase::Running(id) | AgentPhase::Cancelling(id) if id == run_id)
+            {
                 return Err(CoreError::InvalidTransition(
                     crate::error::StateTransitionError::new("agent", "not-running", "drive"),
                 ));
@@ -195,11 +252,9 @@ impl RunHandle {
             )
             .await?;
         }
-        if self.cancellation.is_cancelled() {
-            return Err(CoreError::Cancelled);
-        }
-
         let mut turn_id = TurnId(1);
+        let mut model_override = None::<ModelDescriptor>;
+        let mut thinking_override = None::<ThinkingLevel>;
         let mut next_context = if self.skip_initial_steering {
             None
         } else {
@@ -211,25 +266,63 @@ impl RunHandle {
             .await?
         };
         loop {
-            if self.cancellation.is_cancelled() {
-                return Err(CoreError::Cancelled);
-            }
-
-            let request = self.model_request(&agent, run_id, next_context.take())?;
+            let request = self
+                .model_request(
+                    &agent,
+                    run_id,
+                    next_context.take(),
+                    model_override.as_ref(),
+                    thinking_override,
+                )
+                .await?;
             let provider = agent
                 .provider
                 .as_ref()
                 .ok_or(CoreError::MissingModelProvider)?;
-            let stream = provider
+            let mut stream = provider
                 .stream(request, self.cancellation.clone())
                 .await
                 .map_err(|error| CoreError::ModelProvider {
                     message: error.to_string(),
                 })?;
-            let (reason, tool_calls) = self.consume_assistant_stream(&agent, stream.events).await?;
+            let (reason, tool_calls, error_message) = self
+                .consume_assistant_stream(&agent, stream.as_mut())
+                .await?;
+
+            if matches!(reason, StopReason::Error | StopReason::Aborted) {
+                self.emit(&agent, AgentEventKind::TurnEnd { turn_id, reason })
+                    .await?;
+                let messages = self.new_messages(&agent);
+                self.emit(&agent, AgentEventKind::AgentEnd { messages })
+                    .await?;
+                let message = error_message.unwrap_or_else(|| {
+                    if reason == StopReason::Aborted {
+                        "model response was aborted".into()
+                    } else {
+                        "model response failed".into()
+                    }
+                });
+                let error = if reason == StopReason::Aborted {
+                    CoreError::ModelAborted {
+                        message: message.clone(),
+                    }
+                } else {
+                    CoreError::ModelError {
+                        message: message.clone(),
+                    }
+                };
+                if reason == StopReason::Aborted && self.cancellation.is_cancelled() {
+                    self.finish(RunPhase::Cancelled, StopReason::Aborted, None)?;
+                    return Err(CoreError::Cancelled);
+                }
+                self.fail(message)?;
+                return Err(error);
+            }
 
             let terminate_tool_batch = if tool_calls.is_empty() {
                 false
+            } else if reason == StopReason::Length {
+                self.fail_truncated_tool_calls(&agent, &tool_calls).await?
             } else {
                 if reason != StopReason::ToolUse {
                     return Err(CoreError::UnsupportedModelStream {
@@ -244,9 +337,27 @@ impl RunHandle {
             self.emit(&agent, AgentEventKind::TurnEnd { turn_id, reason })
                 .await?;
 
-            let context = self.current_context(&agent)?;
-            let prepared_context = agent.hooks.prepare_next_turn(context)?;
-            if agent.hooks.should_stop_after_turn(&prepared_context)? {
+            let current_context = self.current_context(&agent)?;
+            let NextTurn {
+                context,
+                model,
+                thinking_level,
+            } = agent
+                .hooks
+                .prepare_next_turn_async(current_context.clone(), self.cancellation.clone())
+                .await?;
+            let prepared_context = context.unwrap_or(current_context);
+            if let Some(model) = model {
+                model_override = Some(model);
+            }
+            if let Some(thinking_level) = thinking_level {
+                thinking_override = Some(thinking_level);
+            }
+            if agent
+                .hooks
+                .should_stop_after_turn_async(&prepared_context, self.cancellation.clone())
+                .await?
+            {
                 return self.emit_agent_end_and_succeed(&agent, reason).await;
             }
 
@@ -271,15 +382,18 @@ impl RunHandle {
         }
     }
 
-    fn model_request(
+    async fn model_request(
         &self,
         agent: &AgentInner,
         run_id: RunId,
         context: Option<crate::hooks::ContextEnvelope>,
+        model_override: Option<&ModelDescriptor>,
+        thinking_override: Option<ThinkingLevel>,
     ) -> Result<ModelRequest, CoreError> {
-        let (context, system_prompt, model, tools) = {
+        let (context, system_prompt, model, thinking_level, tools) = {
             let mut state = agent.state.lock().expect("agent state mutex poisoned");
-            if !matches!(state.phase, AgentPhase::Running(id) if id == run_id) {
+            if !matches!(state.phase, AgentPhase::Running(id) | AgentPhase::Cancelling(id) if id == run_id)
+            {
                 return Err(CoreError::InvalidTransition(
                     crate::error::StateTransitionError::new(
                         "agent",
@@ -293,19 +407,27 @@ impl RunHandle {
                 context.unwrap_or_else(|| crate::hooks::ContextEnvelope {
                     version: 1,
                     messages: state.messages.clone(),
-                    host_messages: Vec::new(),
+                    host_messages: state.host_messages.clone(),
                 }),
                 state.system_prompt.clone(),
-                state.model.as_ref().map(|model| format!("{model:?}")),
+                model_override.cloned().or_else(|| state.model.clone()),
+                thinking_override.unwrap_or(state.thinking_level),
                 agent.tools.definitions(),
             )
         };
-        let transformed = agent.hooks.transform_context(context)?;
+        let transformed = agent
+            .hooks
+            .transform_context_async(context, self.cancellation.clone())
+            .await?;
         let request = ModelRequest {
             system_prompt,
-            context: agent.hooks.convert_to_llm(transformed.clone())?,
+            context: agent
+                .hooks
+                .convert_to_llm_async(transformed, self.cancellation.clone())
+                .await?,
             tools,
             model,
+            thinking_level,
         };
         Ok(request)
     }
@@ -315,7 +437,10 @@ impl RunHandle {
         agent: &AgentInner,
     ) -> Result<crate::hooks::ContextEnvelope, CoreError> {
         let state = agent.state.lock().expect("agent state mutex poisoned");
-        if !matches!(state.phase, AgentPhase::Running(_)) {
+        if !matches!(
+            state.phase,
+            AgentPhase::Running(_) | AgentPhase::Cancelling(_)
+        ) {
             return Err(CoreError::InvalidTransition(
                 crate::error::StateTransitionError::new("agent", "not-running", "current_context"),
             ));
@@ -323,7 +448,7 @@ impl RunHandle {
         Ok(crate::hooks::ContextEnvelope {
             version: 1,
             messages: state.messages.clone(),
-            host_messages: Vec::new(),
+            host_messages: state.host_messages.clone(),
         })
     }
 
@@ -360,7 +485,10 @@ impl RunHandle {
         queued: Vec<crate::queue::QueuedMessage>,
     ) -> Result<Option<crate::hooks::ContextEnvelope>, CoreError> {
         if queued.is_empty() {
-            return Ok(None);
+            // Preserve the context prepared by `prepare_next_turn`, even when
+            // no user message is waiting. Tool continuations still consume
+            // this replacement before the next model request.
+            return Ok(Some(context));
         }
         for queued_message in queued {
             let message = {
@@ -389,17 +517,25 @@ impl RunHandle {
     async fn consume_assistant_stream(
         &self,
         agent: &AgentInner,
-        events: Vec<ModelStreamEvent>,
-    ) -> Result<(StopReason, Vec<AssistantToolCall>), CoreError> {
+        stream: &mut dyn ModelEventStream,
+    ) -> Result<(StopReason, Vec<AssistantToolCall>, Option<String>), CoreError> {
         let mut assistant_id = None;
         let mut assistant_text = String::new();
         let mut tool_calls = Vec::new();
         let mut reason = None;
+        let mut error_message = None;
 
-        for item in events {
-            if self.cancellation.is_cancelled() {
-                return Err(CoreError::Cancelled);
-            }
+        loop {
+            let Some(item) =
+                stream
+                    .next_event(self.cancellation.clone())
+                    .await
+                    .map_err(|error| CoreError::ModelProvider {
+                        message: error.to_string(),
+                    })?
+            else {
+                break;
+            };
             if reason.is_some() {
                 return Err(CoreError::UnsupportedModelStream {
                     message: "model stream contained events after its terminal event".into(),
@@ -416,6 +552,8 @@ impl RunHandle {
                                 id,
                                 content: String::new(),
                                 tool_calls: Vec::new(),
+                                stop_reason: None,
+                                error_message: None,
                             });
                         }
                         assistant_text.push_str(&delta);
@@ -424,6 +562,8 @@ impl RunHandle {
                             id,
                             content: assistant_text.clone(),
                             tool_calls: Vec::new(),
+                            stop_reason: None,
+                            error_message: None,
                         };
                         *state
                             .messages
@@ -439,16 +579,32 @@ impl RunHandle {
                                     id: message_id,
                                     content: String::new(),
                                     tool_calls: Vec::new(),
+                                    stop_reason: None,
+                                    error_message: None,
                                 },
                             },
                         )
                         .await?;
                     }
-                    self.emit(agent, AgentEventKind::MessageUpdate { message })
-                        .await?;
+                    self.emit(
+                        agent,
+                        AgentEventKind::MessageUpdate {
+                            message,
+                            text_delta: Some(delta),
+                        },
+                    )
+                    .await?;
                 }
                 ModelStreamEvent::ToolCall(call) => tool_calls.push(call),
                 ModelStreamEvent::Usage(_) => {}
+                ModelStreamEvent::Error { message } => {
+                    reason = Some(StopReason::Error);
+                    error_message = Some(message);
+                }
+                ModelStreamEvent::Aborted { message } => {
+                    reason = Some(StopReason::Aborted);
+                    error_message = Some(message);
+                }
                 ModelStreamEvent::End(next_reason) => reason = Some(next_reason),
             }
         }
@@ -463,6 +619,8 @@ impl RunHandle {
                 id,
                 content: assistant_text,
                 tool_calls: tool_calls.clone(),
+                stop_reason: Some(reason),
+                error_message: error_message.clone(),
             };
             state.partial_response = None;
             state.is_streaming = false;
@@ -487,7 +645,46 @@ impl RunHandle {
         }
         self.emit(agent, AgentEventKind::MessageEnd { message: assistant })
             .await?;
-        Ok((reason, tool_calls))
+        Ok((reason, tool_calls, error_message))
+    }
+
+    /// Refuse tool calls from a length-truncated assistant response. The
+    /// provider may have emitted syntactically plausible JSON after a partial
+    /// argument stream, but upstream treats every such call as unsafe.
+    async fn fail_truncated_tool_calls(
+        &self,
+        agent: &AgentInner,
+        tool_calls: &[AssistantToolCall],
+    ) -> Result<bool, CoreError> {
+        for assistant_call in tool_calls {
+            let call = ToolCall {
+                id: assistant_call.id.clone(),
+                name: assistant_call.name.clone(),
+                arguments: assistant_call.arguments.clone(),
+            };
+            {
+                let mut state = agent.state.lock().expect("agent state mutex poisoned");
+                state.pending_tool_calls.insert(call.id.clone());
+            }
+            self.emit(
+                agent,
+                AgentEventKind::ToolExecutionStart {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                },
+            )
+            .await?;
+            let result = error_tool_result(
+                &call,
+                format!(
+                    "Tool call \"{}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.",
+                    call.name
+                ),
+            );
+            self.emit_tool_execution_end(agent, &call, &result).await?;
+            self.append_tool_result_message(agent, call, result).await?;
+        }
+        Ok(false)
     }
 
     async fn execute_tool_calls(
@@ -514,10 +711,6 @@ impl RunHandle {
     ) -> Result<bool, CoreError> {
         let mut all_terminate = true;
         for assistant_call in tool_calls {
-            if self.cancellation.is_cancelled() {
-                return Err(CoreError::Cancelled);
-            }
-
             let call = ToolCall {
                 id: assistant_call.id.clone(),
                 name: assistant_call.name.clone(),
@@ -550,6 +743,7 @@ impl RunHandle {
         tool_calls: &[AssistantToolCall],
     ) -> Result<bool, CoreError> {
         let mut prepared = Vec::with_capacity(tool_calls.len());
+        let updates = PendingToolUpdates::default();
         let mut completions = (0..tool_calls.len())
             .map(|_| None::<(ToolResult, bool)>)
             .collect::<Vec<_>>();
@@ -558,9 +752,6 @@ impl RunHandle {
         // batch. Immediate preparation failures therefore end before later calls are announced;
         // successful result messages remain deferred until every batch completion is known.
         for (source_index, assistant_call) in tool_calls.iter().enumerate() {
-            if self.cancellation.is_cancelled() {
-                return Err(CoreError::Cancelled);
-            }
             let call = ToolCall {
                 id: assistant_call.id.clone(),
                 name: assistant_call.name.clone(),
@@ -578,7 +769,7 @@ impl RunHandle {
                 },
             )
             .await?;
-            let preparation = self.prepare_tool_call(agent, &call)?;
+            let preparation = self.prepare_tool_call(agent, &call).await?;
             if let PreparedToolCall::Immediate { result, terminate } = &preparation {
                 self.emit_tool_execution_end(agent, &call, result).await?;
                 completions[source_index] = Some((result.clone(), *terminate));
@@ -595,23 +786,37 @@ impl RunHandle {
         let mut pending = Vec::new();
         for prepared_call in &prepared {
             if let PreparedToolCall::Execute { tool } = &prepared_call.preparation {
-                let (future, updates) = self.start_tool_future(tool, prepared_call.call.clone());
+                let future =
+                    self.start_tool_future(tool, prepared_call.call.clone(), updates.clone());
                 pending.push(PendingToolExecution {
                     source_index: prepared_call.source_index,
                     call: prepared_call.call.clone(),
                     future,
-                    updates,
                 });
             }
         }
         while !pending.is_empty() {
-            let completed = next_parallel_completion(&mut pending).await;
-            let (result, terminate) = self
-                .finalize_executed_tool(agent, &completed.call, completed.result, completed.updates)
-                .await?;
-            self.emit_tool_execution_end(agent, &completed.call, &result)
-                .await?;
-            completions[completed.source_index] = Some((result, terminate));
+            match next_parallel_step(&mut pending, &updates).await {
+                ParallelToolStep::Updates(pending_updates) => {
+                    self.emit_tool_updates(agent, pending_updates).await?;
+                }
+                ParallelToolStep::Completed {
+                    completed,
+                    updates: pending_updates,
+                } => {
+                    self.emit_tool_updates(agent, pending_updates).await?;
+                    let (result, terminate) = self
+                        .finalize_executed_tool(agent, &completed.call, completed.result)
+                        .await?;
+                    // Another parallel tool may have delivered an update while
+                    // the completion hook was awaited. Deliver it before this
+                    // tool's terminal event.
+                    self.flush_tool_updates(agent, &updates).await?;
+                    self.emit_tool_execution_end(agent, &completed.call, &result)
+                        .await?;
+                    completions[completed.source_index] = Some((result, terminate));
+                }
+            }
         }
         drop(pending);
 
@@ -632,17 +837,30 @@ impl RunHandle {
         agent: &AgentInner,
         call: ToolCall,
     ) -> Result<(ToolResult, bool), CoreError> {
-        match self.prepare_tool_call(agent, &call)? {
+        match self.prepare_tool_call(agent, &call).await? {
             PreparedToolCall::Immediate { result, terminate } => Ok((result, terminate)),
             PreparedToolCall::Execute { tool } => {
-                let (future, updates) = self.start_tool_future(&tool, call.clone());
-                self.finalize_executed_tool(agent, &call, future.await, updates)
-                    .await
+                let updates = PendingToolUpdates::default();
+                let future = self.start_tool_future(&tool, call.clone(), updates.clone());
+                let mut future = future;
+                let execution = loop {
+                    match next_tool_step(&mut future, &updates, &call.id).await {
+                        ToolStep::Updates(updates) => {
+                            self.emit_tool_updates(agent, updates).await?;
+                        }
+                        ToolStep::Completed { result, updates } => {
+                            self.emit_tool_updates(agent, updates).await?;
+                            break result;
+                        }
+                    }
+                };
+                self.flush_tool_updates(agent, &updates).await?;
+                self.finalize_executed_tool(agent, &call, execution).await
             }
         }
     }
 
-    fn prepare_tool_call(
+    async fn prepare_tool_call(
         &self,
         agent: &AgentInner,
         call: &ToolCall,
@@ -659,7 +877,12 @@ impl RunHandle {
                 terminate: false,
             });
         }
-        match agent.hooks.before_tool_call(call) {
+        let context = self.current_context(agent)?;
+        match agent
+            .hooks
+            .before_tool_call_async(call, context, self.cancellation.clone())
+            .await
+        {
             Ok(BeforeToolCall::Allow) => {}
             Ok(BeforeToolCall::Block { reason }) => {
                 return Ok(PreparedToolCall::Immediate {
@@ -683,7 +906,10 @@ impl RunHandle {
         if self.cancellation.is_cancelled() {
             return Ok(PreparedToolCall::Immediate {
                 result: error_tool_result(call, "Operation aborted"),
-                terminate: true,
+                // Pi records this tool failure and gives the provider the
+                // already-aborted signal on the next turn. It is not a policy
+                // termination hint.
+                terminate: false,
             });
         }
         Ok(PreparedToolCall::Execute { tool })
@@ -693,26 +919,22 @@ impl RunHandle {
         &self,
         tool: &'a Arc<dyn AgentTool>,
         call: ToolCall,
-    ) -> (ToolFuture<'a>, Arc<Mutex<Vec<ToolUpdate>>>) {
-        let updates = Arc::new(Mutex::new(Vec::<ToolUpdate>::new()));
+        updates: PendingToolUpdates,
+    ) -> ToolFuture<'a> {
+        let update_call_id = call.id.clone();
+        let update_tool_name = call.name.clone();
         let update_sink = ToolUpdateSink::new({
-            let updates = Arc::clone(&updates);
-            move |update| {
-                updates
-                    .lock()
-                    .expect("tool update mutex poisoned")
-                    .push(update)
-            }
+            let updates = updates.clone();
+            move |update| updates.push((update_call_id.clone(), update_tool_name.clone(), update))
         });
-        let future = tool.execute(
+        tool.execute(
             call,
             ToolContext {
                 cancellation: self.cancellation.clone(),
                 metadata: None,
             },
             update_sink,
-        );
-        (future, updates)
+        )
     }
 
     async fn finalize_executed_tool(
@@ -720,7 +942,6 @@ impl RunHandle {
         agent: &AgentInner,
         call: &ToolCall,
         execution: Result<ToolResult, crate::error::ToolError>,
-        updates: Arc<Mutex<Vec<ToolUpdate>>>,
     ) -> Result<(ToolResult, bool), CoreError> {
         let mut result = match execution {
             Ok(result) if result.tool_call_id == call.id => result,
@@ -733,23 +954,15 @@ impl RunHandle {
             ),
             Err(error) => error_tool_result(call, tool_error_message(error)),
         };
-        let updates = std::mem::take(&mut *updates.lock().expect("tool update mutex poisoned"));
-        for update in updates {
-            self.emit(
-                agent,
-                AgentEventKind::ToolExecutionUpdate {
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    update,
-                },
-            )
-            .await?;
-        }
-        let terminate = match agent.hooks.after_tool_call(call, &result) {
+        let context = self.current_context(agent)?;
+        let terminate = match agent
+            .hooks
+            .after_tool_call_async(call, &result, context, self.cancellation.clone())
+            .await
+        {
             Ok(after) => {
-                let terminate = after.terminate == Some(true);
                 apply_after_tool_call(&mut result, after);
-                terminate
+                result.terminate
             }
             Err(error) => {
                 result = error_tool_result(call, error.message);
@@ -757,6 +970,38 @@ impl RunHandle {
             }
         };
         Ok((result, terminate))
+    }
+
+    /// Flush any callbacks that raced with an awaited hook or lifecycle
+    /// observer before the terminal event for the current tool is emitted.
+    async fn flush_tool_updates(
+        &self,
+        agent: &AgentInner,
+        updates: &PendingToolUpdates,
+    ) -> Result<(), CoreError> {
+        while let Some(updates) = updates.take() {
+            self.emit_tool_updates(agent, updates).await?;
+        }
+        Ok(())
+    }
+
+    async fn emit_tool_updates(
+        &self,
+        agent: &AgentInner,
+        updates: Vec<PendingToolUpdate>,
+    ) -> Result<(), CoreError> {
+        for (tool_call_id, tool_name, update) in updates {
+            self.emit(
+                agent,
+                AgentEventKind::ToolExecutionUpdate {
+                    tool_call_id,
+                    tool_name,
+                    update,
+                },
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn emit_tool_execution_end(
@@ -794,6 +1039,9 @@ impl RunHandle {
                 tool_call_id: call.id,
                 tool_name: call.name,
                 content: result.content,
+                details: result.details,
+                usage: result.usage,
+                added_tool_names: result.added_tool_names,
                 is_error: result.is_error,
             };
             state.messages.push(message.clone());
@@ -816,12 +1064,7 @@ impl RunHandle {
         agent: &AgentInner,
         reason: StopReason,
     ) -> Result<(), CoreError> {
-        let messages = agent
-            .state
-            .lock()
-            .expect("agent state mutex poisoned")
-            .messages
-            .clone();
+        let messages = self.new_messages(agent);
         self.emit(agent, AgentEventKind::AgentEnd { messages })
             .await?;
         self.succeed(reason)
@@ -829,35 +1072,79 @@ impl RunHandle {
 
     async fn settle_cancellation(&self) {
         let Some(agent) = self.agent.upgrade() else {
-            let _ = self.finish(RunPhase::Cancelled, StopReason::Cancelled, None);
+            let _ = self.finish(RunPhase::Cancelled, StopReason::Aborted, None);
             return;
         };
         let turn_id = self.snapshot().turn_id.unwrap_or(TurnId(1));
-        {
+        let failure = {
             let mut state = agent.state.lock().expect("agent state mutex poisoned");
             state.partial_response = None;
             state.is_streaming = false;
             state.pending_tool_calls.clear();
+            if matches!(
+                state.messages.last(),
+                Some(Message::Assistant {
+                    stop_reason: Some(StopReason::Aborted),
+                    ..
+                })
+            ) {
+                None
+            } else {
+                let message = Message::Assistant {
+                    id: state.allocate_message_id(),
+                    content: String::new(),
+                    tool_calls: Vec::new(),
+                    stop_reason: Some(StopReason::Aborted),
+                    error_message: Some("Operation aborted".into()),
+                };
+                state.messages.push(message.clone());
+                Some(message)
+            }
+        };
+        if let Some(message) = failure {
+            let _ = self
+                .emit(
+                    &agent,
+                    AgentEventKind::MessageStart {
+                        message: message.clone(),
+                    },
+                )
+                .await;
+            let _ = self
+                .emit(&agent, AgentEventKind::MessageEnd { message })
+                .await;
         }
         let _ = self
             .emit(
                 &agent,
                 AgentEventKind::TurnEnd {
                     turn_id,
-                    reason: StopReason::Cancelled,
+                    reason: StopReason::Aborted,
                 },
             )
             .await;
-        let messages = agent
+        let messages = self.new_messages(&agent);
+        let _ = self
+            .emit(&agent, AgentEventKind::AgentEnd { messages })
+            .await;
+        let _ = self.finish(RunPhase::Cancelled, StopReason::Aborted, None);
+    }
+
+    /// Return exactly the messages created by this run invocation.
+    ///
+    /// Pi's low-level loop returns `newMessages`, which includes the prompt
+    /// supplied to a prompt run but excludes durable context supplied to a
+    /// continuation run. The durable transcript remains available through an
+    /// agent snapshot; `AgentEnd` is the invocation result.
+    fn new_messages(&self, agent: &AgentInner) -> Vec<Message> {
+        agent
             .state
             .lock()
             .expect("agent state mutex poisoned")
             .messages
-            .clone();
-        let _ = self
-            .emit(&agent, AgentEventKind::AgentEnd { messages })
-            .await;
-        let _ = self.finish(RunPhase::Cancelled, StopReason::Cancelled, None);
+            .get(self.message_start_index..)
+            .unwrap_or_default()
+            .to_vec()
     }
 
     /// Begin the first model turn.
@@ -1001,8 +1288,47 @@ impl RunHandle {
         kind: AgentEventKind,
     ) -> Result<AgentEvent, CoreError> {
         let event = self.record_event(kind);
-        for observer in &agent.observers {
-            observer.observe(&event, self.cancellation.clone()).await?;
+        // Clone a registration snapshot before awaiting callbacks. This avoids
+        // retaining the registry mutex across an await and defines reentrant
+        // subscribe/unsubscribe precisely: changes apply to the next event.
+        let observers = agent
+            .observers
+            .lock()
+            .expect("observer mutex poisoned")
+            .clone();
+        for registration in observers {
+            registration
+                .observer
+                .observe(&event, self.cancellation.clone())
+                .await?;
+        }
+        // These subscriptions deliberately have a distinct contract from
+        // awaited observers. Snapshot their registrations so a receiver can
+        // drop itself while delivery is in progress, then use `try_send` so a
+        // slow receiver never holds the run open.
+        let subscribers = agent
+            .subscribers
+            .lock()
+            .expect("subscriber mutex poisoned")
+            .clone();
+        let mut disconnected = Vec::new();
+        for registration in subscribers {
+            match registration.sender.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    registration
+                        .dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+                Err(TrySendError::Disconnected(_)) => disconnected.push(registration.id),
+            }
+        }
+        if !disconnected.is_empty() {
+            agent
+                .subscribers
+                .lock()
+                .expect("subscriber mutex poisoned")
+                .retain(|registration| !disconnected.contains(&registration.id));
         }
         Ok(event)
     }
@@ -1021,24 +1347,96 @@ impl Drop for RunHandle {
     }
 }
 
-async fn next_parallel_completion<'a>(
-    pending: &mut Vec<PendingToolExecution<'a>>,
-) -> CompletedToolExecution {
+enum ToolStep {
+    Updates(Vec<PendingToolUpdate>),
+    Completed {
+        result: Result<ToolResult, crate::error::ToolError>,
+        updates: Vec<PendingToolUpdate>,
+    },
+}
+
+enum ParallelToolStep {
+    Updates(Vec<PendingToolUpdate>),
+    Completed {
+        completed: Box<CompletedToolExecution>,
+        updates: Vec<PendingToolUpdate>,
+    },
+}
+
+/// Poll one sequential tool until either its callback queue has work or its
+/// future settles. A callback may happen from another thread while the tool is
+/// pending; `PendingToolUpdates` wakes this poll so the event is not delayed
+/// until settlement.
+async fn next_tool_step<'a>(
+    future: &mut ToolFuture<'a>,
+    updates: &PendingToolUpdates,
+    call_id: &ToolCallId,
+) -> ToolStep {
     std::future::poll_fn(|context| {
+        if let Some(updates) = updates.take() {
+            return Poll::Ready(ToolStep::Updates(updates));
+        }
+        updates.register_waker(context.waker());
+        // Close the check/register race: a callback arriving immediately
+        // before registration must still be observed on this poll.
+        if let Some(updates) = updates.take() {
+            return Poll::Ready(ToolStep::Updates(updates));
+        }
+        match future.as_mut().poll(context) {
+            Poll::Ready(result) => {
+                updates.close(call_id);
+                Poll::Ready(ToolStep::Completed {
+                    result,
+                    updates: updates.take().unwrap_or_default(),
+                })
+            }
+            Poll::Pending => updates
+                .take()
+                .map(ToolStep::Updates)
+                .map_or(Poll::Pending, Poll::Ready),
+        }
+    })
+    .await
+}
+
+/// Poll one parallel batch until either a callback queue has work or one tool
+/// settles. Updates found after each individual future poll are returned before
+/// the next future is polled, which preserves callback-before-completion order.
+async fn next_parallel_step<'a>(
+    pending: &mut Vec<PendingToolExecution<'a>>,
+    updates: &PendingToolUpdates,
+) -> ParallelToolStep {
+    std::future::poll_fn(|context| {
+        if let Some(updates) = updates.take() {
+            return Poll::Ready(ParallelToolStep::Updates(updates));
+        }
+        updates.register_waker(context.waker());
+        if let Some(updates) = updates.take() {
+            return Poll::Ready(ParallelToolStep::Updates(updates));
+        }
         let mut index = 0;
         while index < pending.len() {
             if let Poll::Ready(result) = pending[index].future.as_mut().poll(context) {
                 let pending = pending.swap_remove(index);
-                return Poll::Ready(CompletedToolExecution {
-                    source_index: pending.source_index,
-                    call: pending.call,
-                    result,
-                    updates: pending.updates,
+                updates.close(&pending.call.id);
+                return Poll::Ready(ParallelToolStep::Completed {
+                    completed: Box::new(CompletedToolExecution {
+                        source_index: pending.source_index,
+                        call: pending.call,
+                        result,
+                    }),
+                    updates: updates.take().unwrap_or_default(),
                 });
+            }
+            if let Some(updates) = updates.take() {
+                return Poll::Ready(ParallelToolStep::Updates(updates));
             }
             index = index.saturating_add(1);
         }
-        Poll::Pending
+        updates
+            .take()
+            .map(ParallelToolStep::Updates)
+            .map_or(Poll::Pending, Poll::Ready)
     })
     .await
 }
@@ -1048,6 +1446,9 @@ fn error_tool_result(call: &ToolCall, content: impl Into<String>) -> ToolResult 
         tool_call_id: call.id.clone(),
         content: content.into(),
         details: None,
+        usage: None,
+        added_tool_names: Vec::new(),
+        terminate: false,
         is_error: true,
     }
 }
@@ -1067,6 +1468,15 @@ fn apply_after_tool_call(result: &mut ToolResult, after: AfterToolCall) {
     }
     if let Replacement::Replace(details) = after.details {
         result.details = details;
+    }
+    if let Replacement::Replace(usage) = after.usage {
+        result.usage = Some(usage);
+    }
+    if let Replacement::Replace(added_tool_names) = after.added_tool_names {
+        result.added_tool_names = added_tool_names;
+    }
+    if let Some(terminate) = after.terminate {
+        result.terminate = terminate;
     }
     if let Replacement::Replace(is_error) = after.is_error {
         result.is_error = is_error;

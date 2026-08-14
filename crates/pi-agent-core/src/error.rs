@@ -22,6 +22,10 @@ pub enum CoreError {
     MissingModelProvider,
     /// A caller-provided model stream failed before yielding a terminal response.
     ModelProvider { message: String },
+    /// A provider returned a terminal assistant response marked as a model error.
+    ModelError { message: String },
+    /// A provider returned a terminal assistant response marked as aborted.
+    ModelAborted { message: String },
     /// A hook failed at an explicit lifecycle boundary.
     Hook(HookError),
     /// The model stream used a behavior that the active V0 slice does not yet support.
@@ -59,6 +63,8 @@ impl fmt::Display for CoreError {
             Self::Cancelled => f.write_str("operation was cancelled"),
             Self::MissingModelProvider => f.write_str("agent has no model provider"),
             Self::ModelProvider { message } => write!(f, "model provider failed: {message}"),
+            Self::ModelError { message } => write!(f, "model response failed: {message}"),
+            Self::ModelAborted { message } => write!(f, "model response aborted: {message}"),
             Self::Hook(error) => error.fmt(f),
             Self::UnsupportedModelStream { message } => {
                 write!(f, "unsupported model stream behavior: {message}")

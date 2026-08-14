@@ -1,0 +1,125 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "mixed-tool-execution",
+  "description": "One sequential tool causes the pinned Pi SDK to serialize the entire otherwise-parallel assistant tool batch.",
+  "setup": {
+    "system_prompt": "Run the supplied tools in their required execution order.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-mixed-tools"
+    },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "serial",
+        "description": "Return after one deterministic scheduler yield.",
+        "execution_mode": "sequential",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "parallel",
+        "description": "Return immediately when the batch permits it.",
+        "execution_mode": "parallel",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Run both tools."
+    }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "tool_call",
+          "id": "call_serial_001",
+          "name": "serial",
+          "arguments": {}
+        },
+        {
+          "kind": "tool_call",
+          "id": "call_parallel_001",
+          "name": "parallel",
+          "arguments": {}
+        },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "complete"
+        },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "serial",
+        "calls": [
+          {
+            "arguments": {},
+            "yield_once": true,
+            "result": {
+              "is_error": false,
+              "content": [
+                { "type": "text", "text": "serial result" }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "parallel",
+        "calls": [
+          {
+            "arguments": {},
+            "result": {
+              "is_error": false,
+              "content": [
+                { "type": "text", "text": "parallel result" }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "complete"
+  }
+}

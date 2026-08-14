@@ -1,0 +1,45 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "model-aborted-terminal",
+  "description": "A provider-returned aborted assistant response settles as an aborted terminal turn without a host cancellation request.",
+  "setup": {
+    "system_prompt": "Return an answer if the model remains available.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-model-aborted"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Trigger the deterministic provider abort."
+    }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "error",
+          "reason": "aborted",
+          "message": "fixture provider aborted the response",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": []
+  },
+  "assertions": {
+    "outcome": "completed"
+  }
+}

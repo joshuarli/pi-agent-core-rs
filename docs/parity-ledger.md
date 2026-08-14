@@ -46,15 +46,15 @@ Exit criterion: <required when investigating>
 | PL-AGENT-001 | supported | `packages/agent/src/agent.ts` / `Agent` constructor, `AgentOptions` | Construct explicit state, stream function, hooks, queues, model/tool config; no ambient setup | `agent/construct` / state snapshot and first request |
 | PL-AGENT-002 | supported | `agent.ts` / `prompt` and `normalizePromptInput` | Accept text, one message, or ordered messages; append prompt messages and emit their lifecycle before assistant work | `events/plain-prompt` / messages and event order |
 | PL-AGENT-003 | supported | `agent.ts` / `continue`, `runContinuation`; `agent-loop.ts` / `agentLoopContinue` | Continue only from non-empty transcript whose last message is user/tool-result; assistant tail is rejected or follows pinned queued-message special case | `run/continue-tail` / typed outcome |
-| PL-AGENT-004 | supported | `agent.ts` / `steer`, `followUp`, `clear*Queue`, `hasQueuedMessages` | Explicit steering/follow-up queues with independent modes and documented drain points | `queues/basic-and-mixed` |
-| PL-AGENT-005 | supported | `agent.ts` / `subscribe`, `waitForIdle` | Listener registration order, active signal, and awaited `agent_end` settlement are observable | `events/observer-settlement` |
+| PL-AGENT-004 | supported | `agent.ts` / `steer`, `followUp`, `clear*Queue`, `hasQueuedMessages` | Explicit steering/follow-up queues with independent modes and documented drain points | `steering-all`, `steering-one-at-a-time`, `active-steering-during-tool`, `active-follow-up-during-tool` canonical parity fixtures |
+| PL-AGENT-005 | supported | `agent.ts` / `subscribe`, `waitForIdle` | Listener registration order, active signal, and awaited `agent_end` settlement are observable | `awaited-agent-end-observer` canonical parity fixture; focused reentrancy/subscription tests |
 | PL-AGENT-006 | supported | `agent.ts` / `abort`, `signal`, `runWithLifecycle`, `finishRun` | Idempotent cancellation; terminal state clears stream/pending IDs and permits reuse | `cancel/reuse` |
 | PL-AGENT-007 | supported | `agent.ts` / `state`, `reset`; `types.ts` / `AgentState` | State snapshot fields and top-level copy-on-assignment semantics | `state/snapshot-reset` |
 | PL-AGENT-008 | supported | `agent-loop.ts` / `runAgentLoop`, `runAgentLoopContinue`, `runLoop` | Multi-turn progression, normal completion, tool continuation, and terminal agent event | `events/plain`, `events/tool` |
 | PL-AGENT-009 | supported | `types.ts` / `AgentContext`, `AgentMessage`, `AgentToolCall`, `AgentToolResult` | Selected protocol shape sufficient for model requests, context, tool results, and transcript | `protocol/round-trip` |
-| PL-AGENT-010 | supported | `types.ts` / `AgentLoopConfig` | `transformContext` precedes `convertToLlm`; next-turn replacement affects subsequent request only | `hooks/context-and-next-turn` |
-| PL-AGENT-011 | investigating | `agent.ts` / `ActiveRun`; `types.ts` / `AgentEvent` (no public run/turn/message IDs) | Stable V0 correlation ID assignment and adapter normalization | `identity/plain-and-tool-run`; exit: add fixture proving ID generation/mapping and no reuse after cancellation |
-| PL-AGENT-012 | investigating | `agent.ts` / `processEvents`; `subscribe` | Observer failure, unsubscribe/reentrancy, and non-blocking subscription capacity adaptation | `events/observer-edge-cases`; exit: record a single terminal result and explicit Rust observer contract |
+| PL-AGENT-010 | supported | `types.ts` / `AgentLoopConfig` | `transformContext` precedes `convertToLlm`; next-turn replacement affects subsequent request only | `hooks-context-and-next-turn` canonical parity fixture and `request_trace` |
+| PL-AGENT-011 | supported | `agent.ts` / `ActiveRun`; `types.ts` / `AgentEvent` (no public run/turn/message IDs) | Rust-assigned monotonic run/message/event correlation IDs; provider `toolCallId` is preserved | `tests::generated_run_message_and_event_ids_are_monotonic_after_cancellation` |
+| PL-AGENT-012 | supported | `agent.ts` / `processEvents`; `subscribe` | Awaited RAII observer ordering/error/reentrancy plus bounded non-blocking observational delivery | `tests::runtime_subscription_is_reentrant_and_drop_unsubscribes_for_future_events`, `tests::observer_failure_has_one_terminal_settlement_and_leaves_the_agent_reusable`, `tests::nonblocking_subscription_is_ordered_lossy_and_never_delays_settlement` |
 | PL-AGENT-013 | rejected | `packages/agent/src/harness/**` / session and harness exports | Session tree, compaction, skills, resource loading, persisted session behavior | `scope/rejection-matrix` |
 
 ## Event lifecycle
@@ -66,23 +66,23 @@ Exit criterion: <required when investigating>
 | PL-EVENT-003 | supported | `agent-loop.ts` / `executeToolCalls*` | Tool start/preparation order, update flushing, end order, and result-message source order | `tools/parallel-reverse-order` |
 | PL-EVENT-004 | supported | `agent-loop.ts` / `emitToolResultMessage` | Every tool result has message start/end after finalized tool execution | `events/tool` |
 | PL-EVENT-005 | supported | `agent-loop.ts` / `runLoop` | `turn_end` contains assistant message and ordered tool results; next turn starts only after its settlement | `events/multi-turn` |
-| PL-EVENT-006 | supported | `agent.ts` / `processEvents` | Event reducer updates streaming/pending/error state before observers run | `events/observer-state-view` |
-| PL-EVENT-007 | supported | `agent.ts` / `finishRun` | `agent_end` is last emitted event; idle follows awaited terminal observers | `events/observer-settlement` |
-| PL-EVENT-008 | investigating | `types.ts` / `AgentEvent` | Stable run/turn/message IDs and terminal-event grammar for Rust protocol | `identity/*`, `events/grammar`; exit: fixture must prove generated IDs and exactly-one terminal event |
+| PL-EVENT-006 | supported | `agent.ts` / `processEvents` | Event reducer updates streaming/pending/error state before observers run | focused `observer_state` core tests |
+| PL-EVENT-007 | supported | `agent.ts` / `finishRun` | `agent_end` is last emitted event; idle follows awaited terminal observers | `awaited-agent-end-observer` canonical parity fixture |
+| PL-EVENT-008 | supported | `types.ts` / `AgentEvent` | Rust protocol carries stable generated IDs and exactly one terminal `agent_end`; adapter normalizes only upstream-absent generated IDs | `tests::generated_run_message_and_event_ids_are_monotonic_after_cancellation` |
 
 ## Tools and hooks
 
 | ID | Status | Upstream path / symbol | Observable target | Fixture / evidence |
 | --- | --- | --- | --- | --- |
 | PL-TOOL-001 | supported | `types.ts` / `AgentTool`, `ToolExecutionMode` | Name, description, raw JSON Schema-compatible parameters, execute callback, optional per-tool mode | `tools/definitions` |
-| PL-TOOL-002 | supported | `agent-loop.ts` / `prepareToolCall` | Unknown tool, argument preparation, schema validation, before-hook ordering and blocked errors | `tools/validation-and-before` |
+| PL-TOOL-002 | supported | `agent-loop.ts` / `prepareToolCall` | Unknown tool, argument preparation, schema validation, before-hook ordering and blocked errors | `unknown-tool-continues`, `schema-validation-continues`, `before-tool-block-continues` canonical parity fixtures |
 | PL-TOOL-003 | supported | `agent-loop.ts` / `executeToolCallsSequential` | Source-ordered sequential prepare/execute/finalize/end/result insertion | `tools/sequential` |
 | PL-TOOL-004 | supported | `agent-loop.ts` / `executeToolCallsParallel` | Sequential preparation, concurrent allowed execution, completion-order ends, source-order result messages | `tools/parallel-reverse-order` |
 | PL-TOOL-005 | supported | `agent-loop.ts` / `executePreparedToolCall` | Partial updates are emitted/settled before end; post-settlement updates ignored | `tools/partial-updates` |
-| PL-TOOL-006 | supported | `agent-loop.ts` / `finalizeExecutedToolCall` | `afterToolCall` replacement is field-by-field; callback failure becomes error result | `tools/after-replacement` |
-| PL-TOOL-007 | supported | `agent-loop.ts` / `shouldTerminateToolBatch` | A batch terminates only when every finalized result carries `terminate: true` | `tools/termination-hint` |
-| PL-TOOL-008 | supported | `types.ts` / `BeforeToolCallResult`, `AfterToolCallResult` | Block reason, error flag/content/details/usage/termination behavior | `tools/hooks` |
-| PL-TOOL-009 | investigating | `agent-loop.ts` / per-tool sequential override | Mixed sequential/parallel batch semantics at pinned commit | `tools/mixed-execution`; exit: fixture must pin whether one sequential call serializes entire batch |
+| PL-TOOL-006 | supported | `agent-loop.ts` / `finalizeExecutedToolCall` | `afterToolCall` replacement is field-by-field; callback failure becomes error result | `after-tool-replace-result`, `after-tool-terminate` canonical parity fixtures |
+| PL-TOOL-007 | supported | `agent-loop.ts` / `shouldTerminateToolBatch` | A batch terminates only when every finalized result carries `terminate: true` | `all-tools-terminate` canonical parity fixture |
+| PL-TOOL-008 | supported | `types.ts` / `BeforeToolCallResult`, `AfterToolCallResult` | Block reason, error flag/content/details/usage/termination behavior | `before-tool-block-continues`, `before-tool-terminate`, `after-tool-replace-result`, `after-tool-terminate` canonical parity fixtures |
+| PL-TOOL-009 | supported | `agent-loop.ts` / per-tool sequential override | Any sequential tool serializes the complete assistant tool batch at the selected pin | `mixed-tool-execution` canonical parity fixture |
 | PL-TOOL-010 | supported | `types.ts` / `AgentToolUpdateCallback` | Update callback scoped to invocation and late-call suppression | `tools/partial-updates` |
 | PL-TOOL-011 | rejected | `packages/agent/src/harness/tools/**` | Interactive renderers, session file mutation queue, harness tool UX | `scope/rejection-matrix` |
 
@@ -91,11 +91,11 @@ Exit criterion: <required when investigating>
 | ID | Status | Upstream path / symbol | Observable target | Fixture / evidence |
 | --- | --- | --- | --- | --- |
 | PL-RUN-001 | supported | `agent.ts` / `runWithLifecycle`, `handleRunFailure` | Normal/error/aborted terminal cleanup and failure message/event shape | `cancel/failure-shapes` |
-| PL-RUN-002 | supported | `types.ts` / callbacks with `AbortSignal` | Cancellation reaches stream, tools, and hooks at deterministic checkpoints | `cancel/checkpoints` |
-| PL-RUN-003 | supported | `agent.ts` / `PendingMessageQueue`; `agent-loop.ts` / queue polling | `all` vs `one-at-a-time` drain behavior and queue order | `queues/modes` |
-| PL-RUN-004 | supported | `agent-loop.ts` / `shouldStopAfterTurn` | Graceful stop after `turn_end` without queue polling or another model request | `queues/graceful-stop` |
-| PL-RUN-005 | supported | `agent-loop.ts` / `prepareNextTurn` | Context/model/thinking replacement before next request | `hooks/context-and-next-turn` |
-| PL-RUN-006 | investigating | `agent.ts` / `runWithLifecycle` | Dropping unfinished Rust `Run` and observer cancellation behavior | `cancel/drop-and-observer`; exit: choose cancel-and-settle or explicit drop prohibition and test it |
+| PL-RUN-002 | supported | `types.ts` / callbacks with `AbortSignal` | Cancellation reaches stream, tools, and hooks at deterministic checkpoints | `model-stream-cancellation`, `cancel-during-tool-update`, `async-before-tool-cancellation`, and focused hook cancellation tests |
+| PL-RUN-003 | supported | `agent.ts` / `PendingMessageQueue`; `agent-loop.ts` / queue polling | `all` vs `one-at-a-time` drain behavior and queue order, including arrival while a tool is active | `steering-all`, `steering-one-at-a-time`, `active-steering-during-tool`, `active-follow-up-during-tool` canonical parity fixtures |
+| PL-RUN-004 | supported | `agent-loop.ts` / `shouldStopAfterTurn` | Graceful stop after `turn_end` without queue polling or another model request | `should-stop-after-tool-turn` canonical parity fixture |
+| PL-RUN-005 | supported | `agent-loop.ts` / `prepareNextTurn` | Context/model/thinking replacement before next request | `hooks-context-and-next-turn` canonical parity fixture and `request_trace` |
+| PL-RUN-006 | supported | `agent.ts` / `runWithLifecycle` | Rust adaptation: dropping an unfinished `RunHandle` requests cancellation; un-driven runs settle immediately and driven runs settle at their cancellation-aware boundary | `tests::agent_allows_one_run_and_drop_settles_cancellation` |
 | PL-RUN-007 | supported | `types.ts` / `StreamFn` contract; `agent-loop.ts` | Provider errors are stream/final-message outcomes, not implicit provider-specific exceptions | `failure/provider-error` |
 | PL-RUN-008 | rejected | `packages/agent/src/harness/compaction/**` | Compaction policy, branch summarization, session context management | `scope/rejection-matrix` |
 

@@ -8,6 +8,7 @@ use crate::error::ProfileError;
 use crate::tool::{ToolDefinition, ToolRegistry};
 use pi_agent_protocol::JsonValue;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 const PINNED_DEFAULT_PROFILE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -49,6 +50,7 @@ impl ProfileSpec {
 pub struct PiDefaultCodingProfile {
     spec: ProfileSpec,
     standard_tools: Vec<ToolDefinition>,
+    captured_workspace_root: Option<String>,
 }
 
 impl PiDefaultCodingProfile {
@@ -58,6 +60,7 @@ impl PiDefaultCodingProfile {
         Ok(Self {
             standard_tools: spec.tools.clone(),
             spec,
+            captured_workspace_root: None,
         })
     }
 
@@ -79,6 +82,7 @@ impl PiDefaultCodingProfile {
             ));
         }
         let prompt = profile_object(profile_field(root, "system_prompt")?, "system_prompt")?;
+        let inputs = profile_object(profile_field(root, "inputs")?, "inputs")?;
         let spec = ProfileSpec {
             system_prompt: profile_string(prompt, "text")?.to_owned(),
             tools: parse_profile_tools(profile_field(root, "active_tools")?)?,
@@ -90,6 +94,7 @@ impl PiDefaultCodingProfile {
         Ok(Self {
             standard_tools: parse_profile_tools(profile_field(root, "standard_tools")?)?,
             spec,
+            captured_workspace_root: Some(profile_string(inputs, "workspace_root")?.to_owned()),
         })
     }
 
@@ -108,6 +113,23 @@ impl PiDefaultCodingProfile {
             prompt.push_str(guidance);
         }
         prompt
+    }
+
+    /// Render the captured prompt for one explicit workspace authority.
+    ///
+    /// The profile fixture fixes its workspace at capture time so prompt bytes
+    /// can be verified. The runtime must not leak that fixture path into a
+    /// model request: this method performs only that declared substitution,
+    /// after the caller has supplied and canonicalized a workspace. Profiles
+    /// constructed with [`Self::from_spec`] have no captured placeholder and
+    /// return their prompt unchanged.
+    pub fn system_prompt_for_workspace(&self, workspace: &Path) -> String {
+        let prompt = self.system_prompt();
+        let Some(captured_workspace_root) = &self.captured_workspace_root else {
+            return prompt;
+        };
+        let workspace = workspace.to_string_lossy().replace('\\', "/");
+        prompt.replace(captured_workspace_root, &workspace)
     }
 
     /// Apply this profile's active tools to a registry by name while preserving registry
@@ -221,6 +243,7 @@ fn profile_number(object: &BTreeMap<String, JsonValue>, name: &str) -> Result<u6
 #[cfg(test)]
 mod tests {
     use super::PiDefaultCodingProfile;
+    use std::path::Path;
 
     #[test]
     fn pinned_default_uses_the_captured_prompt_and_active_tool_order() {
@@ -241,5 +264,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["read", "bash", "edit", "write", "grep", "find", "ls"]
         );
+    }
+
+    #[test]
+    fn pinned_default_substitutes_only_the_explicit_capture_workspace() {
+        let profile = PiDefaultCodingProfile::pinned_default().expect("pinned capture is valid");
+        let prompt = profile.system_prompt_for_workspace(Path::new("/explicit/workspace"));
+
+        assert!(prompt.contains("Current working directory: /explicit/workspace"));
+        assert!(!prompt.contains("Current working directory: /fixture/workspace"));
     }
 }

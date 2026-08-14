@@ -16,10 +16,12 @@
 #![doc = "[`redaction::RedactingSink`] in front of their sink and use"]
 #![doc = "[`sink::IsolatedSink`] when sink failures must never affect agent state."]
 
+pub mod encoding;
 pub mod event;
 pub mod redaction;
 pub mod sink;
 
+pub use encoding::{CborSink, JsonLinesSink};
 pub use event::{
     EndReason, EpisodeEnd, EpisodeHeader, ModelTurn, TRACE_SCHEMA_VERSION, Tool, ToolExecution,
     TraceEvent, TraceEventKind, Turn, TurnIndex,

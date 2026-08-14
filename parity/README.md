@@ -25,14 +25,15 @@ parity/
 ├── compare/               # canonical-result comparison boundary (scaffold)
 ├── fixture-format.md      # declarative input contract
 ├── normalization.md       # canonicalization and redaction rules
-└── runners.md             # runner I/O and scope boundaries
+├── runners.md             # runner I/O and scope boundaries
+└── run-declarative.sh     # full pinned upstream/Rust corpus check
 ```
 
 `upstream/` is the separately pinned upstream SDK runner. The checked-in V0 corpus currently
-covers text, tool success/error, reverse parallel completion ordering, partial updates, before/after
-tool policy, queue modes, and continuation. Likewise, files under `fixtures/recorded/` are
-evidence, not live tests: a recorded provider response must remain usable when the provider is
-unavailable.
+covers text, deterministic model-stream cancellation/reuse, tool success/error, reverse parallel
+completion ordering, partial updates, before/after tool policy, queue modes, and continuation.
+Likewise, files under `fixtures/recorded/` are evidence, not live tests: a recorded provider
+response must remain usable when the provider is unavailable.
 
 ## Workflow
 
@@ -41,6 +42,13 @@ unavailable.
 3. Run each adapter with the fixture and write one canonical result under `fixtures/normalized/`.
 4. Compare the two canonical results. A mismatch is a contract failure or an intentionally
    documented fixture change; it is not resolved by weakening normalization.
+
+To run this workflow for every declarative fixture, use
+[`run-declarative.sh`](run-declarative.sh). It verifies the upstream pin, builds with
+`+nightly-2026-07-24`, runs the in-process pinned SDK adapter and Rust adapter for each fixture,
+and compares both outputs with the checked-in expected result as well as with each other. The
+script uses only already-installed local tooling; it never invokes a Pi CLI, installs packages, or
+contacts a provider/network.
 
 The samples [`single-turn-text.json`](fixtures/declarative/single-turn-text.json) and
 [`tool-continue.json`](fixtures/declarative/tool-continue.json) execute through both in-process
@@ -51,3 +59,14 @@ host execution, source-ordered tool-result insertion, and model continuation; se
 [`tool-error-continue.json`](fixtures/declarative/tool-error-continue.json) additionally proves
 that a tool execution failure is transcript data—not a failed agent run—and that the subsequent
 model turn can recover.
+
+The captured default coding profile has its own source gate:
+
+```text
+bash parity/run-profile.sh
+```
+
+It verifies prompt/definition bytes and exercises every standard pinned factory without invoking
+Pi. Six factories use virtual explicit operation adapters; `grep` has an unavoidable source-owned
+`rg` process boundary and is verified in an empty temporary Pi-agent directory so no host-managed
+`~/.pi` binary can participate. See [`profile/README.md`](profile/README.md).

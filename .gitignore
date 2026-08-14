@@ -10,3 +10,10 @@
 # Parity runners may materialize canonical output here; checked-in fixtures live in
 # `declarative/` and `expected/` instead.
 /parity/fixtures/normalized/*.json
+
+# Comparative coding-evaluation runs are provider-specific and must remain local.
+/evals/baselines.local.json
+/evals/results/
+/evals/.workspaces/
+
+__pycache__/
