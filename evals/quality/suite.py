@@ -622,13 +622,13 @@ def inspect_environment() -> dict[str, Any]:
                 "ambient_discovery": False,
                 "persistent_session": False,
                 "tui": False,
-                "provider": "explicit opt-in through vault OPENROUTER_API_KEY",
+                "provider": "explicit opt-in through an adapter-only env source boundary",
             },
             "rust": {
                 "adapter": "crates/pi-agent-core/src/bin/pi-agent-eval.rs",
                 "runtime": "smol",
                 "ambient_discovery": False,
-                "provider": "explicit opt-in through vault OPENROUTER_API_KEY",
+                "provider": "explicit opt-in through an adapter-only env source boundary",
             },
         },
     }

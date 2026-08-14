@@ -49,16 +49,17 @@ exact-commit worktree; only lockfile-keyed npm download content is shared.
 ```sh
 python3 -m evals.quality prepare-cache --cache-root /tmp/pi-quality-cache
 python3 -m evals.quality coding --allow-provider \
-  --model deepseek/deepseek-v4-flash-0731 \
+  --model poolside/laguna-xs-2.1:free \
+  --env-file .env \
   --cache-root /tmp/pi-quality-cache \
   --workspace-root /tmp/pi-quality-workspaces \
   --out /tmp/pi-quality-coding --validator fast
 ```
 
 `full` adds all deterministic core cases and the original `npm install && npm
-test` audit validators. Live adapters are explicitly launched through
-`vault OPENROUTER_API_KEY -- …`; the evaluator never reads or forwards the
-secret.
+test` audit validators. The explicitly selected env file is sourced only by a
+short-lived shell immediately before its adapter starts; the Python evaluator
+and tool children never receive or persist the secret.
 
 ## Metrics and resource interpretation
 
@@ -79,11 +80,19 @@ allocation bytes for one provider-free harness turn. Node has no equivalent
 instrumentation here, so allocation counts are not cross-language metrics.
 RSS/timing are diagnostic only and do not gate semantic parity.
 
+Live adapter results include `pi-eval-cost/v1`: redacted, per-turn OpenRouter
+USD accounting plus aggregate provider-reported totals. It reads the
+completion's stream/chat `usage.cost` first and never estimates prices locally;
+generation metadata is a richer fallback. If neither provider accounting path
+is available (for example under a retention restriction), the run records that
+explicitly and the paired cost comparison is marked incomplete; no generation
+id or raw provider payload is saved.
+
 The upstream coding-profile adapter builds the prompt and `read`, `bash`,
 `edit`, and `write` tools from pinned Pi source, then normalizes only
 installation-specific documentation paths to the captured profile's fixed
 virtual paths. It does not load ambient Pi settings/resources or expose the
-Vault key to child tools. It intentionally does not import
+injected key to child tools. It intentionally does not import
 `createAgentSession`: the shallow upstream pin lacks an unrelated generated
 model-catalog file needed merely to import that factory, and hydrating it would
 mutate the pin and add a hidden network prerequisite.
@@ -148,8 +157,8 @@ evals/
 └── baselines.mock.json             # runnable provider-free controller smoke manifest
 ```
 
-`baselines.deepseek-v0.json` is the checked-in opt-in live manifest. It binds both adapters to
-`deepseek/deepseek-v4-flash-0731`, invokes each through `vault OPENROUTER_API_KEY -- …`, and
+`baselines.poolside-v0.json` is the checked-in opt-in control manifest. It binds both adapters to
+`poolside/laguna-xs-2.1:free`, sources the repository `.env` only in the final adapter shell, and
 names neither a host Pi CLI nor a core provider dependency. `run-upstream-live.sh` imports pinned
 TypeScript sources directly. `run-rust-live.sh` runs the eval-only `pi-agent-eval` binary with
 the repository's pinned nightly and Smol feature; the Rust library remains transport-free.
@@ -172,15 +181,21 @@ python3 evals/controller.py run \
   --out /tmp/pi-eval-mock-report.json
 ```
 
-Run the explicit DeepSeek gate (after validating it) with:
+Run the paired Poolside control and record comparable provider costs with:
 
 ```bash
-python3 evals/controller.py validate --baselines evals/baselines.deepseek-v0.json
+python3 evals/controller.py validate --baselines evals/baselines.poolside-v0.json --task ready-v0
 python3 evals/controller.py run \
-  --baselines evals/baselines.deepseek-v0.json \
+  --baselines evals/baselines.poolside-v0.json \
+  --task ready-v0 \
   --allow-provider \
-  --out evals/results/deepseek-v0.json
+  --out evals/results/poolside-v0.json
 ```
+
+The report preserves each adapter's redacted `pi-eval-cost/v1` turn records and
+summarizes complete provider-reported USD totals per baseline. The `ready-v0`
+control is deliberately a transport/accounting proof, not a coding-quality
+claim.
 
 The upstream adapter removes provider credentials from the default bash tool's child environment.
 The Rust profile's default shell environment is already explicit and empty. Both therefore retain
@@ -202,8 +217,8 @@ substitutions for checked-in helper adapters. Each required token must occur exa
 prevents an adapter from guessing identity from a temporary filename or accidentally writing the
 result to an ambiguous path. Commands are never passed through a shell, and the controller rejects
 the host-installed `pi`/`pi-agent` executables. The adapters must write the typed result JSON
-described below. Keep credentials in the adapter wrapper (for example, a caller-owned `vault`
-command), never in a task, result, or controller environment.
+described below. Keep credentials in the adapter wrapper (for example, the checked-in
+short-lived `.env` source boundary), never in a task, result, or controller environment.
 
 ```bash
 python3 evals/controller.py run \

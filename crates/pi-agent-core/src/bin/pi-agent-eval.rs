@@ -1,7 +1,7 @@
 //! Opt-in OpenRouter coding-evaluation adapter for the Rust default profile.
 //!
 //! This binary is intentionally outside the library boundary: it is invoked only by the final
-//! V0 evaluation controller through a caller-owned `vault OPENROUTER_API_KEY -- …` command. It
+//! V0 evaluation controller through a caller-owned secret-injection boundary. It
 //! supplies a concrete transport to exercise the otherwise provider-free core, while retaining
 //! the core's explicit workspace, profile, and Smol-owned execution boundaries.
 
@@ -20,9 +20,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 const RESULT_SCHEMA: &str = "pi-coding-eval-result/v0";
 const OPENROUTER_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
 /// Explicit command-line arguments supplied by `evals/controller.py`.
 struct Args {
@@ -191,6 +194,106 @@ impl UsageTotals {
     }
 }
 
+/// Redacted, provider-reported cost for one model turn.
+///
+/// We deliberately retain only accounting fields from OpenRouter's generation response. The
+/// provider response id, raw payload, request text, and credentials never enter evaluation
+/// artifacts. `total_usd` uses OpenRouter's reported number; it is not a local price estimate.
+#[derive(Clone, Debug)]
+struct CostTurn {
+    source: &'static str,
+    total_usd: Option<f64>,
+    upstream_inference_usd: Option<f64>,
+    model: Option<String>,
+    provider: Option<String>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
+    reasoning_tokens: Option<u64>,
+}
+
+impl CostTurn {
+    fn unavailable(usage: &Usage, model: &str) -> Self {
+        Self {
+            source: "unavailable",
+            total_usd: None,
+            upstream_inference_usd: None,
+            model: Some(model.to_owned()),
+            provider: None,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: usage.reasoning_tokens,
+        }
+    }
+
+    fn json(&self, turn: usize) -> Value {
+        json!({
+            "turn": turn,
+            "source": self.source,
+            "total_usd": self.total_usd,
+            "upstream_inference_usd": self.upstream_inference_usd,
+            "model": self.model,
+            "provider": self.provider,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+        })
+    }
+}
+
+/// Cost collection is separate from core `Usage`: cost is an adapter/accounting concern, while
+/// the core owns portable token accounting. Keeping this boundary explicit prevents a provider
+/// price table from silently becoming part of the SDK contract.
+#[derive(Clone, Debug, Default)]
+struct CostTotals(Arc<Mutex<Vec<CostTurn>>>);
+
+impl CostTotals {
+    fn add(&self, turn: CostTurn) {
+        self.0
+            .lock()
+            .expect("evaluation cost mutex poisoned")
+            .push(turn);
+    }
+
+    fn snapshot_json(&self) -> Value {
+        let turns = self.0.lock().expect("evaluation cost mutex poisoned");
+        let reported = turns
+            .iter()
+            .filter(|turn| turn.total_usd.is_some())
+            .collect::<Vec<_>>();
+        let total_usd = reported
+            .iter()
+            .filter_map(|turn| turn.total_usd)
+            .sum::<f64>();
+        let inference = reported
+            .iter()
+            .filter_map(|turn| turn.upstream_inference_usd)
+            .sum::<f64>();
+        json!({
+            "schema_version": "pi-eval-cost/v1",
+            "currency": "USD",
+            "pricing": "provider_reported",
+            "reported_turn_count": reported.len(),
+            "unavailable_turn_count": turns.len().saturating_sub(reported.len()),
+            "complete": reported.len() == turns.len(),
+            // A partial total is useful for diagnosis, but `complete` makes it impossible to
+            // mistake that value for the complete run cost.
+            "reported_total_usd": if total_usd == 0.0 { 0.0 } else { total_usd },
+            "reported_upstream_inference_usd": if inference == 0.0 { 0.0 } else { inference },
+            "turns": turns
+                .iter()
+                .enumerate()
+                .map(|(index, turn)| turn.json(index + 1))
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// Small blocking OpenRouter adapter used only by this executable evaluation binary.
 ///
 /// The core has no transport dependency. This adapter returns one finite `ModelStream` after a
@@ -202,6 +305,7 @@ struct OpenRouterProvider {
     model: String,
     max_tokens: u64,
     usage: UsageTotals,
+    costs: CostTotals,
 }
 
 impl OpenRouterProvider {
@@ -216,8 +320,9 @@ impl OpenRouterProvider {
             };
         }
         match self.complete(request) {
-            Ok((events, usage)) => {
+            Ok((events, usage, cost)) => {
                 self.usage.add(usage.clone());
+                self.costs.add(cost);
                 let mut events = events;
                 if usage.input_tokens.is_some() || usage.output_tokens.is_some() {
                     // V0 streams cannot deliver any event after `End`; usage is part of the
@@ -236,7 +341,10 @@ impl OpenRouterProvider {
         }
     }
 
-    fn complete(&self, request: ModelRequest) -> Result<(Vec<ModelStreamEvent>, Usage), String> {
+    fn complete(
+        &self,
+        request: ModelRequest,
+    ) -> Result<(Vec<ModelStreamEvent>, Usage, CostTurn), String> {
         let messages: Vec<Value> = serde_json::from_str(&request.context)
             .map_err(|_| "evaluation transport received invalid converted context".to_owned())?;
         let mut chat_messages = Vec::with_capacity(messages.len() + 1);
@@ -312,7 +420,57 @@ impl OpenRouterProvider {
         if !output.status.success() {
             return Err("evaluation HTTP transport failed before a provider response".into());
         }
-        parse_openrouter_response(&output.stdout)
+        let parsed = parse_openrouter_response(&output.stdout)?;
+        // The completion's own `usage.cost` is the immediate accounting source. Query the
+        // generation endpoint only when that provider field is absent: this avoids adding a
+        // retention-sensitive metadata round trip to ordinary model turns.
+        let cost = parsed
+            .inline_cost
+            .clone()
+            .or_else(|| {
+                parsed
+                    .generation_id
+                    .as_deref()
+                    .and_then(|generation_id| self.generation_cost(generation_id, &parsed.usage))
+            })
+            .unwrap_or_else(|| CostTurn::unavailable(&parsed.usage, &self.model));
+        Ok((parsed.events, parsed.usage, cost))
+    }
+
+    /// Fetch a redacted accounting record from OpenRouter after a completion settles.
+    ///
+    /// The generation endpoint can be briefly eventually consistent, so this makes three short
+    /// bounded attempts. A metadata miss never fails an agent run: the caller records a clearly
+    /// marked unavailable/fallback accounting turn instead.
+    fn generation_cost(&self, generation_id: &str, usage: &Usage) -> Option<CostTurn> {
+        for attempt in 0..3 {
+            let output = Command::new("curl")
+                .arg("--silent")
+                .arg("--show-error")
+                .arg("--connect-timeout")
+                .arg("10")
+                .arg("--max-time")
+                .arg("15")
+                .arg("--get")
+                .arg(OPENROUTER_GENERATION_URL)
+                .arg("--data-urlencode")
+                .arg(format!("id={generation_id}"))
+                .arg("--header")
+                .arg(format!("Authorization: Bearer {}", self.api_key))
+                .stderr(Stdio::null())
+                .output();
+            if let Ok(output) = output {
+                if output.status.success() {
+                    if let Some(cost) = parse_generation_cost(&output.stdout, usage) {
+                        return Some(cost);
+                    }
+                }
+            }
+            if attempt < 2 {
+                thread::sleep(Duration::from_millis(150 * (attempt + 1)));
+            }
+        }
+        None
     }
 }
 
@@ -327,7 +485,22 @@ impl ModelProvider for OpenRouterProvider {
     }
 }
 
-fn parse_openrouter_response(bytes: &[u8]) -> Result<(Vec<ModelStreamEvent>, Usage), String> {
+struct ParsedOpenRouterResponse {
+    events: Vec<ModelStreamEvent>,
+    usage: Usage,
+    generation_id: Option<String>,
+    inline_cost: Option<CostTurn>,
+}
+
+fn finite_nonnegative(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn number(value: &Value, key: &str) -> Option<f64> {
+    finite_nonnegative(value.get(key).and_then(Value::as_f64))
+}
+
+fn parse_openrouter_response(bytes: &[u8]) -> Result<ParsedOpenRouterResponse, String> {
     let response: Value = serde_json::from_slice(bytes)
         .map_err(|_| "OpenRouter returned a non-JSON evaluation response".to_owned())?;
     if response.get("error").is_some() {
@@ -395,14 +568,72 @@ fn parse_openrouter_response(bytes: &[u8]) -> Result<(Vec<ModelStreamEvent>, Usa
         .and_then(Value::as_object)
         .and_then(|details| details.get("reasoning_tokens"))
         .and_then(Value::as_u64);
-    Ok((
+    let parsed_usage = Usage {
+        input_tokens: token("prompt_tokens"),
+        output_tokens: token("completion_tokens"),
+        reasoning_tokens: reasoning,
+    };
+    let inline_cost = number(&usage, "cost").map(|total_usd| CostTurn {
+        source: "openrouter_chat_usage",
+        total_usd: Some(total_usd),
+        upstream_inference_usd: None,
+        model: response
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        provider: None,
+        input_tokens: parsed_usage.input_tokens,
+        output_tokens: parsed_usage.output_tokens,
+        cache_read_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64),
+        cache_write_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cache_write_tokens"))
+            .and_then(Value::as_u64),
+        reasoning_tokens: parsed_usage.reasoning_tokens,
+    });
+    Ok(ParsedOpenRouterResponse {
         events,
-        Usage {
-            input_tokens: token("prompt_tokens"),
-            output_tokens: token("completion_tokens"),
-            reasoning_tokens: reasoning,
-        },
-    ))
+        usage: parsed_usage,
+        generation_id: response
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
+        inline_cost,
+    })
+}
+
+fn parse_generation_cost(bytes: &[u8], fallback_usage: &Usage) -> Option<CostTurn> {
+    let response: Value = serde_json::from_slice(bytes).ok()?;
+    let data = response.get("data")?;
+    let total_usd = number(data, "total_cost")?;
+    Some(CostTurn {
+        source: "openrouter_generation",
+        total_usd: Some(total_usd),
+        upstream_inference_usd: number(data, "upstream_inference_cost"),
+        model: data.get("model").and_then(Value::as_str).map(str::to_owned),
+        provider: data
+            .get("provider_name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        input_tokens: data
+            .get("tokens_prompt")
+            .and_then(Value::as_u64)
+            .or(fallback_usage.input_tokens),
+        output_tokens: data
+            .get("tokens_completion")
+            .and_then(Value::as_u64)
+            .or(fallback_usage.output_tokens),
+        cache_read_tokens: data.get("tokens_cached").and_then(Value::as_u64),
+        cache_write_tokens: data.get("tokens_cache_write").and_then(Value::as_u64),
+        reasoning_tokens: data
+            .get("tokens_reasoning")
+            .and_then(Value::as_u64)
+            .or(fallback_usage.reasoning_tokens),
+    })
 }
 
 fn event_name(event: &AgentEventKind) -> &'static str {
@@ -487,11 +718,13 @@ fn main() -> Result<(), String> {
     let default_tools = DefaultCodingTools::new(&args.workspace)
         .map_err(|error| format!("cannot construct explicit workspace tools: {error}"))?;
     let usage = UsageTotals::default();
+    let costs = CostTotals::default();
     let provider = Arc::new(OpenRouterProvider {
         api_key,
         model: args.model.clone(),
         max_tokens: 1024,
         usage: usage.clone(),
+        costs: costs.clone(),
     });
     let agent = Agent::builder()
         .model(ModelDescriptor {
@@ -539,6 +772,7 @@ fn main() -> Result<(), String> {
             "cache_read": 0,
             "cache_write": 0,
         },
+        "cost": costs.snapshot_json(),
         "trace": trace,
     });
     let encoded =
@@ -546,4 +780,60 @@ fn main() -> Result<(), String> {
     fs::write(&args.result_json, encoded)
         .map_err(|_| "cannot write evaluation result".to_owned())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_redacted_generation_cost_without_retaining_identifier() {
+        let usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(3),
+            reasoning_tokens: None,
+        };
+        let cost = parse_generation_cost(
+            br#"{
+                "data": {
+                    "id": "gen_must_not_be_written_to_artifacts",
+                    "total_cost": 0.0000123,
+                    "upstream_inference_cost": 0.00001,
+                    "model": "poolside/laguna-xs-2.1:free",
+                    "provider_name": "Poolside",
+                    "tokens_prompt": 12,
+                    "tokens_completion": 4,
+                    "tokens_cached": 2,
+                    "tokens_reasoning": 1
+                }
+            }"#,
+            &usage,
+        )
+        .expect("provider cost is parsed");
+        let record = cost.json(1);
+        assert_eq!(record["source"], "openrouter_generation");
+        assert_eq!(record["total_usd"], 0.0000123);
+        assert_eq!(record["provider"], "Poolside");
+        assert!(record.get("id").is_none());
+        assert!(!serde_json::to_string(&record)
+            .expect("cost record serializes")
+            .contains("gen_must_not_be_written_to_artifacts"));
+    }
+
+    #[test]
+    fn chat_usage_cost_is_a_fallback_when_generation_metadata_is_unavailable() {
+        let parsed = parse_openrouter_response(
+            br#"{
+                "id": "gen_example",
+                "model": "poolside/laguna-xs-2.1:free",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "cost": 0}
+            }"#,
+        )
+        .expect("chat response parses");
+        let cost = parsed.inline_cost.expect("inline provider cost");
+        assert_eq!(cost.source, "openrouter_chat_usage");
+        assert_eq!(cost.total_usd, Some(0.0));
+        assert_eq!(parsed.generation_id.as_deref(), Some("gen_example"));
+    }
 }

@@ -1,9 +1,9 @@
 /**
  * Capture one redacted OpenRouter terminal response through the pinned Pi SDK source.
  *
- * Run only from `parity/upstream/source` with the caller's secret injector:
+ * Run only from `parity/upstream/source` after sourcing the caller-managed `.env`:
  *
- *   vault OPENROUTER_API_KEY -- env OPENROUTER_MODEL=poolside/laguna-xs-2.1 \
+ *   set -a; . ../../../.env; set +a; OPENROUTER_MODEL=poolside/laguna-xs-2.1 \
  *     ./node_modules/.bin/tsx ../record-openrouter.mts
  *
  * This imports the pinned Agent and OpenAI-compatible Pi provider adapter directly. It never

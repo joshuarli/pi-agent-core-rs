@@ -17,3 +17,5 @@
 /evals/.workspaces/
 
 __pycache__/
+
+.env

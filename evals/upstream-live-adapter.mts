@@ -62,7 +62,7 @@ function parseArgs(argv: string[]): Args {
 	};
 }
 
-/** Keep the Vault credential in the model callback, never in a tool child. */
+/** Keep the injected credential in the model callback, never in a tool child. */
 function isolateProcessEnvironment(): void {
 	const allowed = new Set(["PATH", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP"]);
 	for (const key of Object.keys(process.env)) {
@@ -109,6 +109,201 @@ function redactShellEnvironment(context: BashSpawnContext): BashSpawnContext {
 	return { ...context, env };
 }
 
+type ProviderCostTurn = {
+	turn: number;
+	source: "openrouter_generation" | "openrouter_stream_usage" | "unavailable";
+	total_usd: number | null;
+	upstream_inference_usd: number | null;
+	model: string;
+	provider: string | null;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_write_tokens: number;
+	reasoning_tokens: number | null;
+};
+
+function nonnegativeNumber(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function token(value: unknown): number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+type StreamUsageCost = {
+	total_usd: number;
+	model: string | null;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_write_tokens: number;
+	reasoning_tokens: number | null;
+};
+
+/**
+ * Consume a clone of Pi's streaming response and retain only OpenRouter usage
+ * fields. The parsed SSE payload is transient: completion content, response
+ * identifiers, and raw provider objects are never appended to artifacts.
+ */
+async function streamUsageCost(response: Response): Promise<StreamUsageCost | null> {
+	const body = response.body;
+	if (!body) return null;
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	let latest: StreamUsageCost | null = null;
+	const inspect = (line: string) => {
+		if (!line.startsWith("data:")) return;
+		const payload = line.slice(5).trim();
+		if (!payload || payload === "[DONE]") return;
+		try {
+			const chunk: unknown = JSON.parse(payload);
+			if (!chunk || typeof chunk !== "object") return;
+			const row = chunk as { usage?: unknown; model?: unknown };
+			if (!row.usage || typeof row.usage !== "object") return;
+			const usage = row.usage as Record<string, unknown>;
+			const total = nonnegativeNumber(usage.cost);
+			if (total === null) return;
+			const promptDetails = usage.prompt_tokens_details as Record<string, unknown> | undefined;
+			const completionDetails = usage.completion_tokens_details as Record<string, unknown> | undefined;
+			latest = {
+				total_usd: total,
+				model: typeof row.model === "string" && row.model ? row.model : null,
+				input_tokens: token(usage.prompt_tokens),
+				output_tokens: token(usage.completion_tokens),
+				cache_read_tokens: token(promptDetails?.cached_tokens),
+				cache_write_tokens: token(promptDetails?.cache_write_tokens),
+				reasoning_tokens: nonnegativeNumber(completionDetails?.reasoning_tokens),
+			};
+		} catch {
+			// A malformed/non-usage SSE line is simply not an accounting record.
+		}
+	};
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			buffer += decoder.decode(value, { stream: !done });
+			let newline = buffer.indexOf("\n");
+			while (newline >= 0) {
+				inspect(buffer.slice(0, newline).replace(/\r$/, ""));
+				buffer = buffer.slice(newline + 1);
+				newline = buffer.indexOf("\n");
+			}
+			if (done) break;
+		}
+		inspect(buffer.replace(/\r$/, ""));
+	} finally {
+		reader.releaseLock();
+	}
+	return latest;
+}
+
+/**
+ * Retrieve accounting only after the generation has settled. This deliberately
+ * projects OpenRouter's response to a small redacted record: no generation id,
+ * raw provider body, prompt, or credential is ever persisted.
+ */
+async function providerCost(
+	responseId: string | undefined,
+	turn: number,
+	model: string,
+	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number },
+	apiKey: string,
+): Promise<ProviderCostTurn> {
+	const unavailable = (): ProviderCostTurn => ({
+		turn,
+		source: "unavailable",
+		total_usd: null,
+		upstream_inference_usd: null,
+		model,
+		provider: null,
+		input_tokens: token(usage.input),
+		output_tokens: token(usage.output),
+		cache_read_tokens: token(usage.cacheRead),
+		cache_write_tokens: token(usage.cacheWrite),
+		reasoning_tokens: nonnegativeNumber(usage.reasoning),
+	});
+	if (!responseId) return unavailable();
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		try {
+			const response = await fetch(
+				`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(responseId)}`,
+				{
+					headers: { Authorization: `Bearer ${apiKey}` },
+					signal: AbortSignal.timeout(15_000),
+				},
+			);
+			if (response.ok) {
+				const body: unknown = await response.json();
+				const data = body && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
+				if (data && typeof data === "object") {
+					const row = data as Record<string, unknown>;
+					const total = nonnegativeNumber(row.total_cost);
+					if (total !== null) {
+						return {
+							turn,
+							source: "openrouter_generation",
+							total_usd: total,
+							upstream_inference_usd: nonnegativeNumber(row.upstream_inference_cost),
+							model: typeof row.model === "string" && row.model ? row.model : model,
+							provider: typeof row.provider_name === "string" && row.provider_name ? row.provider_name : null,
+							input_tokens: token(row.tokens_prompt) || token(usage.input),
+							output_tokens: token(row.tokens_completion) || token(usage.output),
+							cache_read_tokens: token(row.tokens_cached),
+							cache_write_tokens: token(row.tokens_cache_write),
+							reasoning_tokens: nonnegativeNumber(row.tokens_reasoning) ?? nonnegativeNumber(usage.reasoning),
+						};
+					}
+				}
+			}
+		} catch {
+			// The projected unavailable record below makes failures visible without
+			// retaining an arbitrary provider error payload in an evaluation artifact.
+		}
+		if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+	}
+	return unavailable();
+}
+
+function streamedProviderCost(
+	usage: StreamUsageCost,
+	turn: number,
+	fallbackModel: string,
+): ProviderCostTurn {
+	return {
+		turn,
+		source: "openrouter_stream_usage",
+		total_usd: usage.total_usd,
+		upstream_inference_usd: null,
+		model: usage.model ?? fallbackModel,
+		provider: null,
+		input_tokens: usage.input_tokens,
+		output_tokens: usage.output_tokens,
+		cache_read_tokens: usage.cache_read_tokens,
+		cache_write_tokens: usage.cache_write_tokens,
+		reasoning_tokens: usage.reasoning_tokens,
+	};
+}
+
+function costReport(turns: ProviderCostTurn[]) {
+	const reported = turns.filter((turn) => turn.total_usd !== null);
+	return {
+		schema_version: "pi-eval-cost/v1",
+		currency: "USD",
+		pricing: "provider_reported",
+		reported_turn_count: reported.length,
+		unavailable_turn_count: turns.length - reported.length,
+		complete: reported.length === turns.length,
+		reported_total_usd: reported.reduce((total, turn) => total + (turn.total_usd ?? 0), 0),
+		reported_upstream_inference_usd: reported.reduce(
+			(total, turn) => total + (turn.upstream_inference_usd ?? 0),
+			0,
+		),
+		turns,
+	};
+}
+
 function terminalStatus(stopReason: string): "completed" | "failed" | "cancelled" | "aborted" {
 	if (stopReason === "error") return "failed";
 	if (stopReason === "aborted") return "aborted";
@@ -127,6 +322,22 @@ async function main(): Promise<void> {
 	if (typeof task.prompt !== "string" || task.prompt.length === 0) throw new Error("evaluation task has no prompt");
 
 	const tools = createCodingTools(args.workspace, { bash: { spawnHook: redactShellEnvironment } });
+	const observedStreamUsage: Promise<StreamUsageCost | null>[] = [];
+	const accountingStream = ((selectedModel: unknown, context: unknown, options: any) => {
+		const nextFetch = options?.fetch ?? globalThis.fetch;
+		return openAICompletionsStream(selectedModel as never, context as never, {
+			...options,
+			fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+				const response = await nextFetch(input, init);
+				try {
+					observedStreamUsage.push(streamUsageCost(response.clone()));
+				} catch {
+					observedStreamUsage.push(Promise.resolve(null));
+				}
+				return response;
+			},
+		});
+	}) as never;
 	const model = {
 		id: args.model,
 		name: args.model,
@@ -142,7 +353,7 @@ async function main(): Promise<void> {
 	const eventTypes: string[] = [];
 	let toolCalls = 0;
 	const agent = new Agent({
-		streamFn: openAICompletionsStream as never,
+		streamFn: accountingStream,
 		getApiKey: (provider) => (provider === "openrouter" ? apiKey : undefined),
 		initialState: {
 			systemPrompt: pinnedDefaultSystemPrompt(args.workspace),
@@ -156,7 +367,8 @@ async function main(): Promise<void> {
 		if (event.type === "tool_execution_start") toolCalls += 1;
 	});
 	await agent.prompt(task.prompt);
-	const assistant = [...agent.state.messages].reverse().find((message) => message.role === "assistant");
+	const assistants = agent.state.messages.filter((message) => message.role === "assistant");
+	const assistant = [...assistants].reverse()[0];
 	if (!assistant || assistant.role !== "assistant") {
 		throw new Error("pinned coding profile did not settle with an assistant response");
 	}
@@ -164,6 +376,16 @@ async function main(): Promise<void> {
 		.filter((part) => part.type === "text")
 		.map((part) => part.text)
 		.join("");
+	const streamedCosts = (await Promise.all(observedStreamUsage)).filter((usage): usage is StreamUsageCost => usage !== null);
+	const costs = await Promise.all(
+		assistants.map((message, index) => {
+			const model = message.responseModel ?? message.model;
+			const streamed = streamedCosts[index];
+			return streamed
+				? Promise.resolve(streamedProviderCost(streamed, index + 1, model))
+				: providerCost(message.responseId, index + 1, model, message.usage, apiKey);
+		}),
+	);
 	const output = {
 		schema_version: RESULT_SCHEMA,
 		attempt_id: args.attemptId,
@@ -178,6 +400,7 @@ async function main(): Promise<void> {
 			cache_read: assistant.usage.cacheRead,
 			cache_write: assistant.usage.cacheWrite,
 		},
+		cost: costReport(costs),
 		trace: eventTypes.map((type, seq) => ({ seq, type })),
 	};
 	await writeFile(args.resultJson, `${JSON.stringify(output)}\n`, "utf8");

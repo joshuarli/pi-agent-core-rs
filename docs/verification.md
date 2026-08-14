@@ -46,7 +46,7 @@ and resource interpretation are documented in
   ordering, profile composition, concurrent run claims, workspace isolation,
   non-blocking observer overflow, and one thousand isolated agents.
 - The final comparative coding gate ran on 2026-08-14 with the explicit,
-  Vault-injected DeepSeek manifest. Both upstream and Rust baselines passed two
+  credential-injected DeepSeek manifest. Both upstream and Rust baselines passed two
   of two light standard-library Python tasks and their `READY` controls, with
   no attempt timeout. The provider-specific report is intentionally ignored;
   the controller contract lives in [`evals/README.md`](../evals/README.md).
@@ -75,7 +75,7 @@ Runebench is an embedding, not part of the transport-free core. Its hard
 cutover uses the Rust host, pinned default profile, explicit OpenRouter
 adapter, capability-scoped Rust `rs-agent` MCP client, and LuauJIT policy.
 
-On 2026-08-14, the Vault-backed `tasks/woodcutting-xp-5m` acceptance completed
+On 2026-08-14, the credential-injected `tasks/woodcutting-xp-5m` acceptance completed
 cleanly with `completed=1`, `errored=0`, peak **228 XP/min**, **88,750 XP**,
 and Woodcutting level **64**. The Rust MCP client loaded its API documentation
 and the Luau policy loaded all five declared `rs-agent` tools. The trajectory

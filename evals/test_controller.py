@@ -26,12 +26,28 @@ class ControllerContractTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual({item["baseline_id"] for item in first}, {"upstream", "rust"})
 
-    def test_live_deepseek_manifest_uses_explicit_vault_wrapped_adapters(self) -> None:
+    def test_live_deepseek_manifest_sources_env_at_the_adapter_boundary(self) -> None:
         config = controller.load_baselines(controller.ROOT / "baselines.deepseek-v0.json")
         self.assertEqual(config["comparison"]["model"], "deepseek/deepseek-v4-flash-0731")
         for baseline in config["baselines"]:
-            self.assertEqual(baseline["command"][:4], ["vault", "OPENROUTER_API_KEY", "--", "bash"])
+            self.assertEqual(baseline["command"][:2], ["bash", "-c"])
+            self.assertNotIn("vault", baseline["command"])
+            self.assertNotIn("OPENROUTER_API_KEY", baseline["command"])
             self.assertNotIn("pi", {Path(part).name for part in baseline["command"]})
+
+    def test_poolside_manifest_sources_env_only_at_the_adapter_boundary(self) -> None:
+        config = controller.load_baselines(controller.ROOT / "baselines.poolside-v0.json")
+        self.assertEqual(config["comparison"]["model"], "poolside/laguna-xs-2.1:free")
+        for baseline in config["baselines"]:
+            self.assertEqual(baseline["command"][:2], ["bash", "-c"])
+            self.assertNotIn("vault", baseline["command"])
+            self.assertNotIn("OPENROUTER_API_KEY", baseline["command"])
+
+    def test_task_selection_is_explicit_and_rejects_unknown_ids(self) -> None:
+        tasks = controller.load_tasks(controller.TASKS)
+        self.assertEqual([task["task_id"] for task in controller.select_tasks(tasks, ["ready-v0"])], ["ready-v0"])
+        with self.assertRaises(controller.ContractError):
+            controller.select_tasks(tasks, ["not-a-task"])
 
     def test_interval_task_declares_the_exact_active_profile_tool_schemas(self) -> None:
         task = controller.load_tasks(controller.TASKS)[0]
@@ -252,6 +268,19 @@ class ControllerContractTests(unittest.TestCase):
         self.assertEqual(summary["elapsed_ms_median"], 15.0)
         self.assertEqual(summary["tokens_median"], 9.0)
         self.assertIsNotNone(summary["success_rate_95ci"])
+
+    def test_paired_cost_comparison_refuses_partial_accounting(self) -> None:
+        complete = controller.paired_cost_comparison({
+            "upstream": {"provider_reported_cost_usd": {"total": 0.25, "incomplete_or_unreported_attempts": 0}},
+            "rust": {"provider_reported_cost_usd": {"total": 0.30, "incomplete_or_unreported_attempts": 0}},
+        })
+        self.assertTrue(complete["complete"])
+        self.assertAlmostEqual(complete["rust_minus_upstream_usd"], 0.05)
+        partial = controller.paired_cost_comparison({
+            "upstream": {"provider_reported_cost_usd": {"total": 0.25, "incomplete_or_unreported_attempts": 1}},
+            "rust": {"provider_reported_cost_usd": {"total": 0.30, "incomplete_or_unreported_attempts": 0}},
+        })
+        self.assertFalse(partial["complete"])
 
     def test_wave_controller_honors_admission_and_reports_peak(self) -> None:
         config = controller.load_baselines(controller.ROOT / "baselines.example.json")

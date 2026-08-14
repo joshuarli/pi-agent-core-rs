@@ -139,6 +139,18 @@ def load_tasks(path: Path = TASKS) -> list[dict[str, Any]]:
     return [validate_task(read_json(file), str(file)) for file in files]
 
 
+def select_tasks(tasks: list[dict[str, Any]], requested: Iterable[str] | None) -> list[dict[str, Any]]:
+    """Select named task contracts without changing their on-disk source of truth."""
+    ids = set(requested or ())
+    if not ids:
+        return tasks
+    known = {task["task_id"] for task in tasks}
+    missing = ids - known
+    if missing:
+        raise ContractError(f"unknown task id(s): {', '.join(sorted(missing))}")
+    return [task for task in tasks if task["task_id"] in ids]
+
+
 def validate_wave(wave: Any, name: str) -> None:
     if not isinstance(wave, dict):
         raise ContractError(f"wave {name!r} must be an object")
@@ -415,6 +427,35 @@ def validate_adapter_result(
             raise ContractError(f"adapter result usage.{key} must be non-negative")
     if not isinstance(result.get("trace"), list):
         raise ContractError("adapter result trace must be an array")
+    if "cost" in result:
+        validate_cost_report(result["cost"])
+
+
+def validate_cost_report(cost: Any) -> None:
+    """Validate optional, redacted provider accounting without pricing it locally."""
+    if not isinstance(cost, dict) or cost.get("schema_version") != "pi-eval-cost/v1":
+        raise ContractError("adapter result cost must be a pi-eval-cost/v1 object")
+    if cost.get("currency") != "USD" or cost.get("pricing") != "provider_reported":
+        raise ContractError("adapter result cost must be USD and provider_reported")
+    turns = cost.get("turns")
+    if not isinstance(turns, list):
+        raise ContractError("adapter result cost turns must be an array")
+    for key in ("reported_turn_count", "unavailable_turn_count"):
+        if not isinstance(cost.get(key), int) or isinstance(cost[key], bool) or cost[key] < 0:
+            raise ContractError(f"adapter result cost {key} must be non-negative")
+    if cost["reported_turn_count"] + cost["unavailable_turn_count"] != len(turns):
+        raise ContractError("adapter result cost turn counters must match turn records")
+    if cost.get("complete") != (cost["unavailable_turn_count"] == 0):
+        raise ContractError("adapter result cost completeness must match unavailable turns")
+    for turn in turns:
+        if not isinstance(turn, dict) or turn.get("source") not in {
+            "openrouter_generation", "openrouter_stream_usage", "openrouter_chat_usage", "unavailable",
+        }:
+            raise ContractError("adapter result cost has an invalid turn source")
+    for key in ("reported_total_usd", "reported_upstream_inference_usd"):
+        value = cost.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+            raise ContractError(f"adapter result cost {key} must be non-negative")
 
 
 def attempt_envelope(
@@ -424,6 +465,7 @@ def attempt_envelope(
 ) -> dict[str, Any]:
     terminal = result.get("terminal") if isinstance(result, dict) else None
     usage = result.get("usage") if isinstance(result, dict) else None
+    cost = result.get("cost") if isinstance(result, dict) else None
     return {
         "schema_version": "pi-coding-eval-attempt/v0",
         "attempt_id": attempt_id,
@@ -448,6 +490,7 @@ def attempt_envelope(
         "turns": result.get("turns") if isinstance(result, dict) else None,
         "tool_calls": result.get("tool_calls") if isinstance(result, dict) else None,
         "usage": usage,
+        "cost": cost,
         "trace": result.get("trace", []) if isinstance(result, dict) else [],
         "oracle": oracle,
         "adapter_result": result,
@@ -666,6 +709,16 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             for record in selected
             if isinstance((usage := record.get("usage")), dict)
         ]
+        reported_costs = [
+            float(cost["reported_total_usd"])
+            for record in selected
+            if isinstance((cost := record.get("cost")), dict) and cost.get("complete")
+        ]
+        incomplete_costs = sum(
+            1
+            for record in selected
+            if not (isinstance((cost := record.get("cost")), dict) and cost.get("complete"))
+        )
         successes = sum(record["status"] == "success" for record in selected)
         summary[baseline_id] = {
             "attempts": len(selected),
@@ -677,12 +730,39 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "turns_median": statistics.median(turns) if turns else None,
             "tool_calls_median": statistics.median(calls) if calls else None,
             "tokens_median": statistics.median(token_totals) if token_totals else None,
+            "provider_reported_cost_usd": {
+                "complete_attempts": len(reported_costs),
+                "incomplete_or_unreported_attempts": incomplete_costs,
+                "total": sum(reported_costs) if reported_costs else None,
+                "median": statistics.median(reported_costs) if reported_costs else None,
+            },
         }
     return summary
 
 
+def paired_cost_comparison(summary: dict[str, Any]) -> dict[str, Any]:
+    """Compare aggregate provider-reported USD totals without manufacturing missing prices."""
+    totals: dict[str, float | None] = {}
+    complete = True
+    for baseline_id in ("upstream", "rust"):
+        baseline = summary.get(baseline_id)
+        cost = baseline.get("provider_reported_cost_usd") if isinstance(baseline, dict) else None
+        total = cost.get("total") if isinstance(cost, dict) else None
+        totals[baseline_id] = total if isinstance(total, (int, float)) and not isinstance(total, bool) else None
+        complete = complete and isinstance(cost, dict) and cost.get("incomplete_or_unreported_attempts") == 0 and totals[baseline_id] is not None
+    upstream, rust = totals["upstream"], totals["rust"]
+    return {
+        "schema_version": "pi-eval-cost-comparison/v1",
+        "currency": "USD",
+        "complete": complete,
+        "upstream_total_usd": upstream,
+        "rust_total_usd": rust,
+        "rust_minus_upstream_usd": None if upstream is None or rust is None else rust - upstream,
+    }
+
+
 def command_validate(args: argparse.Namespace) -> int:
-    tasks = load_tasks(Path(args.tasks))
+    tasks = select_tasks(load_tasks(Path(args.tasks)), args.task)
     if args.baselines:
         load_baselines(Path(args.baselines))
     print(json.dumps({"status": "valid", "tasks": [task["task_id"] for task in tasks]}, indent=2))
@@ -690,7 +770,7 @@ def command_validate(args: argparse.Namespace) -> int:
 
 
 def command_plan(args: argparse.Namespace) -> int:
-    tasks, config = load_tasks(Path(args.tasks)), load_baselines(Path(args.baselines))
+    tasks, config = select_tasks(load_tasks(Path(args.tasks)), args.task), load_baselines(Path(args.baselines))
     print(json.dumps({"status": "planned", "runs": paired_plan(tasks, config)}, indent=2))
     return 0
 
@@ -698,7 +778,7 @@ def command_plan(args: argparse.Namespace) -> int:
 def command_run(args: argparse.Namespace) -> int:
     if not args.allow_provider:
         raise ContractError("refusing provider execution: pass --allow-provider explicitly")
-    tasks, config = load_tasks(Path(args.tasks)), load_baselines(Path(args.baselines))
+    tasks, config = select_tasks(load_tasks(Path(args.tasks)), args.task), load_baselines(Path(args.baselines))
     tasks_by_id = {task["task_id"]: task for task in tasks}
     baselines_by_id = {baseline["id"]: baseline for baseline in config["baselines"]}
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -715,10 +795,12 @@ def command_run(args: argparse.Namespace) -> int:
         )
         records.extend(wave_records)
         wave_reports.append(wave_report)
+    summary = summarize(records)
     report = {
         "schema_version": "pi-coding-eval-report/v0",
         "records": records,
-        "summary": summarize(records),
+        "summary": summary,
+        "provider_reported_cost_comparison": paired_cost_comparison(summary),
         "waves": wave_reports,
     }
     if args.out:
@@ -736,6 +818,7 @@ def make_parser() -> argparse.ArgumentParser:
     sub = command.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--tasks", default=str(TASKS))
+    common.add_argument("--task", action="append", default=[], help="run one named task contract (repeatable)")
     validate = sub.add_parser("validate", parents=[common])
     validate.add_argument("--baselines")
     validate.set_defaults(handler=command_validate)

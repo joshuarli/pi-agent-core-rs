@@ -240,6 +240,10 @@ def cache_bare_repository(repository: str, commit: str, cache_root: Path, *, pop
     root.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha256(repository.encode()).hexdigest()[:32]
     bare = root / f"{key}.git"
+    # A clone only advertises normal branch/tag refs, not arbitrary loose/unreachable objects.
+    # Keep a cache-private branch after verifying each allowed object so a detached
+    # materialization can reliably obtain both independently shallow-pinned commits.
+    cache_ref = f"refs/heads/pi-agent-quality/{commit}"
     with _cache_lock(root / f"{key}.lock"):
         if bare.is_symlink():
             raise CodingCaseError("bare repository cache entry must not be a symlink")
@@ -266,6 +270,7 @@ def cache_bare_repository(repository: str, commit: str, cache_root: Path, *, pop
                 ) from None
             _git("--git-dir", str(bare), "fetch", "--depth=1", "origin", commit, timeout=600)
             _git("--git-dir", str(bare), "cat-file", "-e", f"{commit}^{{commit}}")
+        _git("--git-dir", str(bare), "update-ref", cache_ref, commit)
     return bare
 
 

@@ -28,16 +28,18 @@ def parser() -> argparse.ArgumentParser:
     cache.add_argument("--cache-root", type=Path, required=True, help="explicit cache root; this operation may fetch pinned commits")
     cache.add_argument("--case", action="append", default=[], help="prepare one named coding case (repeatable)")
     coding = sub.add_parser("coding", help="run opt-in paired coding evaluations against the three Express cases")
-    coding.add_argument("--allow-provider", action="store_true", help="required: adapters make provider requests via vault")
+    coding.add_argument("--allow-provider", action="store_true", help="required: adapters make provider requests")
     coding.add_argument("--model", required=True, help="explicit OpenRouter model identifier")
+    coding.add_argument("--env-file", type=Path, required=True, help="explicit .env file sourced only by the live adapter boundary")
     coding.add_argument("--cache-root", type=Path, required=True, help="pre-populated bare-repository/dependency cache root")
     coding.add_argument("--workspace-root", type=Path, required=True, help="explicit parent for disposable clean worktrees")
     coding.add_argument("--out", type=Path, required=True, help="persistent artifact directory")
     coding.add_argument("--validator", choices=("fast", "full"), default="fast", help="validator tier after each adapter")
     coding.add_argument("--case", action="append", default=[], help="run one named coding case (repeatable)")
     full = sub.add_parser("full", help="run provider-free core parity then the opt-in coding audit validator")
-    full.add_argument("--allow-provider", action="store_true", help="required: adapters make provider requests via vault")
+    full.add_argument("--allow-provider", action="store_true", help="required: adapters make provider requests")
     full.add_argument("--model", required=True, help="explicit OpenRouter model identifier")
+    full.add_argument("--env-file", type=Path, required=True, help="explicit .env file sourced only by the live adapter boundary")
     full.add_argument("--cache-root", type=Path, required=True, help="pre-populated bare-repository/dependency cache root")
     full.add_argument("--workspace-root", type=Path, required=True, help="explicit parent for disposable clean worktrees")
     full.add_argument("--out", type=Path, required=True, help="persistent artifact directory")
@@ -82,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
                 workspace_root=args.workspace_root,
                 out=args.out,
                 validator=args.validator,
+                env_file=args.env_file,
                 case_ids=args.case or None,
             )
             print(f"quality coding: {summary['passed']}/{summary['case_count']} cases passed ({args.validator} validator)")
@@ -97,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
                 workspace_root=args.workspace_root,
                 out=args.out / "coding",
                 validator="full",
+                env_file=args.env_file,
                 case_ids=args.case or None,
             )
             summary = {"schema_version": "pi-agent-quality-full-run/v1", "core": core_summary, "coding": coding_summary}

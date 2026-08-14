@@ -6,7 +6,7 @@ This directory implements the quality-suite contract in
 - `fast` is provider-free, strict deterministic parity against the pinned
   upstream `pi-agent-core` source. It runs ten current-upstream scenarios for
   validation/recovery, stream errors, tool ordering, and cancellation.
-- `coding` is an explicit, Vault-backed ecological check for exactly three
+- `coding` is an explicit, `.env`-sourced ecological check for exactly three
   pinned `pi-bench` Express tasks. It compares upstream Pi's headless SDK
   session with the Rust default coding profile using test results, never an LLM
   judge.
@@ -56,13 +56,15 @@ fetches a repository while a model attempt is active.
 python3 -m evals.quality prepare-cache --cache-root /tmp/pi-quality-cache
 ```
 
-Then run the ordinary fast regression validator. The adapters themselves are
-launched through `vault OPENROUTER_API_KEY -- bash …`; the evaluator never
-reads or forwards the key.
+Then run the ordinary fast regression validator. `--env-file` must name the
+caller-controlled file holding `OPENROUTER_API_KEY`; a short-lived shell
+sources it immediately before the adapter starts. The Python evaluator and
+tool children never receive or persist that key.
 
 ```sh
 python3 -m evals.quality coding --allow-provider \
-  --model deepseek/deepseek-v4-flash-0731 \
+  --model poolside/laguna-xs-2.1:free \
+  --env-file .env \
   --cache-root /tmp/pi-quality-cache \
   --workspace-root /tmp/pi-quality-workspaces \
   --out /tmp/pi-quality-coding \
@@ -74,7 +76,8 @@ the deterministic core tier:
 
 ```sh
 python3 -m evals.quality full --allow-provider \
-  --model deepseek/deepseek-v4-flash-0731 \
+  --model poolside/laguna-xs-2.1:free \
+  --env-file .env \
   --cache-root /tmp/pi-quality-cache \
   --workspace-root /tmp/pi-quality-workspaces \
   --out /tmp/pi-quality-full
@@ -87,6 +90,16 @@ worktree. NPM's content cache may be shared by lockfile hash; `node_modules`
 is never reused. The three fast validator manifests retain baseline/fixed
 evidence and the original full audit command.
 
+Each adapter result also contains a `pi-eval-cost/v1` report: a redacted
+per-turn OpenRouter accounting projection and aggregate USD totals. Costs are
+provider-reported from the completion's stream/chat `usage.cost`, never
+inferred from a local price table. Generation metadata is an optional richer
+fallback; if neither accounting path is available (including a
+retention-restricted generation), the condition is represented explicitly and
+makes the paired cost comparison incomplete rather than silently claiming a
+zero cost. Generation ids and raw provider payloads are deliberately absent
+from artifacts.
+
 ## Hermetic upstream coding-profile adapter
 
 [`../upstream-live-adapter.mts`](../upstream-live-adapter.mts) uses the pinned
@@ -95,7 +108,7 @@ source checkout's programmatic `Agent` together with its own
 factories. That supplies Pi's normal built-in coding prompt and `read`,
 `bash`, `edit`, `write` tool surface without TUI, sessions, extensions, skills,
 prompts, themes, context files, package discovery, or user settings. After
-copying the Vault key into a model callback, it clears inherited environment
+copying the injected key into a model callback, it clears inherited environment
 variables so model-produced bash commands cannot read that key or ambient user
 settings.
 

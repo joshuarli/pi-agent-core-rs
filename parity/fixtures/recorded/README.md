@@ -14,7 +14,7 @@ capture as `*.canonical.json`; this is a replay golden, not a second provider ca
 
 An OpenRouter capture must be produced only by
 [`../../upstream/record-openrouter.mts`](../../upstream/record-openrouter.mts) from the pinned
-source checkout via `vault OPENROUTER_API_KEY -- …`; select a model with
+source checkout via a caller-managed sourced `.env`; select a model with
 `OPENROUTER_MODEL=<provider/model>` inside that command. A host-installed `pi` executable is
 never a capture source, because its version can differ from `parity/UPSTREAM_COMMIT`.
 

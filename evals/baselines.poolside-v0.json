@@ -3,8 +3,8 @@
   "seed": 20260814,
   "repeats": 1,
   "comparison": {
-    "model": "deepseek/deepseek-v4-flash-0731",
-    "provider_revision": "openrouter-pinned-source-capture-2026-08-14",
+    "model": "poolside/laguna-xs-2.1:free",
+    "provider_revision": "openrouter-provider-reported-cost-2026-08-14",
     "sampling": {
       "temperature": 0,
       "seed": 20260814,
@@ -17,7 +17,7 @@
       "concurrency": 1,
       "admission_concurrency": 1,
       "stagger_ms": 0,
-      "stop_on_failure": false
+      "stop_on_failure": true
     },
     "coding": {
       "concurrency": 1,
@@ -40,7 +40,7 @@
       "command": [
         "bash", "-c", "set -a; . \"$1\"; set +a; shift; exec \"$@\"", "pi-agent-eval-source-env", "{controller_root}/../.env",
         "bash", "{controller_root}/run-upstream-live.sh",
-        "--model", "deepseek/deepseek-v4-flash-0731",
+        "--model", "poolside/laguna-xs-2.1:free",
         "--task-json", "{task_json}",
         "--workspace", "{workspace}",
         "--capabilities-json", "{capabilities_json}",
@@ -62,7 +62,7 @@
       "command": [
         "bash", "-c", "set -a; . \"$1\"; set +a; shift; exec \"$@\"", "pi-agent-eval-source-env", "{controller_root}/../.env",
         "bash", "{controller_root}/run-rust-live.sh",
-        "--model", "deepseek/deepseek-v4-flash-0731",
+        "--model", "poolside/laguna-xs-2.1:free",
         "--task-json", "{task_json}",
         "--workspace", "{workspace}",
         "--capabilities-json", "{capabilities_json}",

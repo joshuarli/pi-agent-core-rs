@@ -4,14 +4,16 @@ The adapter boundary intentionally reuses the repository's two explicit live
 adapters: upstream is a headless, pinned-source SDK session and Rust is the
 Smol-owned `pi-agent-eval` binary.  This module owns clean worktrees,
 validation, artifacts, and process resource measurements; it never discovers
-a model or a credential.  Callers inject OpenRouter credentials with
-``vault OPENROUTER_API_KEY -- …`` through the concrete adapter command.
+a model or a credential. Callers explicitly select an env file; a tiny shell
+boundary sources it immediately before the adapter starts, so Python and tool
+children never receive or persist the OpenRouter credential.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -132,7 +134,71 @@ def _result_contract(result: Any, *, attempt_id: str, baseline_id: str) -> dict[
     terminal = result.get("terminal")
     if not isinstance(terminal, dict) or terminal.get("status") not in {"completed", "failed", "cancelled", "aborted"}:
         raise CodingRunError("adapter result has no valid terminal status")
+    _cost_contract(result.get("cost"))
     return result
+
+
+def _nonnegative_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
+def _cost_contract(cost: Any) -> None:
+    """Validate the common redacted, provider-reported accounting contract."""
+    if not isinstance(cost, dict):
+        raise CodingRunError("adapter result has no cost report")
+    if cost.get("schema_version") != "pi-eval-cost/v1":
+        raise CodingRunError("adapter cost report has the wrong schema_version")
+    if cost.get("currency") != "USD" or cost.get("pricing") != "provider_reported":
+        raise CodingRunError("adapter cost report must be USD and provider_reported")
+    turns = cost.get("turns")
+    if not isinstance(turns, list):
+        raise CodingRunError("adapter cost report has no per-turn records")
+    reported = cost.get("reported_turn_count")
+    unavailable = cost.get("unavailable_turn_count")
+    if not isinstance(reported, int) or isinstance(reported, bool) or reported < 0:
+        raise CodingRunError("adapter cost report has an invalid reported_turn_count")
+    if not isinstance(unavailable, int) or isinstance(unavailable, bool) or unavailable < 0:
+        raise CodingRunError("adapter cost report has an invalid unavailable_turn_count")
+    if reported + unavailable != len(turns):
+        raise CodingRunError("adapter cost report counters do not match its turn records")
+    if cost.get("complete") != (unavailable == 0):
+        raise CodingRunError("adapter cost completeness does not match unavailable turns")
+    for total_name in ("reported_total_usd", "reported_upstream_inference_usd"):
+        if not _nonnegative_number(cost.get(total_name)):
+            raise CodingRunError(f"adapter cost report has invalid {total_name}")
+    for turn in turns:
+        if not isinstance(turn, dict) or turn.get("source") not in {
+            "openrouter_generation",
+            "openrouter_stream_usage",
+            "openrouter_chat_usage",
+            "unavailable",
+        }:
+            raise CodingRunError("adapter cost report has an invalid per-turn source")
+        total = turn.get("total_usd")
+        if total is not None and not _nonnegative_number(total):
+            raise CodingRunError("adapter cost report has an invalid per-turn total")
+        if turn.get("source") == "unavailable" and total is not None:
+            raise CodingRunError("unavailable adapter cost turn must not have a total")
+
+
+def _cost_comparison(adapter_records: list[dict[str, Any]]) -> dict[str, Any]:
+    by_adapter = {
+        record["adapter"]: record["adapter_result"].get("cost")
+        for record in adapter_records
+        if isinstance(record.get("adapter_result"), dict)
+    }
+    upstream = by_adapter.get("upstream")
+    rust = by_adapter.get("rust")
+    upstream_total = upstream.get("reported_total_usd") if isinstance(upstream, dict) and upstream.get("complete") else None
+    rust_total = rust.get("reported_total_usd") if isinstance(rust, dict) and rust.get("complete") else None
+    return {
+        "schema_version": "pi-eval-cost-comparison/v1",
+        "currency": "USD",
+        "complete": upstream_total is not None and rust_total is not None,
+        "upstream_total_usd": upstream_total,
+        "rust_total_usd": rust_total,
+        "rust_minus_upstream_usd": None if upstream_total is None or rust_total is None else rust_total - upstream_total,
+    }
 
 
 def _run_process(command: list[str], *, cwd: Path, timeout_seconds: int) -> tuple[int | None, bool, str, str, int | None]:
@@ -168,9 +234,6 @@ def _run_process(command: list[str], *, cwd: Path, timeout_seconds: int) -> tupl
 def _adapter_command(adapter: str, model: str, task_path: Path, workspace: Path, capabilities_path: Path, result_path: Path, attempt_id: str) -> list[str]:
     script = ROOT / "evals" / ("run-upstream-live.sh" if adapter == "upstream" else "run-rust-live.sh")
     return [
-        "vault",
-        "OPENROUTER_API_KEY",
-        "--",
         "bash",
         str(script),
         "--model",
@@ -188,6 +251,28 @@ def _adapter_command(adapter: str, model: str, task_path: Path, workspace: Path,
         "--baseline-id",
         adapter,
     ]
+
+
+def _env_sourced_command(env_file: Path, command: list[str]) -> list[str]:
+    """Source a caller-designated env file in the final process boundary only."""
+    return [
+        "bash",
+        "-c",
+        'set -a; . "$1"; set +a; shift; exec "$@"',
+        "pi-agent-quality-source-env",
+        str(env_file),
+        *command,
+    ]
+
+
+def _resolve_env_file(env_file: Path) -> Path:
+    try:
+        resolved = env_file.resolve(strict=True)
+    except OSError as error:
+        raise CodingRunError(f"cannot resolve explicit provider env file: {error}") from error
+    if not resolved.is_file():
+        raise CodingRunError("explicit provider env path must be a regular file")
+    return resolved
 
 
 def prepare_cache(*, cache_root: Path, case_ids: Iterable[str] | None = None) -> dict[str, Any]:
@@ -216,12 +301,14 @@ def run_coding_cases(
     workspace_root: Path,
     out: Path,
     validator: str,
+    env_file: Path,
     case_ids: Iterable[str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     if validator not in {"fast", "full"}:
         raise CodingRunError("validator must be fast or full")
     if not model:
         raise CodingRunError("a model must be explicitly supplied")
+    env_file = _resolve_env_file(env_file)
     selected = set(case_ids or ())
     cases = [case for case in load_cases() if not selected or case["id"] in selected]
     missing = selected - {case["id"] for case in cases}
@@ -243,10 +330,14 @@ def run_coding_cases(
         for adapter in ("upstream", "rust"):
             worktree = materialize_clean_worktree(case, cache_root, workspace_root)
             try:
-                npm_cache = dependency_cache_path(worktree.path, cache_root)
+                # Fast regression validators execute the checked-out source directly and do
+                # not need npm. Some historical Express pins predate package-lock.json, so
+                # require a lockfile-keyed npm cache only for the full install/test audit.
+                npm_cache = dependency_cache_path(worktree.path, cache_root) if validator == "full" else None
                 result_path = case_destination / f"{adapter}-result.json"
                 attempt_id = f"quality-{case['id']}-{adapter}"
-                command = _adapter_command(adapter, model, task_path, worktree.path, capabilities_path, result_path, attempt_id)
+                adapter_command = _adapter_command(adapter, model, task_path, worktree.path, capabilities_path, result_path, attempt_id)
+                command = _env_sourced_command(env_file, adapter_command)
                 code, timed_out, stdout, stderr, peak_rss = _run_process(command, cwd=ROOT, timeout_seconds=180)
                 result: dict[str, Any] | None = None
                 contract_error: str | None = None
@@ -264,7 +355,7 @@ def run_coding_cases(
                 adapter_record = {
                     "adapter": adapter,
                     "attempt_id": attempt_id,
-                    "command": ["vault", "OPENROUTER_API_KEY", "--", "bash", str(command[4]), "…"],
+                    "command": ["bash", "source explicit env file (redacted)", "--", *adapter_command[:2], "…"],
                     "process": {
                         "exit_code": code,
                         "timed_out": timed_out,
@@ -296,6 +387,7 @@ def run_coding_cases(
             "baseline": case["baseline"],
             "validator": validator,
             "adapters": adapter_records,
+            "cost_comparison": _cost_comparison(adapter_records),
             "passed": all(item["passed"] for item in adapter_records),
         }
         records.append(record)
