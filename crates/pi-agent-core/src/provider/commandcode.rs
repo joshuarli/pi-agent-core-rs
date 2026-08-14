@@ -439,7 +439,23 @@ impl CommandCodeProvider {
         let mut retry_index = 0;
         loop {
             let response = self.run_request(&payload, cancellation)?;
-            let parsed = parse_ndjson_response(&response, &self.config.api_key)?;
+            let parsed = match parse_ndjson_response(&response, &self.config.api_key) {
+                Ok(parsed) => parsed,
+                Err(message)
+                    if is_retryable_response_error(&message)
+                        && retry_index < self.config.retry_policy.max_retries() =>
+                {
+                    if !wait_with_cancellation(
+                        self.config.retry_policy.delay_before_retry(retry_index),
+                        cancellation,
+                    ) {
+                        return Err("Command Code request cancelled".into());
+                    }
+                    retry_index += 1;
+                    continue;
+                }
+                Err(message) => return Err(message),
+            };
             let retryable = parsed
                 .error
                 .as_ref()
@@ -914,6 +930,21 @@ fn parse_ndjson_response(bytes: &[u8], api_key: &str) -> Result<ParsedCommandCod
     }
 }
 
+/// A provider response that is structurally incomplete before any stream event reaches the core.
+/// These failures commonly represent a truncated or non-NDJSON gateway error body and are safe
+/// to replay; request validation failures happen before this boundary and are not retried.
+fn is_retryable_response_error(message: &str) -> bool {
+    matches!(
+        message,
+        "Command Code returned a non-UTF-8 NDJSON"
+            | "Command Code returned invalid NDJSON"
+            | "Command Code NDJSON event did not contain type"
+            | "Command Code NDJSON event must be an object"
+            | "Command Code stream ended without a terminal event"
+            | "Command Code response contained events after its terminal event"
+    )
+}
+
 /// Parse the error conventions used by Command Code 1.24.0 without turning remote text into an
 /// agent-visible error. In addition to object fields, the client recognizes a message shaped as
 /// `<status> {\"error\": {\"type\": ..., \"message\": ...}}`; preserve that useful diagnostic
@@ -1291,6 +1322,22 @@ mod tests {
             error,
             "Command Code response contained events after its terminal event"
         );
+    }
+
+    #[test]
+    fn classifies_incomplete_gateway_responses_as_retryable() {
+        assert!(is_retryable_response_error(
+            "Command Code NDJSON event did not contain type"
+        ));
+        assert!(is_retryable_response_error(
+            "Command Code stream ended without a terminal event"
+        ));
+        assert!(!is_retryable_response_error(
+            "Command Code tool call omitted its identifier"
+        ));
+        assert!(!is_retryable_response_error(
+            "Command Code received invalid converted context"
+        ));
     }
 
     #[test]
