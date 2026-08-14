@@ -1,8 +1,13 @@
 # pi-agent-core-rs
 
-Build a small, auditable, headless Rust implementation of the useful runtime semantics of `@earendil-works/pi-agent-core`, with a first-class handwritten TypeScript SDK.
+Build a small, auditable, headless Rust implementation of the useful runtime semantics of
+`@earendil-works/pi-agent-core`, including a version-pinned default Pi coding profile. An optional
+embedded Luau policy plane adds programmability without becoming part of every agent instance.
 
-This project is **not** a port of Pi Coding Agent.
+This project is **not** a port of Pi's interactive application, session system, or ambient
+configuration. It does reproduce the selected default coding profile—its system prompt, active
+tools, and tool-local prompt material—because those are observable inputs to useful headless
+coding-agent behavior.
 
 It is a behavioral-parity implementation of the minimal stateful agent kernel:
 
@@ -16,30 +21,25 @@ The resulting library should be suitable for running very large numbers of dispo
 
 # 1. Primary objectives
 
-Produce:
+The planned repository layout is:
 
 ```text
 pi-agent-core-rs/
 ├── crates/
 │   ├── pi-agent-core/        # pure Rust agent runtime
 │   ├── pi-agent-protocol/    # stable data/event types
-│   └── pi-agent-trace/       # optional lean trajectory recorder
-│
-├── bindings/
-│   └── node/                 # thin napi-rs bridge
-│
-├── packages/
-│   └── sdk/                  # handwritten TypeScript API
+│   ├── pi-agent-trace/       # optional lean trajectory recorder (V0)
+│   └── pi-agent-luau/        # optional embedded policy runtime (V1)
 │
 ├── parity/
-│   ├── upstream/             # runner using real pi-agent-core
+│   ├── upstream/             # in-process runner importing the Pi agent SDK
 │   ├── rust/                 # runner using our implementation
 │   ├── fixtures/
 │   └── compare/
 │
 ├── examples/
 │   ├── rust/
-│   └── typescript/
+│   └── luau/                 # V1
 │
 └── docs/
     ├── scope.md
@@ -48,9 +48,9 @@ pi-agent-core-rs/
     └── architecture.md
 ```
 
-The Rust library must be independently useful without JavaScript.
-
-The TypeScript SDK must feel like a native TypeScript library rather than generated Rust bindings.
+The Rust library must be independently useful without any external language runtime. A pure
+Rust agent pays no Luau startup or memory cost. `V1.md` defines the optional Luau policy layer;
+it is downstream of and cannot alter the core state-machine contract.
 
 The runtime must have:
 
@@ -60,40 +60,49 @@ The runtime must have:
 * no global configuration;
 * no implicit `$HOME` access;
 * no package/plugin discovery;
-* no built-in coding tools;
+* no Node, TypeScript, napi-rs, or JavaScript runtime;
 * no built-in model-provider dependency;
 * no requirement for `pi-ai`;
-* no background threads/processes other than explicitly created async runtime work;
+* no runtime, thread pool, or background task created by the core; the application owns its
+  Smol executor and any spawned work;
 * no ambient persistence.
 
 ---
 
-# 2. Pin the upstream specification
+# 2. Pin the upstream SDK subset
 
 Before implementing runtime behavior:
 
-1. Clone the current upstream Pi repository.
-2. Record the exact git commit SHA in:
+1. Identify the current public Pi agent SDK exports that are within this project's scope.
+2. Record the upstream repository URL, exact git commit SHA, package version, Node version,
+   package-manager lockfile input, and runner command in:
 
 ```text
 parity/UPSTREAM_COMMIT
 ```
 
-3. Inspect only the relevant parts of:
+3. Build the upstream fixture runner by importing that SDK in-process. It must exercise the
+   library API directly with deterministic host callbacks; it must not execute Pi, the coding
+   agent, or any other Pi CLI.
+4. Inspect only the relevant parts of:
 
 ```text
-packages/agent/
+packages/agent/              # kernel behavior
 packages/ai/                 # only for protocol/type understanding
+packages/coding-agent/core/system-prompt.ts
+packages/coding-agent/core/tools/  # default profile only
 ```
 
-4. Do **not** treat `packages/coding-agent` as an implementation target.
+5. Do **not** treat the rest of `packages/coding-agent` as an implementation target.
 
-It can be consulted only when necessary to understand how `pi-agent-core` is consumed.
+The listed system-prompt and tool modules are an explicit profile specification, not permission
+to import session, UI, configuration, resource-discovery, or extension behavior.
 
 Create:
 
 ```text
 docs/parity-ledger.md
+docs/pi-sdk-subset.md
 ```
 
 containing every upstream semantic that we intentionally:
@@ -107,6 +116,13 @@ Every parity behavior should point to:
 * upstream file;
 * upstream symbol;
 * test fixture exercising it.
+
+`docs/pi-sdk-subset.md` names the public SDK method, type, event behavior, and default coding
+profile artifacts that are the parity target. The profile ledger records upstream path, exported
+factory/symbol, byte hash of generated prompt text, active-tool order, schemas, prompt snippets,
+prompt guidelines, and a fixture. Internal upstream files may explain behavior, but they do not
+expand the target.
+The ledger uses only `supported`, `deferred-to-v1`, `rejected`, and `investigating` statuses.
 
 Never silently implement something merely because upstream contains it.
 
@@ -150,28 +166,29 @@ Implement behavioral equivalents of the useful `Agent` / agent-loop semantics:
 * argument validation
 * sequential execution
 * parallel execution
-* per-tool execution override
-* `beforeToolCall`
-* `afterToolCall`
 * streaming partial tool updates
 * thrown tool errors converted into tool-result errors
-* blocking tools
-* early-termination hint
 * dynamic tool-result metadata required for parity
+* the pinned Pi default coding tools and their prompt-local guidance
+* caller replacement, removal, addition, and capability wrapping of every default tool
 
-### Context policy
+### Default coding profile
 
-* `convertToLlm`
-* `transformContext`
-* `shouldStopAfterTurn`
-* `prepareNextTurn`
+Ship `PiDefaultCodingProfile`, enabled by the ergonomic Rust builder and fully replaceable by a
+sterile or application profile. At the pinned upstream commit, its active set is derived from
+Pi's default `selectedTools` and its tool definitions—not a Rust-maintained approximation. It
+constructs the default system prompt from the same ordered prompt template, active tool snippets,
+tool guidelines, and explicit workspace value as Pi.
 
-### Queue semantics
+The profile contains concrete local implementations for the pinned standard tools, currently
+identified by upstream factories as `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`.
+Which are active by default is captured from upstream rather than assumed. A caller supplies an
+explicit workspace root and may replace each filesystem/process operation or omit the profile
+entirely. No tool discovers a cwd, home directory, settings, or capability implicitly.
 
-* steering messages
-* follow-up messages
-* queue mode if applicable at the pinned upstream commit
-* exact ordering guarantees
+There is no permission or approval UI. The profile exposes a programmatic capability/policy
+boundary so an embedding can permit, deny, log, sandbox, or replace an operation without the
+agent loop knowing how the decision was made.
 
 ### Events
 
@@ -205,10 +222,15 @@ Support cancellation during:
 * model streaming;
 * tool preparation;
 * tool execution;
-* hook execution where possible;
 * between turns.
 
 Cancellation must leave the `Agent` in a valid idle state.
+
+Per-tool execution overrides; `beforeToolCall`; `afterToolCall`; blocking tools;
+early-termination hints; `convertToLlm`; `transformContext`; `shouldStopAfterTurn`;
+`prepareNextTurn`; steering; follow-up; and queue modes are V0 scope. Their exact behavior is
+established by the pinned SDK fixtures before implementation; no undocumented escape hatch may
+invent a competing contract.
 
 ---
 
@@ -242,14 +264,7 @@ keybindings
 interactive commands
 package management
 MCP
-shell tools
-filesystem tools
-grep
-edit
-read
-write
 compaction policy
-coding-agent system prompts
 permission UI
 approval UI
 provider authentication
@@ -259,9 +274,11 @@ OpenTelemetry
 Sentry
 ```
 
-Do not port the newer Pi harness/session infrastructure simply because it lives in `packages/agent`.
+Do not port Pi's harness/session infrastructure simply because it lives in `packages/agent` or
+`packages/coding-agent`.
 
-The design target is the **agent state machine**, not everything exported by the npm package.
+The design target is an **agent execution microkernel plus an explicit default coding profile**,
+not everything exported by the npm package.
 
 ---
 
@@ -308,7 +325,7 @@ Conceptually:
                  trait        callbacks
 ```
 
-The loop must not know:
+The loop itself must not know:
 
 * HTTP;
 * Anthropic;
@@ -320,7 +337,9 @@ The loop must not know:
 * shell execution;
 * VM execution.
 
-Those belong outside the kernel.
+Those mechanisms belong behind tools and world capabilities. `PiDefaultCodingProfile` supplies
+the pinned local filesystem/process tools as one explicit profile; a sterile embedding can omit
+them, and a world embedding can replace them without changing the loop.
 
 ---
 
@@ -329,6 +348,21 @@ Those belong outside the kernel.
 Do **not** port `pi-ai`.
 
 Define a small provider boundary.
+
+## Async runtime policy
+
+Use Smol for examples, tests, and host integration. Tokio is prohibited as a direct dependency
+or enabled feature in every workspace crate. The core must be executor-owned, not
+executor-owning: it may compose `Send` futures but must not call `smol::block_on`, create an
+executor, spawn background work, or expose Tokio types. Applications create and drive the Smol
+executor. Parallel tool work is composed within the run rather than detached from it.
+
+Cancellation is a structured, executor-agnostic protocol concern. Select its small concrete
+implementation during the dependency review; its public behavior must not depend on Tokio or
+on a global runtime.
+
+Compile and test against the checked-in nightly toolchain in `rust-toolchain.toml`. There is no
+stable-Rust or MSRV compatibility target.
 
 For example:
 
@@ -370,7 +404,8 @@ pub struct ModelDescriptor {
 
 Do not encode provider-specific assumptions into the agent core.
 
-The TypeScript SDK must be able to implement `ModelStream` with a callback.
+An embedding, world runtime, or optional Luau policy adapter must be able to implement
+`ModelStream` through the same Rust boundary.
 
 This permits:
 
@@ -381,9 +416,9 @@ pi-agent-core-rs
        ├── SGLang provider
        ├── vLLM provider
        ├── native Rust provider
-       └── TypeScript callback
+       └── caller-owned stream adapter
                 │
-                └── pi-ai, AI SDK, custom gateway, etc.
+                └── custom gateway, world runtime, or native provider
 ```
 
 A future provider crate may be added, but provider implementation is not part of the initial parity milestone.
@@ -451,9 +486,11 @@ Keep these serializable.
 
 # 9. Tool abstraction
 
-Tools are caller-owned capabilities.
+Tools are explicit capabilities. The runtime bundles the pinned Pi default coding profile, but
+callers own its authority: they choose the workspace and local operations, replace or remove any
+standard tool, wrap it with policy, and add domain tools.
 
-The core should understand:
+The scheduler should understand:
 
 ```text
 name
@@ -463,7 +500,7 @@ execution mode
 execute callback
 ```
 
-It should not understand what the tool does.
+It should not contain tool-specific scheduling paths.
 
 Suggested abstraction:
 
@@ -489,12 +526,8 @@ Use JSON Schema-compatible values at the boundary.
 
 Do not introduce a Rust-specific schema DSL into the public kernel API.
 
-TypeScript users should be able to pass:
-
-* TypeBox;
-* Zod converted to JSON Schema;
-* raw JSON Schema;
-* generated schemas.
+Rust callers, Luau policy tools, and future external interfaces must all pass raw JSON Schema or
+an equivalent serialized schema value at this boundary.
 
 Choose one mature Rust JSON Schema validator and isolate it behind an internal adapter so it can be replaced.
 
@@ -541,119 +574,50 @@ A → B → C
 
 Also test mixtures of:
 
-* blocked tools;
 * failed tools;
 * successful tools;
-* terminate flags;
 * sequential-only tools inside an otherwise parallel batch.
 
 ---
 
 # 11. Hooks
 
-Support host-provided callbacks corresponding to Pi's useful loop hooks.
+Support host-provided Rust callbacks corresponding to Pi's useful loop hooks. They are kernel
+extension points; the optional Luau layer adapts to them later and does not redefine their
+semantics.
 
-### Before tool call
+`before_tool_call` may allow execution, block with a reason, or request termination.
+`after_tool_call` may replace content, details, error status, usage, or a termination hint. Its
+changes use Pi-compatible replacement semantics, never an undocumented recursive merge.
 
-```text
-before_tool_call
-```
+`transform_context` runs before `convert_to_llm`. The persisted context supports an explicitly
+versioned host-message envelope so applications can add non-LLM messages without the core
+inventing UI-message concepts. `convert_to_llm` can convert, filter, or normalize that envelope
+into `LlmMessage`s. `should_stop_after_turn` and `prepare_next_turn` are implemented exactly as
+established by the pinned SDK fixtures.
 
-May:
-
-* allow execution;
-* block execution;
-* provide reason;
-* optionally request termination.
-
-### After tool call
-
-```text
-after_tool_call
-```
-
-May override:
-
-* content;
-* details;
-* error status;
-* usage;
-* termination hint.
-
-Use replacement semantics matching Pi rather than recursive merge semantics.
-
-### Context transform
-
-```text
-transform_context
-```
-
-Called before provider conversion.
-
-### Provider conversion
-
-```text
-convert_to_llm
-```
-
-Allows application-specific messages to be:
-
-* converted;
-* filtered;
-* normalized.
-
-Do not build UI-message concepts into Rust.
-
-The generic mechanism should simply allow arbitrary application messages to disappear or become model messages.
-
-### Turn hooks
-
-Implement:
-
-```text
-should_stop_after_turn
-prepare_next_turn
-```
-
-according to parity tests.
+Hook errors, cancellation, observer settlement, and replacement precedence are typed contracts.
+They must not bypass agent state transitions or tool-result ordering.
 
 ---
 
 # 12. Steering and follow-up queues
 
-Implement these as explicit agent-runtime concepts because they materially affect execution semantics.
+Implement explicit `steering` and `follow_up` queues, not a general actor/mailbox framework.
+Steering drains at the Pi-compatible points of an active run. Follow-up messages drain only when
+the run would otherwise become idle. The M0 state table fixes the behavior of `prompt`,
+`continue`, cancellation, and explicit queue methods while active; no input is silently assigned
+a queue class without that contract.
 
-The agent owns separate queues:
-
-```text
-steering
-follow_up
-```
-
-Steering is consumed at Pi-compatible drain points during an active run.
-
-Follow-up messages are consumed only when the run would otherwise become idle.
-
-Write deterministic tests around:
-
-* one steering message;
-* many steering messages;
-* steering arriving while tools execute;
-* follow-up after normal completion;
-* multiple follow-ups;
-* steering plus follow-up;
-* cancellation with queued messages;
-* queue drain ordering.
-
-Do not introduce general actor/mailbox infrastructure.
-
-Implement only what parity requires.
+Fixtures cover one and many steering messages, arrival during tools, one and many follow-ups,
+mixed queue ordering, queue modes present at the pin, and cancellation with queued messages.
 
 ---
 
 # 13. Agent ownership model
 
-Prefer one owned `Agent` with internally synchronized state rather than passing mutable state throughout application code.
+Prefer one owned `Agent` with internally synchronized state rather than passing mutable state
+throughout application code. V0 permits exactly one active `Run` per `Agent`.
 
 Suggested API direction:
 
@@ -665,24 +629,21 @@ let agent = Agent::builder()
     .tools(tools)
     .build();
 
-let run = agent.prompt(task).await?;
+let run = agent.start_prompt(task)?;
 ```
 
-Support event subscription independently:
+The run handle must allow an observer to register before the first lifecycle event is emitted
+and must provide the final result. The exact Rust ergonomics remain provisional, but these
+state transitions are not:
 
-```rust
-let mut events = agent.subscribe();
-
-while let Some(event) = events.recv().await {
-    // consume event
-}
-```
-
-Or return a `Run` handle with both event stream and final result.
-
-Do not force the exact API before the state machine is correct.
-
-Correctness first, API ergonomics second.
+* direct `prompt`, `continue`, steering, and follow-up behavior while active is fixed by the
+  Milestone 0 SDK fixtures and represented explicitly in the state table;
+* `abort` is idempotent;
+* terminal success, failure, and cancellation clear streaming and pending-tool state before the
+  agent becomes idle;
+* state inspection returns a documented snapshot, never a borrowed mutable view;
+* dropping an unfinished run cancels it or is explicitly disallowed—choose one during Milestone
+  0 and test it.
 
 ---
 
@@ -690,16 +651,25 @@ Correctness first, API ergonomics second.
 
 This is easy to get subtly wrong.
 
-Determine exactly which upstream subscribers are awaited and when the agent becomes idle.
+Determine exactly which upstream event consumers are awaited and when the agent becomes idle.
 
 Reproduce externally observable behavior.
 
-Tests should prove:
+Do not overload one mechanism with two incompatible meanings. The API distinguishes:
+
+* an `EventObserver`, an explicitly registered async callback whose settlement behavior follows
+  the pinned Pi SDK; and
+* an observational subscription, which has documented capacity, overflow, and dropped-consumer
+  behavior and cannot hold a run open indefinitely.
+
+Milestone 0 defines stable run, turn, message, and tool-call IDs; whether update payloads are
+snapshots or patches; and the terminal-event grammar. Tests should prove, where the pinned SDK
+does await an observer:
 
 ```text
 agent_end emitted
       ↓
-async subscriber still running
+async observer still running
       ↓
 agent remains logically busy
       ↓
@@ -714,13 +684,8 @@ If reproducing this literally harms Rust API design, preserve equivalent externa
 
 # 15. Cancellation
 
-Use structured cancellation.
-
-Recommended primitive:
-
-```text
-tokio_util::sync::CancellationToken
-```
+Use structured, executor-agnostic cancellation. No Tokio type may appear in the core's public
+or private API.
 
 A run owns a child cancellation scope.
 
@@ -754,7 +719,8 @@ Verify:
 * agent returns to idle;
 * next prompt can run normally.
 
-Run tests under Tokio's deterministic/paused-time facilities where useful.
+Use scripted providers, tools, and a controllable test clock to make cancellation boundaries
+deterministic under Smol; do not depend on Tokio paused-time facilities.
 
 ---
 
@@ -779,240 +745,63 @@ Do not collapse everything into `anyhow::Error`.
 
 Use a small typed error hierarchy.
 
-At FFI boundaries, errors may be serialized into stable TypeScript error classes.
-
 Rust panics must never be used for expected model/tool/runtime failures.
 
-Use `catch_unwind` around foreign callbacks if required to protect the runtime boundary.
+The optional Luau layer adds typed script syntax, typecheck, runtime, forbidden-capability, and
+resource-limit failures at its own boundary. Neither Rust hooks nor scripts can corrupt agent
+invariants.
 
 ---
 
 # 17. Lean tracing
 
-Tracing must be separate from runtime state.
-
-Do **not** recreate `session.jsonl`.
-
-The core publishes typed execution events.
-
-An optional trace crate consumes them.
-
-Conceptually:
-
-```text
-Agent
-  │
-  ├── application subscriber
-  │
-  └── TraceSink
-```
-
-A trace is a **linear episode**, not a branchable session database.
-
-Initial logical schema:
-
-```text
-EpisodeHeader
-  format_version
-  run_id
-  model
-  system_prompt_hash
-  metadata
-
-ModelTurn
-  sequence
-  input/reference
-  assistant output
-  usage
-  stop reason
-
-ToolExecution
-  sequence
-  call id
-  tool
-  arguments
-  result
-  status
-  duration
-
-EpisodeEnd
-  outcome
-  aggregate usage
-```
-
-Avoid repeating invariant run-level metadata on every record.
-
-Do not include:
-
-```text
-parentId
-tree node IDs
-bookmarks
-labels
-display metadata
-UI flags
-session names
-branch summaries
-```
-
-Implement at least two sinks:
-
-```text
-JsonLinesTraceSink      # debugging/interchange
-CborTraceSink           # compact production representation
-```
-
-The in-memory Rust data model is canonical; serialization is a replaceable concern.
-
-Tracing must be optional and must not influence agent behavior.
+Tracing is separate from runtime state. `pi-agent-trace` consumes immutable typed events and
+records a linear episode, never a Pi session tree. Its canonical in-memory model contains an
+episode header, model turns, tool executions, and an episode end; invariant run metadata is not
+repeated per record. JSON Lines and CBOR are explicit caller-selected sinks. No trace, JSONL,
+and CBOR runs must have identical agent behavior; sink failure is reported separately and cannot
+change the agent outcome. Prompts and tool content require a caller-selected redaction policy.
 
 ---
 
-# 18. TypeScript binding
+# 18. Optional Luau policy plane
 
-Use `napi-rs` for the first native Node-compatible binding.
+`pi-agent-luau` is an optional downstream crate built with `mlua` and Luau. Rust owns mechanism;
+Luau owns policy; the embedding world supplies capabilities. `pi-agent-core` compiles and runs
+without `mlua`, Luau, world APIs, or a scripting VM, and no `mlua` type appears in core APIs.
 
-But maintain this strict layering:
+Luau never owns state transitions, message history, stream handling, tool scheduling/order,
+queues, cancellation, event settlement, tracing, usage aggregation, failure classification, or
+resource ownership. It may use the Rust hook surface to permit/transform a tool call, stop after
+a turn, expose a tool, emit a trace annotation, or express orchestration intent. The Rust state
+machine validates every resulting action.
 
-```text
-Rust core
-    ↓
-thin napi-rs bridge
-    ↓
-handwritten TypeScript SDK
-```
-
-Do not expose generated binding objects as the public SDK.
-
-The Rust core must never depend on napi-rs.
-
-This preserves the option to later add:
-
-```text
-WASM
-Deno FFI
-Bun-specific binding
-IPC/service binding
-Python
-C ABI
-```
-
-without disturbing the runtime.
+The V1 specification in `V1.md` defines hermetic VM construction, capability manifests, module
+resolution, static Luau declarations, coroutine/future bridging on the caller-owned Smol
+executor, cancellation, limits, error translation, testing, and performance gates.
 
 ---
 
-# 19. TypeScript SDK design
+# 19. Capability-oriented policy ABI
 
-Target an API approximately like:
+Do not mirror Rust structs or the internal object graph into scripts. Provide a small stable ABI
+of host-controlled capability modules such as `@agent`, `@world`, `@trace`, `@task`, `@json`, and
+`@time`. A capability manifest states exactly which operations each worker receives. Scripts have
+no implicit filesystem, process, environment, network, home, current-directory, clock, FFI, or
+package authority.
 
-```ts
-import { Agent } from "@pi-agent-core-rs/sdk";
-
-const agent = new Agent({
-  model: {
-    provider: "local",
-    id: "qwen3-1.7b",
-  },
-
-  systemPrompt: "...",
-
-  stream: async (request, signal) => {
-    return myProvider.stream(request, signal);
-  },
-
-  tools: {
-    exec: {
-      description: "...",
-      schema: ExecSchema,
-
-      execute: async (args, ctx) => {
-        return {
-          content: [{ type: "text", text: "..." }],
-        };
-      },
-    },
-  },
-});
-
-const run = agent.prompt("do the task");
-
-for await (const event of run.events) {
-  console.log(event);
-}
-
-const result = await run.result;
-```
-
-The public TypeScript package should provide:
-
-```text
-Agent
-AgentRun
-AgentEvent
-AgentState
-Tool
-ModelStream
-TraceSink
-AbortSignal integration
-```
-
-Use normal JavaScript conventions:
-
-* `AbortSignal`
-* async functions
-* async iterators
-* plain objects
-* discriminated unions
-
-Do not leak:
-
-* Rust handles;
-* channels;
-* Arc;
-* mutexes;
-* opaque generated enums;
-* napi implementation details.
+The host controls `require`: virtual capability modules and optional bundle-local relative modules
+form a closed dependency graph. Absolute imports, global package paths, LuaRocks/npm-like
+resolution, native plugin loading, and network package fetches are excluded.
 
 ---
 
-# 20. FFI callback model
+# 20. External interfaces
 
-Exercise caution here.
-
-TypeScript callbacks may provide:
-
-```text
-model streaming
-tool execution
-hooks
-event consumers
-```
-
-All callbacks must cross the native boundary safely.
-
-Build one isolated bridge layer responsible for:
-
-```text
-JS Promise → Rust Future
-AbortSignal → CancellationToken
-Rust event → JS object
-JS exception → typed Rust failure
-```
-
-Avoid scattering napi callback code throughout the agent core.
-
-Stress test:
-
-```text
-100 agents
-1,000 agents
-many concurrent tool callbacks
-rapid cancellation
-JS callback rejection
-consumer dropping event streams
-```
-
-FFI correctness is a separate test dimension from agent parity.
+There is no Node, TypeScript, napi-rs, JavaScript callback bridge, or generated binding plan.
+Potential IPC, C ABI, WASM/component, Python, or other interfaces are post-V1 work only if a
+demonstrated use case justifies them. Any interface must preserve the same explicit capability
+and core-state boundaries.
 
 ---
 
@@ -1048,11 +837,12 @@ Example script:
 Use exactly the same scenario definition for:
 
 ```text
-upstream TypeScript Pi
+upstream in-process Pi agent SDK runner
 Rust implementation
 ```
 
-Each runner emits:
+Each runner emits a canonical result containing provider requests, tool invocations, ordered
+events, final state, and terminal outcome:
 
 ```text
 canonical-result.json
@@ -1066,11 +856,29 @@ Normalize only genuinely nondeterministic fields:
 
 Do not normalize semantic ordering differences away.
 
+The scenario language includes a controllable clock, tool completion delays, and external
+actions such as cancellation. It is declarative: fixtures cannot contain arbitrary Rust or
+runner-specific callbacks that make the two implementations behave differently.
+
 Then compare structurally.
+
+## Recorded provider corpus
+
+In addition to synthetic deterministic scripts, keep a small, redacted corpus of real Pi SDK
+provider streams. Capture it through Pi only to observe a provider integration; do not invoke
+Pi as part of the parity test itself. Both the in-process upstream SDK runner and the Rust
+runner replay the recorded stream through their deterministic fake-provider adapters.
+
+Each recording includes the normalized request, streamed response events, final response, Pi
+and model versions, capture date, and a redaction manifest. It must never include an API key,
+authorization header, account identifier, or ambient Pi configuration. Recordings use harmless
+fixed prompts and are a supplemental regression corpus, not the normative source of behavior.
+Recorded terminal transport errors use the same manifest and contain the normalized terminal
+outcome when no provider stream exists.
 
 ---
 
-# 22. Required initial parity corpus
+# 22. Required V0 parity corpus
 
 Implement at least the following scenarios.
 
@@ -1101,53 +909,46 @@ Implement at least the following scenarios.
 20. multiple partial updates
 21. sequential-only tool in parallel batch
 
-## Hooks
+## Hooks and context
 
-22. before hook allow
-23. before hook block
-24. before hook block with reason
-25. before hook terminate
-26. after hook modify content
-27. after hook modify error state
-28. after hook modify metadata
-29. after hook terminate
-30. mixed terminate flags
-
-## Context
-
-31. transform context
-32. filter application-only message
-33. convert custom message
-34. replace model between turns
-35. replace context between turns
-36. change thinking level between turns
-37. graceful stop after turn
+22. before hook: allow, block, block with reason, and terminate
+23. after hook: change content, error state, metadata, and termination hint
+24. transform context and filter a host-only message
+25. convert a host message to an LLM message
+26. replace model, context, and thinking level between turns
+27. graceful stop after a turn
 
 ## Queues
 
-38. steering message
-39. multiple steering messages
-40. follow-up message
-41. multiple follow-up messages
-42. steering followed by follow-up
-43. queue interaction with tools
+28. one and many steering messages
+29. steering while tools execute
+30. one and many follow-up messages
+31. mixed steering/follow-up ordering and queue modes
+32. cancellation with queued messages
 
 ## Cancellation
 
-44. cancel during streaming
-45. cancel during tool
-46. cancel during parallel tools
-47. cancel while hook pending
-48. cancel then reuse same agent
+33. cancel during streaming
+34. cancel during tool
+35. cancel during parallel tools
+36. cancel while a hook is pending
+37. cancel then reuse same agent
 
 ## Event semantics
 
-49. exact plain-run lifecycle
-50. exact tool-run lifecycle
-51. subscriber registration ordering
-52. awaited subscriber settlement
-53. pending-tool state
-54. streaming-message state
+38. exact plain-run lifecycle
+39. exact tool-run lifecycle
+40. observer registration ordering
+41. awaited observer settlement, if present in the pinned subset
+42. pending-tool state
+43. streaming-message state
+
+## Default coding profile
+
+44. byte-for-byte default system prompt after normalizing only explicit workspace values
+45. active-tool order, schemas, snippets, and guidelines
+46. each standard tool's successful, invalid-input, and host-error behavior
+47. replacement/removal of a standard tool and sterile-profile construction
 
 Do not call the parity milestone complete until these pass.
 
@@ -1155,127 +956,35 @@ Do not call the parity milestone complete until these pass.
 
 # 23. Concurrency and race testing
 
-After semantic parity:
+After semantic parity, run focused tests plus `cargo fmt`, `cargo clippy`, `cargo nextest`,
+coverage, and Miri where practical. Consider `loom` only for the narrow synchronization boundary
+where deterministic interleaving exploration adds value. The core contains no unsafe Rust and
+compiles with warnings denied.
 
-Use:
-
-```text
-cargo test
-cargo clippy
-cargo fmt
-cargo nextest
-cargo miri where practical
-cargo llvm-cov
-```
-
-Consider `loom` for the small subset of synchronization machinery where deterministic concurrency exploration adds value.
-
-No `unsafe` code unless absolutely necessary.
-
-If a binding dependency internally uses unsafe, that is fine; our own crates should default to:
-
-```rust
-#![forbid(unsafe_code)]
-```
-
-The pure core should compile with warnings denied.
+Stress the pure Rust runtime with 100 and 1,000 deterministic agents, parallel tool batches,
+high cancellation churn, repeated reuse after failure, slow and dropped event observers, and
+default-profile workspace isolation. Run the standard coding profile only in explicit temporary
+workspaces; it must not create sessions or consult host configuration.
 
 ---
 
 # 24. Fuzz/property testing
 
-Use property-based tests for:
-
-### Message ordering
-
-For arbitrary tool batches:
-
-```text
-context result ordering == source ordering
-```
-
-regardless of execution completion order.
-
-### State settlement
-
-After every terminal outcome:
-
-```text
-is_streaming == false
-pending_tool_calls == empty
-```
-
-### Cancellation
-
-For cancellation injected at arbitrary state-machine transition points:
-
-```text
-run eventually settles
-agent returns to valid reusable state
-```
-
-### Event structure
-
-Every run:
-
-```text
-starts exactly once
-ends exactly once
-```
-
-Every tool start has at most one terminal tool end.
-
-Every message lifecycle is balanced.
-
-Use `proptest`.
+Use `proptest` for source-ordered tool-result insertion regardless of completion order;
+terminal-state cleanup (`is_streaming == false`, no pending calls); cancellation settlement and
+reuse; balanced message/event lifecycles; and profile composition where active tools determine
+the generated prompt. Every run starts and ends exactly once; every tool start has at most one
+terminal end.
 
 ---
 
 # 25. Benchmarking
 
-Do not benchmark LLM latency.
-
-Benchmark runtime overhead only with fake providers/tools.
-
-Measure:
-
-```text
-agent creation latency
-idle Agent memory
-prompt-loop overhead
-events/sec
-tool scheduling overhead
-N parallel tool calls
-cancellation settlement latency
-TypeScript↔Rust callback overhead
-trace serialization throughput
-```
-
-Important scenarios:
-
-```text
-1 agent
-100 agents
-1,000 agents
-10,000 idle agents
-
-100 active deterministic agents
-1,000 active deterministic agents
-```
-
-Record:
-
-```text
-RSS
-allocations if practical
-CPU time
-event throughput
-p50/p95/p99 lifecycle overhead
-```
-
-The design goal is not to win synthetic benchmarks at the expense of simplicity.
-
-The goal is to establish whether the runtime is cheap enough to become invisible relative to model inference and environment execution.
+Benchmark fake-provider/tool overhead, never LLM latency: agent/profile construction, idle
+memory, prompt-loop and event throughput, tool scheduling, cancellation settlement, trace
+serialization, and 1 through 10,000 idle / 100 through 1,000 active deterministic agents. Record
+RSS, CPU, allocations where practical, and p50/p95/p99 lifecycle overhead. Measure the optional
+Luau layer separately in V1; never attribute provider latency to the core.
 
 ---
 
@@ -1295,12 +1004,12 @@ PARITY_VERSION
 Updating upstream is an explicit operation:
 
 1. advance `UPSTREAM_COMMIT`;
-2. diff relevant `packages/agent` files;
-3. classify changed semantics;
-4. add or modify fixture;
-5. run upstream fixture;
+2. diff the selected public SDK exports and relevant `packages/agent` files;
+3. classify changed semantics and update `pi-sdk-subset.md` if the target changes;
+4. add or modify a declarative fixture;
+5. run the in-process upstream SDK fixture;
 6. update Rust implementation;
-7. update parity ledger.
+7. update the parity ledger.
 
 Never auto-import upstream code.
 
@@ -1326,15 +1035,9 @@ We require the former.
 
 We explicitly do not require the latter.
 
-Do not make the TypeScript API look worse merely to reproduce Pi's TypeScript API exactly.
-
-Maintain an optional compatibility package later if there is demand:
-
-```text
-@pi-agent-core-rs/pi-compat
-```
-
-but do not include it in the initial implementation.
+The V0 public contract is the Rust protocol, core APIs, default coding profile, and typed events.
+The optional Luau capability ABI is versioned independently in V1. There is no source-compatible
+TypeScript API or Node binding target.
 
 ---
 
@@ -1349,18 +1052,23 @@ UPSTREAM_COMMIT
 scope.md
 semantics.md
 parity-ledger.md
-first deterministic upstream fixtures
+pi-sdk-subset.md
+default-coding-profile.md
+first deterministic in-process upstream fixtures
 ```
 
 No substantial Rust loop implementation yet.
 
 Exit criterion:
 
-We can describe the state machine without referring vaguely to “whatever Pi does.”
+We can describe the state machine without referring vaguely to “whatever Pi does,” including
+the active-run, observer, cancellation, stream-event, and recorded-provider contracts.
+The default prompt/tool profile is captured from the pinned upstream symbols with fixtures and
+hashes, not copied from memory.
 
 ---
 
-## Milestone 1 — Minimal Rust loop
+## Milestone 1 — Minimal Rust Agent
 
 Support:
 
@@ -1373,11 +1081,14 @@ events
 normal termination
 model failure
 cancellation
+one-active-run ownership
+state snapshots
 ```
 
 Exit criterion:
 
-Plain-generation parity fixtures pass.
+Plain-generation parity fixtures pass through a usable stateful `Agent` and `Run` API on a
+caller-owned Smol executor.
 
 ---
 
@@ -1394,197 +1105,49 @@ sequential execution
 parallel execution
 partial updates
 tool failures
+default Pi coding profile
 ```
 
 Exit criterion:
 
-All tool ordering parity fixtures pass.
+All tool ordering, standard-profile, cancellation, and event-state fixtures pass. The default
+profile reproduces the pinned prompt text and active standard-tool definitions while permitting
+a caller to replace, remove, or sandbox every tool.
 
 ---
 
 ## Milestone 3 — Policy hooks and queues
 
-Support:
-
-```text
-beforeToolCall
-afterToolCall
-transformContext
-convertToLlm
-shouldStopAfterTurn
-prepareNextTurn
-steering
-follow-up
-```
+Support `beforeToolCall`, `afterToolCall`, `transformContext`, `convertToLlm`,
+`shouldStopAfterTurn`, `prepareNextTurn`, steering, follow-up, and pinned queue modes.
 
 Exit criterion:
 
-Corresponding differential fixtures pass.
+All hook, context, queue, cancellation, and settlement fixtures pass in Rust without a scripting
+runtime.
 
 ---
 
-## Milestone 4 — Agent wrapper
+## Milestone 4 — Lean tracing
 
-Implement the ergonomic stateful Rust `Agent`.
-
-Support:
-
-```text
-prompt
-continue
-state inspection
-subscribe
-abort
-queue steering
-queue follow-up
-```
+Implement the optional linear trajectory recorder with JSONL and CBOR sinks, explicit redaction,
+and trace-failure isolation.
 
 Exit criterion:
 
-All core parity scenarios pass in Rust.
+No-trace, JSONL, and CBOR executions have identical observable agent behavior.
 
 ---
 
-## Milestone 5 — TypeScript binding
+## Milestone 5 — Hardening
 
-Build isolated napi-rs bridge.
+Run race, property, cancellation, profile-isolation, and scale suites plus the focused quality
+checks.
 
 Exit criterion:
 
-TypeScript can provide:
-
-```text
-model provider callback
-tool callbacks
-hooks
-AbortSignal
-event consumers
-```
-
-without requiring any Pi npm package.
-
----
-
-## Milestone 6 — Handwritten TypeScript SDK
-
-Ship ergonomic API.
-
-Exit criterion:
-
-A TypeScript example can run an entire multi-tool agent without exposing generated native-binding objects.
-
----
-
-## Milestone 7 — Lean tracing
-
-Implement optional linear trajectory recorder.
-
-Exit criterion:
-
-The same agent can run:
-
-```text
-with no trace
-with JSONL trace
-with compact CBOR trace
-```
-
-with identical behavioral results.
-
----
-
-## Milestone 8 — Stress and fuzz testing
-
-Exit criterion:
-
-* parity corpus passes;
-* property tests pass;
-* cancellation produces no leaked tasks;
-* 1,000 concurrent deterministic agents complete reliably;
-* the same Agent can be reused after cancellation/failure;
-* TS callbacks survive stress runs.
-
----
-
-# 29. First end-to-end demonstration
-
-Build a small TypeScript example with:
-
-```text
-fake/OpenAI-compatible model endpoint
-four caller-owned tools
-no persistence
-no Pi dependency
-lean tracing enabled
-```
-
-Suggested tools:
-
-```text
-read
-write
-exec
-list
-```
-
-The tools may operate against a temporary directory.
-
-Demonstrate:
-
-```text
-const agent = new Agent(...)
-
-await agent.prompt(
-  "Create a small program, run its tests, and repair any failures."
-)
-```
-
-Verify:
-
-* multiple model turns;
-* multiple tool executions;
-* exact event trajectory;
-* compact trace;
-* clean process exit.
-
-Do not build a TUI.
-
----
-
-# 30. Second demonstration: swarm suitability
-
-Create:
-
-```text
-examples/typescript/swarm.ts
-```
-
-Launch a configurable number of isolated agents:
-
-```text
-N = 100
-```
-
-Each gets:
-
-* independent message state;
-* independent tools;
-* independent cancellation;
-* independent trace metadata.
-
-They may share one model provider object.
-
-Prove that no agent has:
-
-```text
-global cwd
-global settings
-global session
-global filesystem state
-global message history
-```
-
-This example should make the intended deployment model obvious.
+The pure Rust runtime is reusable after every terminal outcome and completes the declared
+deterministic scale suites without ambient state.
 
 ---
 
@@ -1623,23 +1186,63 @@ Every dependency should earn its place.
 
 # 32. Definition of done
 
-The project is successful when all of the following are true:
+V0 is successful when all of the following are true:
 
-1. A TypeScript program can use `pi-agent-core-rs` without installing Pi.
+1. A Rust program can use `pi-agent-core-rs` without installing or invoking Pi.
 2. The runtime performs no ambient configuration or filesystem discovery.
 3. No Pi session files exist.
 4. No interactive/TUI concept exists in the core.
-5. Core agent-loop behavior matches the pinned Pi implementation across the parity corpus.
-6. Parallel tool ordering matches Pi exactly.
-7. Steering/follow-up behavior matches the selected Pi semantics.
-8. Cancellation is structured and leak-free.
-9. Tool and provider implementations remain caller-owned.
+5. Core agent-loop behavior matches the pinned in-process Pi SDK subset across the V0 parity
+   corpus.
+6. Parallel tool ordering, hooks, context policies, and queues match the selected Pi semantics.
+7. The default coding profile reproduces the pinned prompt, active-tool set, schemas, snippets,
+   guidelines, and standard-tool behavior, while every capability remains replaceable.
+8. Cancellation is structured, clears transient state, and leaves the same agent reusable.
+9. Tool and provider implementations are explicit capabilities; no profile discovers authority.
 10. The model-provider abstraction does not require porting `pi-ai`.
-11. A linear compact trace can be recorded independently of agent state.
-12. The TypeScript SDK is handwritten and ergonomic.
-13. The pure Rust core contains no napi-rs code.
-14. The core contains no unsafe Rust.
-15. Large numbers of independent agents can coexist without ambient shared state.
-16. Upstream Pi updates can be evaluated through a repeatable parity-diff procedure.
+11. The core is driven by a caller-owned Smol executor and contains no Tokio, Node, TypeScript,
+    napi-rs, or scripting dependency.
+12. The core contains no unsafe Rust.
+13. Recorded provider streams are redacted, replayable, and supplementary to the deterministic
+    corpus.
+14. Upstream Pi SDK and default-profile updates can be evaluated through a repeatable
+    parity-diff procedure.
 
-The project should finish as an **agent kernel**, not gradually become another coding-agent application.
+V0 should finish as an **agent execution microkernel with an explicit default coding profile**,
+not gradually become an interactive application. `V1.md` adds optional Luau policy without
+changing this boundary.
+
+---
+
+# 33. Final V0 gate — comparative coding-task evaluation
+
+Add an `evals/` harness only after all preceding V0 gates are green. It compares the pinned
+upstream headless Pi default profile with the Rust `PiDefaultCodingProfile` under the same task,
+model endpoint and revision, sampling settings, timeout, initial workspace, active tool set, and
+capability adapter. It is an end-to-end quality and operating comparison, not a replacement for
+the differential semantic suite.
+
+Every task is a versioned contract: fixed task prompt and initial workspace; minimal explicit
+tool schemas; timeout; capability manifest; and a controller-owned hidden oracle. The evaluator
+creates a fresh workspace for each attempt, rejects path and symlink escapes, and runs hidden
+verification after settlement. The agent's final text never determines success.
+
+Start with small deterministic programming tasks in the style of `localswarm`: a stated
+multi-file implementation contract, constrained write/edit/test tools, and hidden edge cases.
+Include a no-tool `READY` control to separate runtime overhead from coding behavior. Add tasks
+only after controller scoring is reproducible.
+
+Record task and capability-adapter versions, upstream/profile version, runtime version, model and
+provider revision, sampling parameters, workspace-input hash, terminal outcome, controller-test
+result, elapsed time, turns, tool calls, usage where available, timeout/cancellation, and a
+redacted typed trace. Report attempt counts and confidence intervals with success rate plus
+median/p95 elapsed time, turns, calls, and tokens. Use paired randomized single-agent runs.
+
+Run concurrency waves separately for each baseline against one shared model replica, using the
+same fresh-workspace policy, admission limit, stagger, timeout, and stop-on-failure rule. Report
+logical concurrency and observed active peak. Do not blame model-server saturation on the agent
+runtime without the `READY` control.
+
+Live-provider evaluations are opt-in and never ordinary parity CI. Synthetic and recorded
+fixtures remain the semantic oracle. V0 is not complete until this suite has reproducible,
+controller-scored results for both baselines.

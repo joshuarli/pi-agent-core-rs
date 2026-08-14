@@ -1,0 +1,58 @@
+{
+  "format_version": 1,
+  "kind": "recorded_pi_sdk_terminal_error",
+  "capture": {
+    "pi_version": "0.83.0",
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-tiny:free",
+    "captured_at": "2026-08-14T02:32:28.979Z",
+    "flags": [
+      "--no-session",
+      "--no-tools",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-context-files",
+      "--mode=json"
+    ],
+    "redaction": {
+      "removed": [
+        "OPENROUTER_API_KEY",
+        "authorization headers",
+        "session id",
+        "cwd",
+        "timestamps other than captured_at"
+      ]
+    }
+  },
+  "request": {
+    "system_prompt": "Reply concisely and do not call tools.",
+    "user_text": "Respond with exactly: fixture capture succeeded."
+  },
+  "expected": {
+    "event_types": [
+      "agent_start",
+      "turn_start",
+      "message_start:user",
+      "message_end:user",
+      "message_start:assistant",
+      "message_end:assistant",
+      "turn_end",
+      "agent_end",
+      "agent_settled"
+    ],
+    "assistant": {
+      "api": "openai-completions",
+      "stop_reason": "error",
+      "error_message": "404: {\"message\":\"No endpoints found for inclusionai/ling-3.0-tiny:free.\",\"code\":404}",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 0
+      }
+    },
+    "will_retry": false
+  }
+}
