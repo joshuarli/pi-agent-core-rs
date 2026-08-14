@@ -58,8 +58,10 @@ downstream optional layers.
   operation adapters, and update procedure.
 - [Verification](verification.md) — required checks and completed V0 evidence.
 - [Tracing](trace.md) — optional trajectory observer boundary.
-- [Writing Luau extensions](luau-extensions.md) — current policy ABI.
-- [V1](../V1.md) — remaining optional Luau policy-plane work.
+- [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
+  bindings, coroutine-backed tools, limits, and review rules.
+- [V1](../V1.md) — delivered optional Luau extension foundation and intentional
+  boundaries.
 
 The parity harness and fixtures have their own [guide](../parity/README.md).
 The end-to-end coding evaluation controller is documented in

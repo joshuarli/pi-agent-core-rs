@@ -6,6 +6,19 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Caller-driven coroutine support for explicit asynchronous capabilities.
+pub mod async_runtime;
+/// Closed, deterministic source bundles and their manifests.
+pub mod bundle;
+/// Per-VM execution of closed bundle-local Luau modules.
+pub mod bundle_runtime;
+/// Versioned, capability-scoped extension ABI values and host gates.
+pub mod capability;
+/// Coroutine-backed Luau tool handlers adapted to the core tool scheduler.
+pub mod tool_handler;
+
+use crate::bundle::Bundle;
+use crate::bundle_runtime::BundleRuntime;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use pi_agent_core::error::HookError;
 use pi_agent_core::hooks::{
@@ -60,6 +73,13 @@ pub struct PolicyTool {
     pub capability: String,
     /// Whether the core may overlap calls to this tool.
     pub execution_mode: ToolExecutionMode,
+    /// Optional self-contained Luau source for this tool's coroutine handler.
+    ///
+    /// The source must evaluate to a function accepted by
+    /// [`tool_handler::LuaToolHandler`]. It remains inert until an embedding
+    /// deliberately adapts it into an explicit Rust capability; declaring a
+    /// handler never grants a world effect by itself.
+    pub handler_source: Option<String>,
 }
 
 /// A loaded, sandboxed Luau policy.
@@ -172,6 +192,100 @@ impl LuaPolicy {
             .set_name(POLICY_CHUNK_NAME)
             .eval()
             .map_err(runtime_error)?;
+        let (system_prompt_append, tools, before_tool_call) = parse_declaration(&declaration)?;
+
+        Ok(Self {
+            runtime: Mutex::new(PolicyRuntime {
+                lua,
+                before_tool_call,
+                interrupt_budget,
+                max_interrupt_checks: limits.max_interrupt_checks,
+            }),
+            system_prompt_append,
+            tools,
+        })
+    }
+
+    /// Load a closed multi-module policy bundle with the default VM limits.
+    ///
+    /// The bundle entrypoint must return the same declaration table accepted
+    /// by [`Self::load`]. Its `require` function can resolve only explicit
+    /// bundle-local `./` and `../` imports; it cannot load virtual modules,
+    /// host files, packages, or network resources.
+    pub fn load_bundle(bundle: Bundle) -> Result<Self, PolicyError> {
+        Self::load_bundle_with_limits(bundle, PolicyLimits::default())
+    }
+
+    /// Load a closed multi-module policy bundle with host-selected limits.
+    ///
+    /// `max_source_bytes` applies to the aggregate UTF-8 bytes of every
+    /// bundle module, not only the entrypoint. This prevents dormant modules
+    /// from evading the source-size boundary.
+    pub fn load_bundle_with_limits(
+        bundle: Bundle,
+        limits: PolicyLimits,
+    ) -> Result<Self, PolicyError> {
+        validate_limits(limits)?;
+        let source_bytes = bundle.modules().values().try_fold(0usize, |total, source| {
+            total.checked_add(source.len()).ok_or(())
+        });
+        let source_bytes = source_bytes.unwrap_or(usize::MAX);
+        if source_bytes > limits.max_source_bytes {
+            return Err(PolicyError::SourceTooLarge {
+                actual: source_bytes,
+                limit: limits.max_source_bytes,
+            });
+        }
+
+        let lua = Lua::new_with(
+            StdLib::COROUTINE | StdLib::TABLE | StdLib::STRING | StdLib::UTF8 | StdLib::MATH,
+            LuaOptions::new(),
+        )
+        .map_err(runtime_error)?;
+        lua.set_memory_limit(limits.max_memory_bytes)
+            .map_err(runtime_error)?;
+        lua.enable_jit(true);
+
+        let bundle_runtime = BundleRuntime::new(bundle);
+        bundle_runtime
+            .install(&lua)
+            .map_err(|error| PolicyError::Runtime {
+                message: error.to_string(),
+            })?;
+        // Luau makes global tables read-only and isolates script globals. This is
+        // in addition to omitting ambient I/O, OS, package, and debug libraries.
+        lua.sandbox(true).map_err(runtime_error)?;
+
+        let interrupt_budget = Arc::new(AtomicUsize::new(limits.max_interrupt_checks));
+        let interrupt_counter = Arc::clone(&interrupt_budget);
+        lua.set_interrupt(move |_| {
+            if interrupt_counter
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_err()
+            {
+                return Err(mlua::Error::RuntimeError(
+                    "Luau policy interrupt budget exhausted".to_owned(),
+                ));
+            }
+            Ok(VmState::Continue)
+        });
+
+        let declaration =
+            match bundle_runtime
+                .eval_entrypoint(&lua)
+                .map_err(|error| PolicyError::Runtime {
+                    message: error.to_string(),
+                })? {
+                Value::Table(declaration) => declaration,
+                _ => {
+                    return Err(PolicyError::Contract {
+                        message: "bundle entrypoint must return a policy declaration table"
+                            .to_owned(),
+                    });
+                }
+            };
         let (system_prompt_append, tools, before_tool_call) = parse_declaration(&declaration)?;
 
         Ok(Self {
@@ -389,6 +503,9 @@ fn parse_tool(declaration: &Table) -> Result<PolicyTool, PolicyError> {
     let description = required_field(declaration, "description")?;
     let capability = required_field(declaration, "capability")?;
     let schema_json = required_field(declaration, "schema_json")?;
+    let handler_source = declaration
+        .get::<Option<String>>("handler_source")
+        .map_err(contract_error)?;
     for (field, value) in [
         ("name", name.as_str()),
         ("description", description.as_str()),
@@ -415,12 +532,21 @@ fn parse_tool(declaration: &Table) -> Result<PolicyTool, PolicyError> {
     let schema = JsonValue::parse(&schema_json).map_err(|error| PolicyError::Contract {
         message: format!("tool {name:?} schema_json is invalid: {error}"),
     })?;
+    if handler_source
+        .as_deref()
+        .is_some_and(|source| source.trim().is_empty())
+    {
+        return Err(PolicyError::Contract {
+            message: format!("tool {name:?} handler_source must not be empty when declared"),
+        });
+    }
     Ok(PolicyTool {
         name,
         description,
         schema,
         capability,
         execution_mode,
+        handler_source,
     })
 }
 
@@ -480,6 +606,7 @@ fn before_hook_error(error: PolicyError) -> HookError {
 #[cfg(test)]
 mod tests {
     use super::{LuaPolicy, LuaPolicyHookSet, PolicyError, PolicyLimits};
+    use crate::bundle::{Bundle, BundleManifest, BUNDLE_ABI_VERSION};
     use pi_agent_core::error::HookError;
     use pi_agent_core::hooks::{AfterToolCall, BeforeToolCall, ContextEnvelope, HookSet};
     use pi_agent_core::state::{SerializedJson, ToolCallId};
@@ -557,6 +684,63 @@ mod tests {
             policy.before_tool_call(&call("execute_code")),
             Ok(BeforeToolCall::Allow)
         );
+    }
+
+    #[test]
+    fn policy_bundle_resolves_only_its_closed_relative_module_graph() {
+        let bundle = Bundle::from_sources(
+            BundleManifest::new(BUNDLE_ABI_VERSION, "main.luau", std::iter::empty::<&str>())
+                .expect("manifest is valid"),
+            [
+                (
+                    "main.luau",
+                    r#"
+                        local prompt = require("./parts/prompt.luau")
+                        return {
+                            system_prompt_append = prompt,
+                            before_tool_call = function(_) return "allow" end,
+                        }
+                    "#,
+                ),
+                ("parts/prompt.luau", "return 'closed bundle policy'"),
+            ],
+        )
+        .expect("closed bundle is valid");
+
+        let policy = LuaPolicy::load_bundle(bundle).expect("closed bundle should load");
+        assert_eq!(policy.system_prompt_append(), "closed bundle policy");
+        assert_eq!(
+            policy.before_tool_call(&call("tool")),
+            Ok(BeforeToolCall::Allow)
+        );
+    }
+
+    #[test]
+    fn policy_bundle_applies_source_limit_to_every_module() {
+        let bundle = Bundle::from_sources(
+            BundleManifest::new(BUNDLE_ABI_VERSION, "main.luau", std::iter::empty::<&str>())
+                .expect("manifest is valid"),
+            [
+                ("main.luau", "return require('./prompt.luau')"),
+                (
+                    "prompt.luau",
+                    "return { system_prompt_append = 'large enough to exceed limit' }",
+                ),
+            ],
+        )
+        .expect("closed bundle is valid");
+        let result = LuaPolicy::load_bundle_with_limits(
+            bundle,
+            PolicyLimits {
+                max_source_bytes: 8,
+                ..PolicyLimits::default()
+            },
+        );
+        let error = match result {
+            Ok(_) => panic!("a non-entrypoint source cannot evade the aggregate bound"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, PolicyError::SourceTooLarge { .. }));
     }
 
     #[test]
@@ -638,6 +822,52 @@ mod tests {
         .err()
         .expect("a policy must not shadow a tool binding");
 
+        assert!(matches!(error, PolicyError::Contract { .. }));
+    }
+
+    #[test]
+    fn policy_retains_optional_tool_handler_source_without_granting_authority() {
+        let policy = LuaPolicy::load(
+            r#"
+                return {
+                    system_prompt_append = "",
+                    tools = {
+                        {
+                            name = "world_echo",
+                            description = "Echo through an explicit host capability.",
+                            capability = "world",
+                            execution_mode = "sequential",
+                            schema_json = "{}",
+                            handler_source = "return function(call) return call.arguments_json end",
+                        },
+                    },
+                }
+            "#,
+        )
+        .expect("a declaration may retain handler source");
+
+        assert_eq!(
+            policy.tools()[0].handler_source.as_deref(),
+            Some("return function(call) return call.arguments_json end")
+        );
+        let error = match LuaPolicy::load(
+            r#"
+                return {
+                    system_prompt_append = "",
+                    tools = {{
+                        name = "empty_handler",
+                        description = "Invalid handler.",
+                        capability = "world",
+                        execution_mode = "sequential",
+                        schema_json = "{}",
+                        handler_source = "  ",
+                    }},
+                }
+            "#,
+        ) {
+            Ok(_) => panic!("an explicitly empty handler has no executable contract"),
+            Err(error) => error,
+        };
         assert!(matches!(error, PolicyError::Contract { .. }));
     }
 

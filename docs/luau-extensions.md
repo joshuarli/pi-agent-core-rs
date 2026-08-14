@@ -1,79 +1,64 @@
 # Writing Luau extensions
 
-`pi-agent-luau` is the optional policy plane for `pi-agent-core`. An extension
-is a `.luau` file returning one declaration table. It can append task-specific
-system instructions, declare model-visible tools, and make an explicit
-allow/block/terminate decision before a tool runs.
+`pi-agent-luau` is an optional, hermetic policy plane for
+`pi-agent-core-rs`. It is for task- and world-specific policy, not a second
+agent runtime: Rust retains control of model transport, the state machine,
+tool scheduler, cancellations, tracing, resource ownership, and every side
+effect.
 
-It is not a second agent runtime. Rust owns model transport, state
-transitions, scheduling, filesystem/process/MCP effects, cancellation, and
-tracing. A policy receives no ambient authority.
+Use the checked-in nightly. The embedded engine is `mlua`'s `luau-jit`
+backend; it is intentionally not LuaJIT 5.2. An embedding normally drives its
+agent and any Luau futures using Smol. Tokio is unsupported.
 
-## Runtime boundary
+## What a policy can do
 
-Policies run in an isolated JIT-enabled Luau VM through `mlua`'s `luau-jit`
-backend. The exposed environment is limited to table, string, UTF-8, math,
-and coroutine helpers. There is no `os`, `io`, `require`, package path, debug
-API, environment variable, network, current-directory, or wall-clock access.
+A policy source or bundle entrypoint returns a declaration table. It can:
 
-The current policy ABI is synchronous and declarative. Its default limits are
-64 KiB source, 1 MiB VM memory, and 10,000 interrupt checks during loading and
-each hook. A host may choose finite `PolicyLimits`; exhaustion is a typed
-failure and never grants fallback authority. Async host modules, richer hooks,
-and module resolution are future V1 work described in [`V1.md`](../V1.md).
+- append task-specific text to a host-owned system prompt;
+- describe model-visible tools and their JSON schemas;
+- allow, block, or terminate before a model tool call; and
+- provide coroutine handler source for a host to adapt to an ordinary Rust
+  `AgentTool`.
 
-## Minimal policy
+A policy cannot discover files, read environment variables, run processes,
+open a network connection, load packages, use a wall clock, modify core
+state, schedule an agent, or acquire a capability by naming it.
+
+## Minimal declaration
 
 ```luau
 return {
     system_prompt_append = [[
-Use the world tools deliberately. Inspect state before long actions.
+Inspect the world before acting. Keep world calls narrow and deliberate.
 ]],
 
     tools = {
         {
-            name = "execute_code",
-            description = "Execute a game script for a named bot.",
-            capability = "rs-agent",
+            name = "inspect_world",
+            description = "Read a small host-provided world snapshot.",
+            capability = "world",
             execution_mode = "sequential",
-            schema_json = [[
-                {"type":"object","required":["bot_name","code"],"properties":{
-                    "bot_name":{"type":"string"},
-                    "code":{"type":"string"}
-                },"additionalProperties":false}
-            ]],
+            schema_json = [[{"type":"object","additionalProperties":false}]],
         },
     },
 
     before_tool_call = function(call)
-        if call.name == "execute_code" then
+        if call.name == "inspect_world" then
             return "allow"
         end
-        return { action = "block", reason = "tool is not granted by this policy" }
+        return { action = "block", reason = "this policy did not grant that tool" }
     end,
 }
 ```
 
-The returned value must be a table with a string `system_prompt_append`.
-`tools` and `before_tool_call` are optional. Declaration order is retained in
-the model-facing registry.
+`system_prompt_append` is required. `tools` and `before_tool_call` are
+optional. Each tool needs a unique non-empty `name`, `description`,
+`capability`, `schema_json`, and `execution_mode` (`"sequential"` or
+`"parallel"`). `schema_json` is parsed and validated by Rust before a model
+can call the tool.
 
-## Declaring a tool does not grant it
-
-Every declaration supplies a unique model-visible `name`, `description`, JSON
-Schema string in `schema_json`, host-owned `capability`, and either
-`"sequential"` or `"parallel"` execution mode. The embedding must explicitly
-bind that capability to a Rust `AgentTool`. An unbound declaration is rejected;
-naming `rs-agent`, a shell, filesystem, MCP server, or network operation in
-Luau never creates that authority.
-
-Use sequential execution for shared side effects. Only choose parallel when
-the Rust capability explicitly permits overlapping calls.
-
-## Pre-tool decisions
-
-`before_tool_call` receives a table with opaque `id`, registered `name`, and
-the exact model-provided `arguments_json`. It must return exactly one of:
+`before_tool_call` receives opaque `id`, model-facing `name`, and exact
+`arguments_json`. It must return one of:
 
 ```luau
 "allow"
@@ -81,45 +66,127 @@ the exact model-provided `arguments_json`. It must return exactly one of:
 { action = "terminate", reason = "explain why the run must stop" }
 ```
 
-Block and terminate decisions prevent both the following host hook and the
-tool implementation from running. Policies cannot rewrite arguments, fabricate
-tool results, call a tool directly, or mutate agent state.
+The decision is made before the host hook and tool implementation. It cannot
+rewrite arguments, fabricate a result, or invoke an effect directly.
 
-## Host integration
+## Write a capability-backed tool handler
 
-Load a policy, bind a closed capability set, append its prompt after the
-pinned core prompt, and compose its hook before the provider hook:
+Add `handler_source` when the model-facing tool should invoke an explicit host
+capability. It is a string whose value evaluates to a function. The function
+runs in a fresh VM for each tool invocation and receives:
 
-```rust,no_run
-use std::sync::Arc;
-
-use pi_agent_luau::{LuaPolicy, LuaPolicyHookSet};
-
-# fn example(source: String, provider_hooks: Arc<dyn pi_agent_core::hooks::HookSet>) -> Result<(), Box<dyn std::error::Error>> {
-let policy = Arc::new(LuaPolicy::load(&source)?);
-for tool in policy.tools() {
-    if tool.capability == "rs-agent" {
-        // Register only a Rust AgentTool with this exact declared authority.
-    }
-}
-let hooks = Arc::new(LuaPolicyHookSet::new(policy, provider_hooks));
-# let _ = hooks;
-# Ok(())
-# }
+```luau
+{ id = "opaque-call-id", name = "tool-name", arguments_json = "{...}" }
 ```
 
-The wrapper delegates provider-context conversion and every unsupported hook to
-the supplied Rust hook set. This keeps provider protocol code and effectful
-world capabilities outside the policy VM.
+The only suspension protocol is a yielded capability request:
 
-## Review checklist
+```luau
+local world_handler = [[
+return function(call)
+    local result = coroutine.yield({
+        kind = "capability",
+        capability = "world",
+        method = "inspect",
+        arguments_json = call.arguments_json,
+    })
+    return {
+        content = result.content,
+        details_json = result.details_json,
+        is_error = result.is_error,
+    }
+end
+]]
 
-- Keep prompt additions task-specific and credential-free.
-- Grant the smallest tool set and reject unexpected schema fields.
-- Make denials actionable for the model.
-- Treat `arguments_json` as untrusted model text; do not grant effects through
-  string matching.
-- Add integration coverage for every capability binding and its allow, block,
-  cancellation, and error paths.
-- Any new host module, async call, hook, or tool-handler behavior needs a
-  versioned Rust contract, limits/cancellation rule, tests, and documentation.
+return {
+    system_prompt_append = "",
+    tools = {
+        {
+            name = "inspect_world",
+            description = "Read a small host-provided world snapshot.",
+            capability = "world",
+            execution_mode = "sequential",
+            schema_json = [[{"type":"object","additionalProperties":false}]],
+            handler_source = world_handler,
+        },
+    },
+}
+```
+
+The Rust embedding must construct `LuaToolHandler` with matching
+`ToolHandlerSpec` and an explicit `CapabilityBindings` entry. The handler
+rejects a yielded capability other than the declared one. The capability
+implementation must validate `method` and parsed JSON itself; a shared
+capability should additionally bind it to the outer model-visible tool name.
+Runebench demonstrates that pattern with an MCP manifest scoped to exact
+server/method/target triples.
+
+On success, return either a string or a result table containing `content` and
+optional `details_json`, `is_error`, and `terminate`. `details_json` must be
+valid JSON. A handler may make at most `HandlerLimits::max_capability_calls`
+host calls (64 by default).
+
+## Bundle-local modules
+
+For a multi-file policy, build `bundle::Bundle` in the embedding from explicit
+source records and call `LuaPolicy::load_bundle`. There is deliberately no
+filesystem bundle loader in the crate.
+
+```luau
+-- main.luau
+local prompt = require("./parts/prompt.luau")
+return { system_prompt_append = prompt }
+```
+
+Only `./...` and `../...` imports are accepted, and they must stay inside the
+declared bundle. Bare names, absolute paths, drive paths, package registries,
+and virtual modules are denied. Each VM has its own module cache; bundle
+source hashes are deterministic identities, not cryptographic digests.
+
+## Host capability manifests
+
+`capability::CapabilityManifest` is the host-facing, serializable ABI-v1
+authority description. Its typed modules are `@agent`, `@world`, `@trace`,
+`@task`, `@json`, and `@time`; an MCP permission can be scoped to an exact
+server, method, and tool/resource target. Use `CapabilityGate` before an
+effectful provider. A manifest does not install globals or effects into Luau;
+the embedding still chooses a concrete `LuauCapability` binding.
+
+This separation is intentional. Do not invent `require("@world")` or other
+ambient capability modules in a policy unless its embedding documents and
+installs that exact interface. The baseline bundle loader rejects it.
+
+## Async work and cancellation
+
+`async_runtime` is available to an embedding that needs a generic Luau
+coroutine outside the normal tool scheduler. It installs
+`await(capability, arguments_json)` and returns a caller-polled `LuauTask`.
+The host's `HostAwaiter` owns the future and uses the supplied
+`CancellationToken`; cancellation drops a pending host future and settles the
+task as a typed cancellation. It neither starts an executor nor spawns a
+thread.
+
+Tool handlers already use the core scheduler and should normally be preferred
+for model-visible effects.
+
+## Limits and review checklist
+
+Policies and handlers have host-selected finite source, memory, and Luau
+interrupt budgets. Handler calls also have a finite host-call budget. The
+current defaults are 64 KiB source, 1 MiB VM memory, 10,000 interrupt checks,
+and 64 capability calls per handler invocation. A fresh VM per handler call
+means a handler cannot leak a coroutine or mutable global into another call.
+
+- Treat `arguments_json` as hostile model input and validate it structurally.
+- Grant the smallest model tool set and exact host methods/targets.
+- Make block reasons useful to the model but free of secrets.
+- Test an allowed call, denied method, invalid arguments, host error, and
+  cancellation for every new binding.
+- Keep host effects in Rust. A policy declaration or manifest string is never
+  authority.
+- Do not place credentials in policy text, a prompt suffix, handler source, or
+  tool environment.
+
+For crate ownership and benchmark/test evidence see
+[architecture](architecture.md), [verification](verification.md), and
+[V1](../V1.md).
