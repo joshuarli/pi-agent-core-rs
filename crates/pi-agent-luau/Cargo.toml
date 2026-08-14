@@ -1,0 +1,11 @@
+[package]
+name = "pi-agent-luau"
+version = "0.1.0"
+edition = "2021"
+description = "Hermetic Luau policy layer for pi-agent-core"
+license = "MIT"
+
+[dependencies]
+mlua.workspace = true
+pi-agent-core = { path = "../pi-agent-core" }
+pi-agent-protocol = { path = "../pi-agent-protocol" }
