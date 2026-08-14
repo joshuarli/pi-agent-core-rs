@@ -7,7 +7,7 @@ a change to that core boundary.
 
 | Feature | Module | Wire protocol | Intended use |
 | --- | --- | --- | --- |
-| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response transport; the evaluation runner selects it by default. |
+| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response transport with packet-bound model validation and cancellation-aware child custody. |
 | `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in Command Code gateway transport; the evaluation runner selects it with `--provider commandcode`. |
 
 Enable only the provider an application owns:
@@ -19,6 +19,37 @@ pi-agent-core = { path = "../pi-agent-core-rs/crates/pi-agent-core", features = 
 
 Neither feature is enabled by default. The adapters use the caller's selected
 executor and add no Tokio dependency.
+
+## Factory-grade OpenRouter contract
+
+`OpenRouterProvider` takes an explicit `OpenRouterConfig`; it does not read a
+credential file, environment variable, working directory, or model catalog.
+Use `OpenRouterConfig::try_new` (or call `validate` before admission) so an
+empty key/model, zero output cap, or unsafe key spelling fails before transport.
+Every request must carry a `ModelDescriptor` whose provider is exactly
+`openrouter` and whose model is exactly the configured model. A missing or
+mismatched descriptor is a terminal adapter error and never results in a
+network request.
+
+The configured `max_tokens` is sent as the OpenRouter `max_tokens` output cap.
+Request-scoped `ThinkingLevel` values are mapped to OpenRouter's native
+`reasoning: { "effort": ... }` object (`off` maps to `none`); the default level
+omits the field. This keeps provider-specific wire details in the adapter while
+leaving policy and model selection with the host.
+
+The provider runs a direct `curl` child with a private mode-0600 config file,
+without putting the API key in argv or the child environment. It polls the
+run's `CancellationToken`; cancellation kills and reaps that direct child and
+settles as `StopReason::Cancelled`. Response output is captured in private
+bounded-lifetime files so a full provider response cannot deadlock on a pipe.
+
+Provider accounting is available through `usage_snapshot` and `cost_report`.
+Token counters retain unknown-vs-zero semantics. Each cost turn and the
+aggregate report expose exact non-negative decimal strings in
+`total_usd_exact`, `upstream_inference_usd_exact`,
+`reported_total_usd_exact`, and
+`reported_upstream_inference_usd_exact`. The parallel `f64` fields exist only
+as convenience projections and must not be used for budget decisions.
 
 ## Credentials and host authority
 

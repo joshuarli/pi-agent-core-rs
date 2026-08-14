@@ -1409,6 +1409,7 @@ fn normalize_event(
         AgentEventKind::ToolExecutionStart {
             tool_call_id,
             tool_name,
+            ..
         } => (
             "tool_execution_start",
             JsonValue::object([

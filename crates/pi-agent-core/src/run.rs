@@ -671,6 +671,7 @@ impl RunHandle {
                 AgentEventKind::ToolExecutionStart {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
                 },
             )
             .await?;
@@ -725,6 +726,7 @@ impl RunHandle {
                 AgentEventKind::ToolExecutionStart {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
                 },
             )
             .await?;
@@ -766,6 +768,7 @@ impl RunHandle {
                 AgentEventKind::ToolExecutionStart {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
                 },
             )
             .await?;

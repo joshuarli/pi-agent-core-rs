@@ -6,7 +6,7 @@
 
 use crate::error::CoreError;
 use crate::scheduler::CancellationToken;
-use crate::state::{Message, RunId, StopReason, ToolCallId, TurnId};
+use crate::state::{Message, RunId, SerializedJson, StopReason, ToolCallId, TurnId};
 use crate::tool::{ToolResult, ToolUpdate};
 use std::future::Future;
 use std::pin::Pin;
@@ -54,6 +54,12 @@ pub enum AgentEventKind {
     ToolExecutionStart {
         tool_call_id: ToolCallId,
         tool_name: String,
+        /// Exact serialized JSON arguments supplied by the model.
+        ///
+        /// This is emitted before validation, hooks, or capability dispatch.
+        /// Hosts that persist or forward events must apply their redaction
+        /// policy before crossing their own trace boundary.
+        arguments: SerializedJson,
     },
     /// Tool emitted a partial update.
     ToolExecutionUpdate {

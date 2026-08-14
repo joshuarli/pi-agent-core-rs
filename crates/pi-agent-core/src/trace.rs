@@ -7,8 +7,9 @@
 //!
 //! Trace sinks are wrapped in [`pi_agent_trace::IsolatedSink`].  A sink failure
 //! is therefore observable through [`TraceObserver::failed_events`] but cannot
-//! change the agent result.  Callers that need redaction should wrap their
-//! sink in [`pi_agent_trace::RedactingSink`] before passing it here.
+//! change the agent result.  The compact trace records the exact serialized
+//! arguments from the pre-dispatch tool-start event, so callers must wrap
+//! their sink in [`pi_agent_trace::RedactingSink`] before persistence.
 
 use crate::event::{AgentEvent, AgentEventKind, EventObserver, ObserverFuture};
 use crate::scheduler::CancellationToken;
@@ -122,11 +123,17 @@ impl<S: TraceSink> TraceObserver<S> {
             AgentEventKind::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
+                arguments,
             } => {
                 let turn_index = state.current_turn.as_ref().map_or(0, |turn| turn.index);
                 state.pending_tools.insert(
                     tool_call_id.clone(),
-                    Tool::new(turn_index, tool_call_id.to_string(), tool_name.clone(), ""),
+                    Tool::new(
+                        turn_index,
+                        tool_call_id.to_string(),
+                        tool_name.clone(),
+                        arguments.as_str(),
+                    ),
                 );
             }
             AgentEventKind::ToolExecutionEnd {
@@ -293,6 +300,7 @@ mod tests {
             AgentEventKind::ToolExecutionStart {
                 tool_call_id: call_id.clone(),
                 tool_name: "echo".into(),
+                arguments: crate::state::SerializedJson::new(r#"{"secret":"value"}"#),
             },
         );
         observe(
@@ -340,6 +348,7 @@ mod tests {
             let TraceEvent::Tool(tool) = &events[1] else {
                 unreachable!()
             };
+            assert_eq!(tool.input, r#"{"secret":"value"}"#);
             assert_eq!(tool.output.as_deref(), Some("result"));
             let TraceEvent::Turn(turn) = &events[2] else {
                 unreachable!()

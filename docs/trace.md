@@ -13,12 +13,18 @@ and a `pi-agent-trace::TraceSink`, then register it on the agent builder with
 `EpisodeHeader` at `AgentStart`, a compact `Turn` at each `TurnEnd`, a `Tool`
 at each settled tool execution, and an `EpisodeEnd` at `AgentEnd`.
 
-The compact V0 trace deliberately records settled tool output and does not
-duplicate streaming tool updates. Core observers still receive
-`ToolExecutionUpdate` events. The current core tool-start event does not carry
-serialized arguments, so the adapter leaves `Tool.input` empty; hosts needing
-raw arguments should use a dedicated observer at that boundary until the
-event contract grows an explicit redacted-argument field.
+The compact V0 trace records the exact serialized arguments carried by each
+pre-dispatch `ToolExecutionStart` event in `Tool.input`, plus settled tool
+output. It deliberately does not duplicate streaming tool updates; core
+observers still receive `ToolExecutionUpdate` events. The start event is
+emitted before schema validation, hooks, and capability dispatch, so a host
+observer can apply its redaction policy while the arguments are still an
+explicit boundary value.
+
+`Tool.input` is not itself redacted. Wrap the sink in
+`pi_agent_trace::RedactingSink` (or perform equivalent policy in a host
+observer) before persisting or forwarding it. The core never guesses which
+argument fields are sensitive and never stores a second hidden copy.
 
 Tracing is best effort. `TraceObserver` wraps the sink in
 `pi_agent_trace::IsolatedSink`; `failed_events()` reports dropped records while

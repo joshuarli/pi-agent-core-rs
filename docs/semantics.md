@@ -163,9 +163,11 @@ remain visible in fixture results.
 ### Tool grammar and ordering
 
 For each assistant message containing tool calls, preparation starts in assistant/source order.
-Each call emits `tool_execution_start` before validation/preparation finishes. Unknown tools,
-invalid arguments, blocked calls, and aborted preparation produce immediate error results and still
-emit `tool_execution_end` and a tool-result message.
+Each call emits `tool_execution_start` before validation/preparation finishes. The event includes the
+exact serialized JSON arguments supplied by the model, allowing an observer or trace redactor to
+inspect and sanitize them before capability dispatch. Unknown tools, invalid arguments, blocked
+calls, and aborted preparation produce immediate error results and still emit
+`tool_execution_end` and a tool-result message.
 
 Sequential mode prepares, executes, finalizes, and inserts each result before the next call. In
 parallel mode preparation remains source ordered; allowed executions overlap; each
