@@ -248,6 +248,7 @@ fn event_name(event: &AgentEventKind) -> &'static str {
         AgentEventKind::ToolExecutionStart { .. } => "tool_execution_start",
         AgentEventKind::ToolExecutionUpdate { .. } => "tool_execution_update",
         AgentEventKind::ToolExecutionEnd { .. } => "tool_execution_end",
+        AgentEventKind::ModelTurnUsage { .. } => "model_turn_usage",
         AgentEventKind::TurnEnd { .. } => "turn_end",
         AgentEventKind::AgentEnd { .. } => "agent_end",
     }

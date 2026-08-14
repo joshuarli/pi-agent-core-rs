@@ -2,11 +2,13 @@
 //!
 //! Event construction is intentionally separate from state mutation.  The run loop must first
 //! settle state, then emit the corresponding event in this order:
-//! `agent_start → turn_start → message* / tool_execution* → turn_end → agent_end`.
+//! `agent_start → turn_start → message* / tool_execution* → model_turn_usage? → turn_end → agent_end`.
 
 use crate::error::CoreError;
 use crate::scheduler::CancellationToken;
-use crate::state::{Message, RunId, SerializedJson, StopReason, ToolCallId, TurnId};
+use crate::state::{
+    Message, ModelTurnAccounting, RunId, SerializedJson, StopReason, ToolCallId, TurnId,
+};
 use crate::tool::{ToolResult, ToolUpdate};
 use std::future::Future;
 use std::pin::Pin;
@@ -26,10 +28,44 @@ pub struct AgentEvent {
     pub kind: AgentEventKind,
 }
 
+/// Terminal outcome of one manual compaction operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompactionOutcome {
+    /// The replacement was validated and atomically committed.
+    Succeeded {
+        /// Number of messages retained after compaction.
+        retained_message_count: usize,
+    },
+    /// The compactor or its replacement failed before any history changed.
+    Failed {
+        /// Redacted failure diagnostic.
+        message: String,
+    },
+    /// Host cancellation won before the replacement commit.
+    Cancelled,
+}
+
 /// Meaningful lifecycle payloads emitted by the core.
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentEventKind {
+    /// A manual compaction operation reserved an idle agent.
+    CompactionStart {
+        /// Messages held by the original retained context.
+        source_message_count: usize,
+    },
+    /// A compaction replacement was validated and committed.
+    CompactionResult {
+        /// Messages retained by the committed replacement.
+        retained_message_count: usize,
+        /// Optional provider-reported usage of the compactor operation.
+        usage: Option<crate::state::Usage>,
+    },
+    /// A manual compaction operation reached a terminal outcome.
+    CompactionEnd {
+        /// Transaction outcome.
+        outcome: CompactionOutcome,
+    },
     /// Run ownership began.
     AgentStart,
     /// A model turn began.
@@ -78,6 +114,11 @@ pub enum AgentEventKind {
     },
     /// A model turn settled.
     TurnEnd { turn_id: TurnId, reason: StopReason },
+    /// Provider-reported accounting for a settled model turn.
+    ///
+    /// This event is emitted after the assistant message has settled and before `TurnEnd`.
+    /// Missing fields remain unknown (`None`); the core never estimates a value.
+    ModelTurnUsage { accounting: ModelTurnAccounting },
     /// The loop emitted its final event. Awaited observers may still keep the
     /// agent active before terminal settlement makes it idle.
     AgentEnd { messages: Vec<Message> },
@@ -93,7 +134,9 @@ pub type ObserverFuture<'a> = Pin<Box<dyn Future<Output = Result<(), CoreError>>
 /// unfinished terminal observer keeps the run active. The bounded,
 /// non-blocking [`crate::EventSubscription`] returned by
 /// [`crate::Agent::subscribe_nonblocking`] is a separate lossy channel
-/// contract and must never be silently substituted for this one.
+/// contract, while [`crate::LosslessEventSubscription`] returned by
+/// [`crate::Agent::subscribe_lossless`] is an explicitly unbounded channel;
+/// neither must be silently substituted for this one.
 pub trait EventObserver: Send + Sync {
     /// Observe one reduced event using the run's cancellation scope.
     fn observe<'a>(

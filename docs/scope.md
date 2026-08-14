@@ -38,7 +38,8 @@ The following are deliberately in scope:
 | Model boundary | Small provider stream/request protocol independent of `pi-ai` | No provider implementation or provider dependency in the core |
 | Messages | User, assistant, tool-result, text/image/tool-call content, usage and stop reason as needed for execution | Explicit tagged protocol types with Miniserde JSON codecs |
 | Tools | JSON Schema, argument validation, preparation, sequential/parallel execution, updates, errors, termination hints | Tool authority is supplied by the caller and every default tool is replaceable |
-| Events | Agent/turn/message/tool lifecycle and awaited observer settlement | Event order and terminal grammar are fixture-tested |
+| Events | Agent/turn/message/tool lifecycle, manual-compaction lifecycle, awaited observers, and bounded/lossless live subscriptions | Event order, terminal grammar, and subscription overflow/drop behavior are fixture-tested |
+| Compaction | Caller-supplied `Compactor` port and an idle-only validated replacement transaction | No summary prompt, context budget, provider policy, or automatic compaction is invented by core |
 | Cancellation | Model, preparation, execution, hooks, queue waits, and between-turn cancellation | Terminal cleanup leaves the same agent reusable |
 | Hooks and queues | The selected `beforeToolCall`, `afterToolCall`, context, stop, next-turn, steering and follow-up semantics | Rust-only in V0; Luau adapts later |
 | Default profile | Pinned prompt template, active tool order, schemas, snippets, guidelines and standard-tool behavior | `PiDefaultCodingProfile` is explicit and sterile profiles remain possible |
@@ -61,7 +62,7 @@ These are rejected as V0 implementation targets even when a broader application 
 | Resource discovery, prompt templates, skills, extensions, package management, MCP | These are application/resource systems, not the selected execution kernel |
 | `AGENTS.md`, `.pi`, `~/.pi`, cwd/home/settings/config discovery | Authority must cross an explicit host boundary |
 | Pi provider catalog/authentication/model discovery and a port of `pi-ai` | Provider mechanics stay behind the small model-stream trait |
-| OpenTelemetry, Sentry, compaction policy and provider catalog policy | Not needed for the V0 state machine; optional built-in adapters own bounded transport retry |
+| OpenTelemetry, Sentry, automatic compaction policy, and remote provider catalog policy | Not needed for the V0 state machine; optional built-in adapters own bounded transport retry |
 | Tokio, Node, TypeScript, `napi-rs`, JavaScript callback bridges, or a scripting runtime | Core is executor-owned pure Rust |
 | Swarm framework, world forking, IPC, C ABI, WASM/component, Python bindings | Post-V1 exploration only when a concrete use case exists |
 

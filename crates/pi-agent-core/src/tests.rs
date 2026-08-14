@@ -514,6 +514,7 @@ impl HookSet for MetadataAfterToolHook {
                 input_tokens: Some(3),
                 output_tokens: Some(5),
                 reasoning_tokens: Some(2),
+                ..Usage::default()
             }),
             added_tool_names: Replacement::Replace(vec!["later-tool".into()]),
             ..AfterToolCall::default()
@@ -951,6 +952,167 @@ fn nonblocking_subscription_is_ordered_lossy_and_never_delays_settlement() {
 }
 
 #[test]
+fn idle_provider_replacement_preserves_history_and_changes_the_next_request() {
+    smol::block_on(async {
+        let first_provider = Arc::new(ScriptedProvider::new([ModelStream {
+            events: vec![
+                ModelStreamEvent::TextDelta("first response".into()),
+                ModelStreamEvent::End(StopReason::EndTurn),
+            ],
+        }]));
+        let second_provider = Arc::new(ScriptedProvider::new([ModelStream {
+            events: vec![
+                ModelStreamEvent::TextDelta("second response".into()),
+                ModelStreamEvent::End(StopReason::EndTurn),
+            ],
+        }]));
+        let initial_model = ModelDescriptor {
+            provider: "fixture".into(),
+            model: "initial".into(),
+            revision: None,
+        };
+        let replacement_model = ModelDescriptor {
+            provider: "fixture".into(),
+            model: "replacement".into(),
+            revision: Some("pinned".into()),
+        };
+        let agent = Agent::builder()
+            .model(initial_model)
+            .model_provider(first_provider)
+            .build();
+
+        agent.start_prompt("first")?.drive().await?;
+        let retained_messages = agent.snapshot().messages;
+
+        agent.replace_model_provider(replacement_model.clone(), second_provider.clone())?;
+        assert_eq!(agent.snapshot().messages, retained_messages);
+        assert_eq!(agent.snapshot().model, Some(replacement_model.clone()));
+
+        agent.start_prompt("second")?.drive().await?;
+        assert_eq!(second_provider.requests().len(), 1);
+        assert_eq!(second_provider.requests()[0].model, Some(replacement_model));
+
+        Ok::<(), CoreError>(())
+    })
+    .expect("idle replacement must retain the linear transcript and select the new provider");
+}
+
+#[test]
+fn provider_replacement_is_rejected_while_a_run_is_owned() {
+    let agent = Agent::builder()
+        .model_provider(Arc::new(TextOnlyProvider))
+        .build();
+    let active = agent.start_prompt("active").expect("run starts");
+    let error = agent
+        .replace_model_provider(
+            ModelDescriptor {
+                provider: "fixture".into(),
+                model: "replacement".into(),
+                revision: None,
+            },
+            Arc::new(TextOnlyProvider),
+        )
+        .expect_err("an active run owns its model/provider pair");
+    assert!(matches!(error, CoreError::ActiveRun { .. }));
+    active.abort().expect("created run aborts cleanly");
+    assert_eq!(agent.snapshot().phase, AgentPhase::Idle);
+}
+
+#[test]
+fn lossless_subscription_is_ordered_without_capacity_drops() {
+    smol::block_on(async {
+        let agent = Agent::builder()
+            .model_provider(Arc::new(TextOnlyProvider))
+            .build();
+        let subscription = agent.subscribe_lossless();
+        let run = agent.start_prompt("lossless ordered events")?;
+
+        run.drive().await?;
+
+        let mut delivered = Vec::new();
+        while let Ok(event) = subscription.try_recv() {
+            delivered.push(event);
+        }
+        assert_eq!(delivered, run.events());
+        assert!(matches!(
+            subscription.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        Ok::<(), CoreError>(())
+    })
+    .expect("lossless event delivery must preserve source order");
+}
+
+#[test]
+fn lossless_subscription_retains_all_events_under_volume() {
+    smol::block_on(async {
+        let run_count = 256;
+        let provider = Arc::new(ScriptedProvider::new((0..run_count).map(|index| {
+            ModelStream {
+                events: vec![
+                    ModelStreamEvent::TextDelta(format!("lossless event volume {index}")),
+                    ModelStreamEvent::End(StopReason::EndTurn),
+                ],
+            }
+        })));
+        let agent = Agent::builder().model_provider(provider).build();
+        let subscription = agent.subscribe_lossless();
+        let mut emitted = Vec::new();
+
+        for index in 0..run_count {
+            let run = agent
+                .start_prompt(format!("lossless volume run {index}"))
+                .expect("volume run starts");
+            run.drive().await?;
+            emitted.extend(run.events());
+        }
+        assert!(emitted.len() > 1_000, "volume must exceed a small queue");
+
+        let mut delivered = Vec::new();
+        while let Ok(event) = subscription.try_recv() {
+            delivered.push(event);
+        }
+        assert_eq!(delivered, emitted);
+
+        Ok::<(), CoreError>(())
+    })
+    .expect("lossless event delivery must not silently drop under volume");
+}
+
+#[test]
+fn dropping_lossless_subscription_unsubscribes_cleanly() {
+    smol::block_on(async {
+        let provider = Arc::new(ScriptedProvider::new([
+            ModelStream {
+                events: vec![
+                    ModelStreamEvent::TextDelta("before drop".into()),
+                    ModelStreamEvent::End(StopReason::EndTurn),
+                ],
+            },
+            ModelStream {
+                events: vec![
+                    ModelStreamEvent::TextDelta("after drop".into()),
+                    ModelStreamEvent::End(StopReason::EndTurn),
+                ],
+            },
+        ]));
+        let agent = Agent::builder().model_provider(provider).build();
+        let subscription = agent.subscribe_lossless();
+        let first = agent.start_prompt("before drop")?;
+        first.drive().await?;
+        drop(subscription);
+
+        let second = agent.start_prompt("after drop")?;
+        second.drive().await?;
+        assert_eq!(agent.snapshot().phase, AgentPhase::Idle);
+
+        Ok::<(), CoreError>(())
+    })
+    .expect("dropping a lossless subscription must not poison future runs");
+}
+
+#[test]
 fn observer_failure_has_one_terminal_settlement_and_leaves_the_agent_reusable() {
     smol::block_on(async {
         let agent = Agent::builder()
@@ -1278,6 +1440,7 @@ fn after_tool_metadata_is_preserved_in_the_transcript() {
                     input_tokens: Some(3),
                     output_tokens: Some(5),
                     reasoning_tokens: Some(2),
+                    ..
                 }),
                 added_tool_names,
                 ..

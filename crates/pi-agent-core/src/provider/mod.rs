@@ -4,8 +4,14 @@
 //! explicit Cargo features so transport processes and provider wire formats never become part of
 //! the default state-machine build.
 
+mod registry;
 mod retry;
 
+pub use registry::{
+    ConfiguredProvider, ModelDescriptor, ModelSelection, ProviderCapabilities,
+    ProviderConfiguration, ProviderConfigurationKind, ProviderEntry, ProviderRegistry,
+    RegistryError, MODEL_CATALOG_VERSION,
+};
 pub use retry::RetryPolicy;
 
 #[cfg(feature = "provider-commandcode")]

@@ -118,6 +118,8 @@ The event reducer updates the state snapshot before invoking observers:
 | `tool_execution_start` | Add call ID to pending set |
 | `tool_execution_update` | Observer/trace data only; pending set unchanged |
 | `tool_execution_end` | Remove call ID from pending set |
+| `model_turn_usage` | Retain one provider-reported model-turn record and update aggregate accounting |
+| `compaction_result` | The validated replacement was already atomically committed before observers see it |
 | `turn_end` | Record assistant error text when present |
 | `agent_end` | Clear streaming snapshot; settlement still awaits terminal observers |
 
@@ -248,8 +250,9 @@ These contract-bearing choices are settled by fixtures and dependency review:
 | Decision | Required evidence |
 | --- | --- |
 | Stable run/turn/message ID representation and normalization | `tests::generated_run_message_and_event_ids_are_monotonic_after_cancellation` |
-| Awaited observer versus non-blocking subscription API and overflow behavior | `tests::runtime_subscription_is_reentrant_and_drop_unsubscribes_for_future_events`, `tests::nonblocking_subscription_is_ordered_lossy_and_never_delays_settlement` |
+| Awaited observer versus bounded/lossless live subscriptions and overflow/drop behavior | `tests::runtime_subscription_is_reentrant_and_drop_unsubscribes_for_future_events`, `tests::nonblocking_subscription_is_ordered_lossy_and_never_delays_settlement`, `tests::lossless_subscription_is_ordered_without_capacity_drops`, `tests::lossless_subscription_retains_all_events_under_volume`, `tests::dropping_lossless_subscription_unsubscribes_cleanly` |
 | Drop unfinished run policy | `tests::agent_allows_one_run_and_drop_settles_cancellation` |
+| Manual compaction transaction, replacement validation, and cancellation | `tests/compaction.rs` |
 | Cancellation token implementation without Tokio | dependency review + `cancel/checkpoints` |
 | Mixed per-tool sequential override behavior | `parity/fixtures/declarative/mixed-tool-execution.json` |
 | Canonical JSON Schema serialization/hash | `profile/definitions` |

@@ -83,6 +83,40 @@ your executor. The same agent may be reused only after the run has settled.
 Call `agent.abort()` from the host to request structured cancellation, then
 await the run or `agent.wait_for_idle()`.
 
+For a live host projection that cannot tolerate event loss, subscribe before
+starting the run:
+
+```rust
+let events = agent.subscribe_lossless();
+let run = agent.start_prompt("Say hello.")?;
+smol::block_on(run.drive())?;
+while let Ok(event) = events.try_recv() {
+    println!("{event:?}");
+}
+```
+
+This subscription uses an explicitly unbounded standard-library queue. Unread
+events retain caller-owned memory until drained or the subscription is dropped;
+the existing `subscribe_nonblocking` API remains the bounded best-effort path.
+
+## Add manual compaction explicitly
+
+The core never invents a summary prompt. If an embedding supplies a
+`Compactor`, it can reserve an idle agent and drive a validated transaction on
+the same executor:
+
+```rust
+let compaction = agent.start_compaction()?;
+smol::block_on(compaction.drive())?;
+```
+
+The compactor receives an owned, versioned context and proposes replacement
+messages. Core rejects duplicate message IDs and malformed tool-result links,
+does not modify history on failure or cancellation, and emits
+`compaction_start`, `compaction_result`, then `compaction_end`. An agent
+without a configured compactor returns `CoreError::MissingCompactor` rather
+than silently selecting a provider or summary policy.
+
 ## Add the pinned coding profile
 
 The default profile is optional. When selected, provide an existing workspace

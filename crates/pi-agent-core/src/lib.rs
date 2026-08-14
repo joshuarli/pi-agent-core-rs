@@ -9,6 +9,7 @@
 #![warn(missing_docs)]
 
 pub mod agent;
+pub mod compaction;
 pub mod default_tools;
 pub mod error;
 pub mod event;
@@ -33,11 +34,22 @@ pub mod trace;
 #[cfg(test)]
 mod tests;
 
-pub use agent::{Agent, AgentBuilder, EventSubscription, ObserverSubscription};
+pub use agent::{
+    Agent, AgentBuilder, EventSubscription, LosslessEventSubscription, ObserverSubscription,
+};
+pub use compaction::{
+    CompactionContext, CompactionError, CompactionFuture, CompactionHandle, CompactionResult,
+    Compactor, COMPACTION_CONTEXT_VERSION,
+};
 pub use default_tools::{
     CodingOperations, DefaultCodingTools, LocalCodingOperations, WorkspaceRoot,
 };
 pub use error::CoreError;
-pub use event::{AgentEvent, AgentEventKind, EventObserver, EventSequence, ObserverFuture};
+pub use event::{
+    AgentEvent, AgentEventKind, CompactionOutcome, EventObserver, EventSequence, ObserverFuture,
+};
 pub use run::RunHandle;
-pub use state::{AgentSnapshot, Message, MessageId, RunId, RunSnapshot, ThinkingLevel};
+pub use state::{
+    AgentSnapshot, Message, MessageId, ModelAccountingSnapshot, ModelDescriptor,
+    ModelTurnAccounting, RunId, RunSnapshot, ThinkingLevel, TurnId, Usage,
+};

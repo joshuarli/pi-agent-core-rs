@@ -12,7 +12,7 @@ use crate::scheduler::{CancellationToken, ModelEventStream, ModelRequest, ModelS
 use crate::schema_validation::validate_tool_arguments;
 use crate::state::{
     AgentPhase, AssistantToolCall, Message, ModelDescriptor, RunId, RunPhase, RunSnapshot,
-    RunState, StopReason, ThinkingLevel, ToolCallId, TurnId,
+    RunState, StopReason, ThinkingLevel, ToolCallId, TurnId, Usage,
 };
 use crate::tool::{
     AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdate, ToolUpdateSink,
@@ -275,9 +275,12 @@ impl RunHandle {
                     thinking_override,
                 )
                 .await?;
+            let turn_model = request.model.clone();
             let provider = agent
                 .provider
-                .as_ref()
+                .read()
+                .expect("agent provider lock poisoned")
+                .clone()
                 .ok_or(CoreError::MissingModelProvider)?;
             let mut stream = provider
                 .stream(request, self.cancellation.clone())
@@ -286,7 +289,7 @@ impl RunHandle {
                     message: error.to_string(),
                 })?;
             let (reason, tool_calls, error_message) = self
-                .consume_assistant_stream(&agent, stream.as_mut())
+                .consume_assistant_stream(&agent, stream.as_mut(), turn_id, turn_model)
                 .await?;
 
             if matches!(reason, StopReason::Error | StopReason::Aborted) {
@@ -518,12 +521,15 @@ impl RunHandle {
         &self,
         agent: &AgentInner,
         stream: &mut dyn ModelEventStream,
+        turn_id: TurnId,
+        model: Option<ModelDescriptor>,
     ) -> Result<(StopReason, Vec<AssistantToolCall>, Option<String>), CoreError> {
         let mut assistant_id = None;
         let mut assistant_text = String::new();
         let mut tool_calls = Vec::new();
         let mut reason = None;
         let mut error_message = None;
+        let mut usage: Option<Usage> = None;
 
         loop {
             let Some(item) =
@@ -596,7 +602,13 @@ impl RunHandle {
                     .await?;
                 }
                 ModelStreamEvent::ToolCall(call) => tool_calls.push(call),
-                ModelStreamEvent::Usage(_) => {}
+                ModelStreamEvent::Usage(update) => {
+                    if let Some(current) = usage.as_mut() {
+                        current.merge(update);
+                    } else {
+                        usage = Some(update);
+                    }
+                }
                 ModelStreamEvent::Error { message } => {
                     reason = Some(StopReason::Error);
                     error_message = Some(message);
@@ -645,6 +657,20 @@ impl RunHandle {
         }
         self.emit(agent, AgentEventKind::MessageEnd { message: assistant })
             .await?;
+        if let Some(usage) = usage {
+            let accounting = crate::state::ModelTurnAccounting {
+                run_id: self.id(),
+                turn_id,
+                model,
+                usage,
+            };
+            {
+                let mut state = agent.state.lock().expect("agent state mutex poisoned");
+                state.accounting.record(accounting.clone());
+            }
+            self.emit(agent, AgentEventKind::ModelTurnUsage { accounting })
+                .await?;
+        }
         Ok((reason, tool_calls, error_message))
     }
 
@@ -1329,12 +1355,37 @@ impl RunHandle {
         event
     }
 
-    async fn emit(
+    pub(crate) async fn emit(
         &self,
         agent: &AgentInner,
         kind: AgentEventKind,
     ) -> Result<AgentEvent, CoreError> {
         let event = self.record_event(kind);
+
+        // Lossless subscriptions use an explicitly caller-owned unbounded
+        // queue. Publish this copy before awaited observers so a live host is
+        // not held behind an arbitrary observer future. Sending to one cannot
+        // drop for capacity and does not wait for the receiver to drain; a
+        // disconnected receiver is cleaned up after this event.
+        let lossless_subscribers = agent
+            .lossless_subscribers
+            .lock()
+            .expect("lossless subscriber mutex poisoned")
+            .clone();
+        let mut disconnected = Vec::new();
+        for registration in lossless_subscribers {
+            if registration.sender.send(event.clone()).is_err() {
+                disconnected.push(registration.id);
+            }
+        }
+        if !disconnected.is_empty() {
+            agent
+                .lossless_subscribers
+                .lock()
+                .expect("lossless subscriber mutex poisoned")
+                .retain(|registration| !disconnected.contains(&registration.id));
+        }
+
         // Clone a registration snapshot before awaiting callbacks. This avoids
         // retaining the registry mutex across an await and defines reentrant
         // subscribe/unsubscribe precisely: changes apply to the next event.
@@ -1377,7 +1428,12 @@ impl RunHandle {
                 .expect("subscriber mutex poisoned")
                 .retain(|registration| !disconnected.contains(&registration.id));
         }
+
         Ok(event)
+    }
+
+    pub(crate) fn settle_cancelled(&self) -> Result<(), CoreError> {
+        self.finish(RunPhase::Cancelled, StopReason::Cancelled, None)
     }
 }
 

@@ -41,11 +41,36 @@ streaming_message: optional partial/final assistant or current message snapshot
 pending_tool_calls: set of toolCallId values
 error_message: optional string from the most recent failed/aborted assistant turn
 active_run: optional RunSnapshot
+accounting: per-turn provider-reported usage plus aggregate token/cost fields
 ```
+
+Model accounting is retained only when the provider reports a usage update. Each record carries
+the `run_id`, `turn_id`, and requested `ModelDescriptor`. Input, output, reasoning, cache-read,
+and cache-write counts remain independently optional, so an explicit zero is distinct from an
+unknown value. Provider-reported cost remains exact decimal text; the core never estimates a
+price from token counts. `model_turn_usage` delivers the settled record to observers before the
+turn's `turn_end` event.
 
 State inspection returns a snapshot. It never exposes a mutable borrow into the loop. Assigning a
 new message/tool list copies the top-level list; message/content values remain explicit owned
 protocol data.
+
+## Manual compaction transaction
+
+`Agent::start_compaction` is an idle-only ownership operation, like starting a
+normal run but with the separate `compaction_start`, `compaction_result`, and
+`compaction_end` event grammar. A caller-supplied `Compactor` receives an
+owned `CompactionContext` (version, prompt, model, retained messages, and host
+messages) plus the operation cancellation token. It proposes a replacement;
+it never receives mutable agent state.
+
+Core validates unique nonzero message IDs and every retained tool-result's
+preceding assistant tool call/name before atomically replacing history. A
+failure, invalid replacement, cancellation, active-agent request, or observer
+failure leaves the old history intact. The handle then settles to idle and the
+agent can run another prompt. Core does not derive a summary, choose a model,
+or aggregate the optional compactor usage report into normal model-turn
+accounting.
 
 The terminal invariant is true after every successful, failed, or cancelled run:
 
@@ -190,9 +215,11 @@ V0 must pin the Rust adaptation rather than silently conflating these meanings.
 
 ```text
 event emitted/reduced into state
-        -> awaited observer(s), registration order
-        -> terminal observer settles
-        -> run resolves and active state clears
+        +-> lossless live subscription (unbounded, before observers)
+        +-> awaited observer(s), registration order
+              -> bounded non-blocking subscription (try_send)
+              -> terminal observer settles
+              -> run resolves and active state clears
 ```
 
 Fixture cases:
@@ -210,7 +237,11 @@ slow/dropped observational subscriber capacity and overflow
 
 `Agent::subscribe_nonblocking` resolves the last two cases: a full queue drops the new event and
 increments `dropped_events`; a dropped receiver unregisters itself. Neither case can hold a run
-open indefinitely.
+open indefinitely. `Agent::subscribe_lossless` is the separate live path for hosts that require
+every event: it uses an unbounded standard-library receiver, publishes in event sequence order
+without waiting for a receiver or host future, and has no capacity-based drop path. Unread events
+remain caller-owned memory until drained or the `LosslessEventSubscription` is dropped; dropping
+it unregisters the receiver and releases its queued events.
 
 ## Streaming and context boundary
 

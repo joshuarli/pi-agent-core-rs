@@ -60,6 +60,8 @@ downstream optional layers.
 - [Quality evaluation](quality-evaluation.md) — deterministic trace parity,
   three pinned Express tasks, replay artifacts, and resource diagnostics.
 - [Tracing](trace.md) — optional trajectory observer boundary.
+- [Terminal host](tui.md) — `pi-agent` ownership boundaries, interaction
+  contract, and post-V0 direction.
 - [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
   bindings, coroutine-backed tools, limits, and review rules.
 - [V1](../V1.md) — delivered optional Luau extension foundation and intentional

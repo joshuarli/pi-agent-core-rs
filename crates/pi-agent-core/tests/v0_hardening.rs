@@ -409,7 +409,12 @@ fn assert_lifecycle_balance(events: &[pi_agent_core::event::AgentEvent]) {
             AgentEventKind::ToolExecutionEnd { tool_call_id, .. } => {
                 *tool_ends.entry(tool_call_id.clone()).or_default() += 1;
             }
-            AgentEventKind::MessageUpdate { .. } | AgentEventKind::ToolExecutionUpdate { .. } => {}
+            AgentEventKind::MessageUpdate { .. }
+            | AgentEventKind::ToolExecutionUpdate { .. }
+            | AgentEventKind::ModelTurnUsage { .. }
+            | AgentEventKind::CompactionStart { .. }
+            | AgentEventKind::CompactionResult { .. }
+            | AgentEventKind::CompactionEnd { .. } => {}
         }
     }
     assert_eq!(agent_starts, 1);

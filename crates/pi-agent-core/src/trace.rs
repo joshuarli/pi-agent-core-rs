@@ -95,6 +95,12 @@ impl<S: TraceSink> TraceObserver<S> {
     fn record(&self, event: &AgentEvent) {
         let mut state = self.state.lock().expect("trace observer mutex poisoned");
         match &event.kind {
+            AgentEventKind::CompactionStart { .. }
+            | AgentEventKind::CompactionResult { .. }
+            | AgentEventKind::CompactionEnd { .. } => {
+                // The compact V0 trace schema has no context-replacement record. The
+                // authoritative lifecycle event stream remains available to the host.
+            }
             AgentEventKind::AgentStart => {
                 state.current_turn = None;
                 state.pending_tools.clear();
@@ -170,6 +176,10 @@ impl<S: TraceSink> TraceObserver<S> {
                 }
                 state.sink.append(TraceEvent::from(turn));
                 state.end_reason = end_reason(*reason);
+            }
+            AgentEventKind::ModelTurnUsage { .. } => {
+                // Accounting is retained by the core snapshot and remains available to
+                // observers; the compact V0 trace schema does not persist usage fields.
             }
             AgentEventKind::AgentEnd { .. } => {
                 let reason = state.end_reason.clone();

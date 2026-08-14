@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/pi-agent-core",
+    "crates/pi-agent-tui",
     "crates/pi-agent-luau",
     "crates/pi-agent-protocol",
     "crates/pi-agent-trace",

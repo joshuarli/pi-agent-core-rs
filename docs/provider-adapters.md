@@ -60,6 +60,12 @@ aggregate report expose exact non-negative decimal strings in
 `reported_upstream_inference_usd_exact`. The parallel `f64` fields exist only
 as convenience projections and must not be used for budget decisions.
 
+When an adapter drives `Agent`, its normalized `Usage` update is retained in
+`AgentSnapshot.accounting` and emitted as `AgentEventKind::ModelTurnUsage`.
+OpenRouter maps reported cache fields and exact total cost into that update;
+Command Code maps the token fields it reports and leaves cache and cost
+unknown. The core performs no pricing lookup.
+
 ## Credentials and host authority
 
 Both adapters accept a key directly in their configuration. They never read

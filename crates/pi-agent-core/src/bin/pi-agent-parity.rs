@@ -1381,6 +1381,7 @@ fn normalize_event(
             "turn_end",
             JsonValue::object([("stop_reason", JsonValue::from(stop_reason_name(*reason)))]),
         ),
+        AgentEventKind::ModelTurnUsage { .. } => ("model_turn_usage", empty_object()),
         AgentEventKind::MessageStart { message } => (
             "message_start",
             JsonValue::object([("role", JsonValue::from(message_role_name(message)))]),

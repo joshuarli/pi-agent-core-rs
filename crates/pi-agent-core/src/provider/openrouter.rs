@@ -74,6 +74,11 @@ impl OpenRouterConfig {
         }
     }
 
+    /// Borrow the explicitly configured OpenRouter model identifier.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Replace the explicit maximum completion-token cap.
     pub fn with_max_tokens(mut self, max_tokens: u64) -> Self {
         self.max_tokens = max_tokens;
@@ -287,12 +292,12 @@ impl OpenRouterProvider {
             };
         }
         match self.complete(request, &cancellation) {
-            Ok((mut events, usage, cost)) => {
+            Ok((mut events, mut usage, cost)) => {
+                usage.cache_read_tokens = usage.cache_read_tokens.or(cost.cache_read_tokens);
+                usage.cache_write_tokens = usage.cache_write_tokens.or(cost.cache_write_tokens);
+                usage.cost = cost.total_usd_exact.clone();
                 self.record(usage.clone(), cost);
-                if usage.input_tokens.is_some()
-                    || usage.output_tokens.is_some()
-                    || usage.reasoning_tokens.is_some()
-                {
+                if usage.is_reported() {
                     // V0 streams cannot deliver any event after `End`; usage is part of the
                     // provider response and must precede the terminal settlement event.
                     let terminal = events
@@ -323,6 +328,20 @@ impl OpenRouterProvider {
             &mut accounting.usage.reasoning_tokens,
             usage.reasoning_tokens,
         );
+        add_usage(
+            &mut accounting.usage.cache_read_tokens,
+            usage.cache_read_tokens,
+        );
+        add_usage(
+            &mut accounting.usage.cache_write_tokens,
+            usage.cache_write_tokens,
+        );
+        if let Some(cost) = usage.cost.as_deref() {
+            accounting.usage.cost = Some(match accounting.usage.cost.as_deref() {
+                Some(previous) => decimal_add(Some(previous), cost),
+                None => cost.to_owned(),
+            });
+        }
         cost.turn = accounting.costs.len() + 1;
         accounting.costs.push(cost);
     }
@@ -709,14 +728,57 @@ fn number(value: &JsonValue, key: &str) -> Option<f64> {
 fn exact_number_at_path(input: &[u8], path: &[&str]) -> Option<String> {
     let mut cursor = RawJsonCursor { input, position: 0 };
     let value = cursor.value_at_path(path)?;
-    if value.starts_with('-') || value.parse::<f64>().ok()?.is_sign_negative() {
-        return None;
-    }
-    let parsed = value.parse::<f64>().ok()?;
-    if !parsed.is_finite() || parsed < 0.0 {
+    if !valid_nonnegative_json_number(&value) {
         return None;
     }
     Some(value)
+}
+
+fn valid_nonnegative_json_number(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes[0] == b'-' {
+        return false;
+    }
+    let mut index = 0;
+    if bytes[index] == b'0' {
+        index += 1;
+    } else if bytes[index].is_ascii_digit() {
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+    } else {
+        return false;
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fraction_start {
+            return false;
+        }
+    }
+    if bytes
+        .get(index)
+        .is_some_and(|byte| matches!(byte, b'e' | b'E'))
+    {
+        index += 1;
+        if bytes
+            .get(index)
+            .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+        {
+            index += 1;
+        }
+        let exponent_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == exponent_start {
+            return false;
+        }
+    }
+    index == bytes.len()
 }
 
 struct RawJsonCursor<'a> {
@@ -1044,35 +1106,35 @@ fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
         input_tokens: token("prompt_tokens"),
         output_tokens: token("completion_tokens"),
         reasoning_tokens: reasoning,
+        cache_read_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(JsonValue::as_u64),
+        cache_write_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cache_write_tokens"))
+            .and_then(JsonValue::as_u64),
+        cost: None,
     };
     let total_usd_exact = exact_number_at_path(bytes, &["usage", "cost"]);
-    let inline_cost =
-        number(&usage, "cost")
-            .zip(total_usd_exact)
-            .map(|(total_usd, total_usd_exact)| OpenRouterCostTurn {
-                turn: 0,
-                source: OpenRouterCostSource::ChatUsage,
-                total_usd: Some(total_usd),
-                total_usd_exact: Some(total_usd_exact),
-                upstream_inference_usd: None,
-                upstream_inference_usd_exact: None,
-                model: response
-                    .get("model")
-                    .and_then(JsonValue::as_str)
-                    .map(str::to_owned),
-                provider: None,
-                input_tokens: parsed_usage.input_tokens,
-                output_tokens: parsed_usage.output_tokens,
-                cache_read_tokens: usage
-                    .get("prompt_tokens_details")
-                    .and_then(|details| details.get("cached_tokens"))
-                    .and_then(JsonValue::as_u64),
-                cache_write_tokens: usage
-                    .get("prompt_tokens_details")
-                    .and_then(|details| details.get("cache_write_tokens"))
-                    .and_then(JsonValue::as_u64),
-                reasoning_tokens: parsed_usage.reasoning_tokens,
-            });
+    let inline_cost = total_usd_exact.map(|total_usd_exact| OpenRouterCostTurn {
+        turn: 0,
+        source: OpenRouterCostSource::ChatUsage,
+        total_usd: number(&usage, "cost"),
+        total_usd_exact: Some(total_usd_exact),
+        upstream_inference_usd: None,
+        upstream_inference_usd_exact: None,
+        model: response
+            .get("model")
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned),
+        provider: None,
+        input_tokens: parsed_usage.input_tokens,
+        output_tokens: parsed_usage.output_tokens,
+        cache_read_tokens: parsed_usage.cache_read_tokens,
+        cache_write_tokens: parsed_usage.cache_write_tokens,
+        reasoning_tokens: parsed_usage.reasoning_tokens,
+    });
     Ok(ParsedResponse {
         events,
         usage: parsed_usage,
@@ -1106,12 +1168,12 @@ fn openrouter_response_retryable(bytes: &[u8]) -> bool {
 fn parse_generation_cost(bytes: &[u8], fallback_usage: &Usage) -> Option<OpenRouterCostTurn> {
     let response = from_bytes(bytes).ok()?;
     let data = response.get("data")?;
-    let total_usd = number(data, "total_cost")?;
+    let total_usd_exact = exact_number_at_path(bytes, &["data", "total_cost"])?;
     Some(OpenRouterCostTurn {
         turn: 0,
         source: OpenRouterCostSource::Generation,
-        total_usd: Some(total_usd),
-        total_usd_exact: exact_number_at_path(bytes, &["data", "total_cost"]),
+        total_usd: number(data, "total_cost"),
+        total_usd_exact: Some(total_usd_exact),
         upstream_inference_usd: number(data, "upstream_inference_cost"),
         upstream_inference_usd_exact: exact_number_at_path(
             bytes,
@@ -1153,6 +1215,7 @@ mod tests {
             input_tokens: Some(10),
             output_tokens: Some(3),
             reasoning_tokens: None,
+            ..Usage::default()
         };
         let cost = parse_generation_cost(
             br#"{
@@ -1288,6 +1351,7 @@ mod tests {
                 input_tokens: Some(2),
                 output_tokens: Some(3),
                 reasoning_tokens: None,
+                ..Usage::default()
             },
             OpenRouterCostTurn {
                 turn: 0,

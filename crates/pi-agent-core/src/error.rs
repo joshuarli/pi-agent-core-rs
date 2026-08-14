@@ -30,6 +30,10 @@ pub enum CoreError {
     Hook(HookError),
     /// The model stream used a behavior that the active V0 slice does not yet support.
     UnsupportedModelStream { message: String },
+    /// A caller-supplied manual compaction operation failed or proposed invalid context.
+    Compaction(crate::compaction::CompactionError),
+    /// Manual compaction was requested without a caller-supplied compactor.
+    MissingCompactor,
 }
 
 /// A state-machine transition was rejected.
@@ -69,6 +73,8 @@ impl fmt::Display for CoreError {
             Self::UnsupportedModelStream { message } => {
                 write!(f, "unsupported model stream behavior: {message}")
             }
+            Self::Compaction(error) => error.fmt(f),
+            Self::MissingCompactor => f.write_str("agent has no configured compactor"),
         }
     }
 }

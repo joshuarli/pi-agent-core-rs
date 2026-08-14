@@ -221,6 +221,11 @@ impl CommandCodeConfig {
         })
     }
 
+    /// Borrow the explicitly configured gateway model identifier.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Replace the explicit maximum output-token cap.
     pub fn with_max_tokens(mut self, max_tokens: u64) -> Result<Self, CommandCodeConfigError> {
         if max_tokens == 0 {
@@ -376,10 +381,7 @@ impl CommandCodeProvider {
                 }
                 let usage = response.usage;
                 self.record_usage(&usage);
-                if usage.input_tokens.is_some()
-                    || usage.output_tokens.is_some()
-                    || usage.reasoning_tokens.is_some()
-                {
+                if usage.is_reported() {
                     let terminal = response
                         .events
                         .pop()
@@ -419,12 +421,11 @@ impl CommandCodeProvider {
             .usage
             .lock()
             .expect("Command Code usage mutex poisoned");
-        totals.input_tokens =
-            Some(totals.input_tokens.unwrap_or(0) + usage.input_tokens.unwrap_or(0));
-        totals.output_tokens =
-            Some(totals.output_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0));
-        totals.reasoning_tokens =
-            Some(totals.reasoning_tokens.unwrap_or(0) + usage.reasoning_tokens.unwrap_or(0));
+        add_usage(&mut totals.input_tokens, usage.input_tokens);
+        add_usage(&mut totals.output_tokens, usage.output_tokens);
+        add_usage(&mut totals.reasoning_tokens, usage.reasoning_tokens);
+        add_usage(&mut totals.cache_read_tokens, usage.cache_read_tokens);
+        add_usage(&mut totals.cache_write_tokens, usage.cache_write_tokens);
     }
 
     fn complete(
@@ -1099,6 +1100,15 @@ fn parse_usage(value: Option<&JsonValue>) -> Usage {
         input_tokens,
         output_tokens,
         reasoning_tokens,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
+        cost: None,
+    }
+}
+
+fn add_usage(total: &mut Option<u64>, value: Option<u64>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or(0).saturating_add(value));
     }
 }
 
@@ -1257,6 +1267,7 @@ mod tests {
                 input_tokens: Some(12),
                 output_tokens: Some(4),
                 reasoning_tokens: Some(2),
+                ..Usage::default()
             }
         );
     }

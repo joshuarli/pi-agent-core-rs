@@ -17,8 +17,8 @@ use crate::state::{
 };
 use crate::tool::{AgentTool, ToolRegistry};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TryRecvError};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Poll, Waker};
 
 /// Internal shared ownership record used by `Agent` and its run handle.
@@ -36,7 +36,9 @@ pub(crate) struct AgentInner {
     /// Drain policy for messages that run only at the idle boundary.
     pub(crate) follow_up_mode: Mutex<QueueMode>,
     /// Optional model provider, driven externally.
-    pub(crate) provider: Option<Arc<dyn ModelProvider>>,
+    pub(crate) provider: RwLock<Option<Arc<dyn ModelProvider>>>,
+    /// Optional caller-supplied compactor, driven externally.
+    pub(crate) compactor: RwLock<Option<Arc<dyn crate::compaction::Compactor>>>,
     /// Hooks are held for the run loop boundary.
     pub(crate) hooks: Arc<dyn HookSet>,
     /// Awaited observers in registration order.
@@ -47,6 +49,10 @@ pub(crate) struct AgentInner {
     pub(crate) subscribers: Mutex<Vec<SubscriberRegistration>>,
     /// Monotonic process-local non-blocking subscription registrations.
     pub(crate) next_subscriber_id: AtomicU64,
+    /// Lossless live event subscribers that do not participate in settlement.
+    pub(crate) lossless_subscribers: Mutex<Vec<LosslessSubscriberRegistration>>,
+    /// Monotonic process-local lossless subscription registrations.
+    pub(crate) next_lossless_subscriber_id: AtomicU64,
     /// Monotonic process-local run IDs.
     pub(crate) next_run_id: AtomicU64,
     /// Wakers awaiting the post-settlement idle boundary.
@@ -176,12 +182,62 @@ impl Drop for EventSubscription {
     }
 }
 
+/// A lossless, unbounded lifecycle-event subscription.
+///
+/// Unlike [`EventSubscription`], this subscription never drops an event because
+/// of queue capacity. Events are enqueued in the core's sequence order and
+/// publishing does not wait for the receiver to drain them or for an executor
+/// task to run. The queue is intentionally unbounded: unread events consume
+/// caller-owned memory until they are drained or this subscription is dropped.
+/// Dropping the subscription releases the receiver and unregisters it from the
+/// agent; subsequent sends are harmless.
+#[must_use = "drop the subscription to stop receiving events"]
+pub struct LosslessEventSubscription {
+    agent: std::sync::Weak<AgentInner>,
+    id: u64,
+    receiver: Receiver<crate::event::AgentEvent>,
+}
+
+impl std::fmt::Debug for LosslessEventSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LosslessEventSubscription")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LosslessEventSubscription {
+    /// Return the next queued event without waiting.
+    pub fn try_recv(&self) -> Result<crate::event::AgentEvent, TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+
+impl Drop for LosslessEventSubscription {
+    fn drop(&mut self) {
+        if let Some(agent) = self.agent.upgrade() {
+            let mut subscribers = agent
+                .lossless_subscribers
+                .lock()
+                .expect("lossless subscriber mutex poisoned");
+            subscribers.retain(|registration| registration.id != self.id);
+        }
+    }
+}
+
 /// One bounded non-blocking event subscription retained by the agent.
 #[derive(Clone)]
 pub(crate) struct SubscriberRegistration {
     pub(crate) id: u64,
     pub(crate) sender: SyncSender<crate::event::AgentEvent>,
     pub(crate) dropped: Arc<AtomicU64>,
+}
+
+/// One unbounded lossless event subscription retained by the agent.
+#[derive(Clone)]
+pub(crate) struct LosslessSubscriberRegistration {
+    pub(crate) id: u64,
+    pub(crate) sender: Sender<crate::event::AgentEvent>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -214,7 +270,43 @@ impl Agent {
 
     /// Whether an explicit model provider was configured.
     pub fn has_model_provider(&self) -> bool {
-        self.inner.provider.is_some()
+        self.inner
+            .provider
+            .read()
+            .expect("agent provider lock poisoned")
+            .is_some()
+    }
+
+    /// Atomically replace the configured model identity and provider while idle.
+    ///
+    /// The replacement preserves the retained linear conversation, tools,
+    /// prompts, and explicit queues. A run owns its model/provider pair until
+    /// terminal settlement, so this operation rejects active and cancelling
+    /// agents rather than changing a provider beneath live model or tool work.
+    /// The caller constructs the provider explicitly and is responsible for
+    /// validating any provider-specific credential/configuration invariants
+    /// before calling this operation.
+    pub fn replace_model_provider(
+        &self,
+        model: ModelDescriptor,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Result<(), CoreError> {
+        let mut provider_slot = self
+            .inner
+            .provider
+            .write()
+            .expect("agent provider lock poisoned");
+        let mut state = self.inner.state.lock().expect("agent state mutex poisoned");
+        match state.phase {
+            AgentPhase::Idle => {
+                state.model = Some(model);
+                *provider_slot = Some(provider);
+                Ok(())
+            }
+            AgentPhase::Running(run_id) | AgentPhase::Cancelling(run_id) => {
+                Err(CoreError::ActiveRun { run_id })
+            }
+        }
     }
 
     /// Clone the host policy handle used at the run-loop boundary.
@@ -274,6 +366,33 @@ impl Agent {
             id,
             receiver,
             dropped,
+        }
+    }
+
+    /// Subscribe to an unbounded, lossless copy of future lifecycle events.
+    ///
+    /// This path is separate from [`Self::subscribe_nonblocking`]. Every event
+    /// is sent in sequence order while the receiver is alive; no bounded
+    /// overflow or hidden lossy fallback exists. The unbounded queue is owned
+    /// by the caller, so a receiver that is not drained retains every event and
+    /// can grow without limit. Dropping the returned subscription releases that
+    /// queued memory, unregisters the receiver, and never delays run settlement.
+    pub fn subscribe_lossless(&self) -> LosslessEventSubscription {
+        let id = self
+            .inner
+            .next_lossless_subscriber_id
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let (sender, receiver) = channel();
+        self.inner
+            .lossless_subscribers
+            .lock()
+            .expect("lossless subscriber mutex poisoned")
+            .push(LosslessSubscriberRegistration { id, sender });
+        LosslessEventSubscription {
+            agent: Arc::downgrade(&self.inner),
+            id,
+            receiver,
         }
     }
 
@@ -526,6 +645,7 @@ impl Agent {
                 state.is_streaming = false;
                 state.pending_tool_calls.clear();
                 state.last_error = None;
+                state.accounting = crate::state::ModelAccountingSnapshot::default();
                 drop(state);
                 self.clear_all_queues();
                 Ok(())
@@ -612,6 +732,7 @@ pub struct AgentBuilder {
     host_messages: Vec<crate::state::SerializedJson>,
     tools: ToolRegistry,
     provider: Option<Arc<dyn ModelProvider>>,
+    compactor: Option<Arc<dyn crate::compaction::Compactor>>,
     hooks: Option<Arc<dyn HookSet>>,
     observers: Vec<Arc<dyn EventObserver>>,
     steering_mode: QueueMode,
@@ -685,6 +806,12 @@ impl AgentBuilder {
         self
     }
 
+    /// Attach a caller-owned manual compactor.
+    pub fn compactor(mut self, compactor: Arc<dyn crate::compaction::Compactor>) -> Self {
+        self.compactor = Some(compactor);
+        self
+    }
+
     /// Attach host policy hooks.
     pub fn hooks(mut self, hooks: Arc<dyn HookSet>) -> Self {
         self.hooks = Some(hooks);
@@ -750,7 +877,8 @@ impl AgentBuilder {
                 tools: self.tools,
                 steering_mode: Mutex::new(self.steering_mode),
                 follow_up_mode: Mutex::new(self.follow_up_mode),
-                provider: self.provider,
+                provider: RwLock::new(self.provider),
+                compactor: RwLock::new(self.compactor),
                 hooks: self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),
                 observers: Mutex::new(
                     self.observers
@@ -765,6 +893,8 @@ impl AgentBuilder {
                 next_observer_id: AtomicU64::new(next_observer_id),
                 subscribers: Mutex::new(Vec::new()),
                 next_subscriber_id: AtomicU64::new(0),
+                lossless_subscribers: Mutex::new(Vec::new()),
+                next_lossless_subscriber_id: AtomicU64::new(0),
                 next_run_id: AtomicU64::new(0),
                 idle_notifier: IdleNotifier::default(),
             }),
