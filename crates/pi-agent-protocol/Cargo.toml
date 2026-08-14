@@ -1,0 +1,15 @@
+[package]
+name = "pi-agent-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Stable, runtime-independent protocol contracts for pi-agent"
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+miniserde = { workspace = true }

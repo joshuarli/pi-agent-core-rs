@@ -1,0 +1,98 @@
+{
+  "format_version": 1,
+  "kind": "canonical_parity_result",
+  "fixture_id": "parallel-tool-completion-order",
+  "outcome": "completed",
+  "settled": true,
+  "state": {
+    "system_prompt": "Run the supplied tools, then confirm completion.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-parallel-tools"
+    },
+    "thinking_level": "off",
+    "tool_names": ["slow", "fast"],
+    "pending_tool_calls": []
+  },
+  "events": [
+    { "seq": 0, "type": "agent_start", "data": {} },
+    { "seq": 1, "type": "turn_start", "data": { "turn": 0 } },
+    { "seq": 2, "type": "message_start", "data": { "role": "user" } },
+    { "seq": 3, "type": "message_end", "data": { "role": "user" } },
+    { "seq": 4, "type": "message_start", "data": { "role": "assistant" } },
+    { "seq": 5, "type": "message_end", "data": { "role": "assistant" } },
+    {
+      "seq": 6,
+      "type": "tool_execution_start",
+      "data": { "tool_call_id": "call_slow_001", "tool_name": "slow" }
+    },
+    {
+      "seq": 7,
+      "type": "tool_execution_start",
+      "data": { "tool_call_id": "call_fast_001", "tool_name": "fast" }
+    },
+    {
+      "seq": 8,
+      "type": "tool_execution_end",
+      "data": { "tool_call_id": "call_fast_001", "tool_name": "fast", "is_error": false }
+    },
+    {
+      "seq": 9,
+      "type": "tool_execution_end",
+      "data": { "tool_call_id": "call_slow_001", "tool_name": "slow", "is_error": false }
+    },
+    { "seq": 10, "type": "message_start", "data": { "role": "tool_result" } },
+    { "seq": 11, "type": "message_end", "data": { "role": "tool_result" } },
+    { "seq": 12, "type": "message_start", "data": { "role": "tool_result" } },
+    { "seq": 13, "type": "message_end", "data": { "role": "tool_result" } },
+    { "seq": 14, "type": "turn_end", "data": { "stop_reason": "tool_call" } },
+    { "seq": 15, "type": "turn_start", "data": { "turn": 1 } },
+    { "seq": 16, "type": "message_start", "data": { "role": "assistant" } },
+    {
+      "seq": 17,
+      "type": "message_update",
+      "data": { "role": "assistant", "delta": "complete" }
+    },
+    { "seq": 18, "type": "message_end", "data": { "role": "assistant" } },
+    { "seq": 19, "type": "turn_end", "data": { "stop_reason": "stop" } },
+    { "seq": 20, "type": "agent_end", "data": {} },
+    { "seq": 21, "type": "agent_settled", "data": { "outcome": "completed" } }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [{ "type": "text", "text": "Run both tools." }]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "tool_call", "id": "call_slow_001", "name": "slow", "arguments": {} },
+        { "type": "tool_call", "id": "call_fast_001", "name": "fast", "arguments": {} }
+      ]
+    },
+    {
+      "role": "tool_result",
+      "content": [{ "type": "text", "text": "slow result" }]
+    },
+    {
+      "role": "tool_result",
+      "content": [{ "type": "text", "text": "fast result" }]
+    },
+    {
+      "role": "assistant",
+      "content": [{ "type": "text", "text": "complete" }]
+    }
+  ],
+  "last_response": {
+    "api": "fixture",
+    "stop_reason": "stop"
+  },
+  "usage": {
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "cache_write": 0,
+    "total_tokens": 0
+  },
+  "error": null
+}

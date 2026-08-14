@@ -1,0 +1,61 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "single-turn-text",
+  "description": "A deterministic single-turn response with one coalesced text update.",
+  "setup": {
+    "system_prompt": "Reply with exactly the requested sentence.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-text"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Return exactly: fixture capture succeeded."
+    }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "fixture capture succeeded."
+        },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": []
+  },
+  "assertions": {
+    "outcome": "completed",
+    "event_types": [
+      "agent_start",
+      "turn_start",
+      "message_start:user",
+      "message_end:user",
+      "message_start:assistant",
+      "message_update:assistant",
+      "message_end:assistant",
+      "turn_end",
+      "agent_end",
+      "agent_settled"
+    ],
+    "assistant_text": "fixture capture succeeded."
+  }
+}

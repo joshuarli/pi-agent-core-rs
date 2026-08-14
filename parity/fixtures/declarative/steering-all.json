@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "steering-all",
+  "description": "The all queue mode injects all available steering messages into one initial model turn.",
+  "setup": {
+    "system_prompt": "Respond deterministically.",
+    "model": { "provider": "fixture", "id": "deterministic-steering-all" },
+    "thinking_level": "off",
+    "steering_mode": "all",
+    "tools": []
+  },
+  "actions": [
+    { "kind": "steer", "text": "first steering" },
+    { "kind": "steer", "text": "second steering" },
+    { "kind": "prompt", "text": "initial prompt" }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "response" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": { "tools": [] },
+  "assertions": { "outcome": "completed", "assistant_text": "response" }
+}

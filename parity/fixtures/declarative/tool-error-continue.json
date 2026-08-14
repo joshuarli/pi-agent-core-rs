@@ -1,0 +1,71 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "tool-error-continue",
+  "description": "A host tool error is recorded as a tool-result message and the model receives a recovery turn.",
+  "setup": {
+    "system_prompt": "Use the echo tool when a tool call is supplied.",
+    "model": { "provider": "fixture", "id": "deterministic-tool-error" },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return the supplied text.",
+        "parameters": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "text": { "type": "string" } }
+        }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Attempt an echo, then recover." }],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "tool_call",
+          "id": "call_error_001",
+          "name": "echo",
+          "arguments": { "text": "hello" }
+        },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "recovered" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0 }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "echo",
+        "calls": [
+          {
+            "arguments": { "text": "hello" },
+            "result": {
+              "is_error": true,
+              "content": [{ "type": "text", "text": "fixture execution failed" }]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "recovered",
+    "tool_results": [{ "is_error": true }]
+  }
+}

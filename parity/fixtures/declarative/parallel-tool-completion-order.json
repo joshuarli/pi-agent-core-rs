@@ -1,0 +1,123 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "parallel-tool-completion-order",
+  "description": "Parallel tool execution ends in completion order while tool-result context remains assistant source order.",
+  "setup": {
+    "system_prompt": "Run the supplied tools, then confirm completion.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-parallel-tools"
+    },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "slow",
+        "description": "Return a delayed deterministic result.",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "fast",
+        "description": "Return an immediate deterministic result.",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "kind": "prompt",
+      "text": "Run both tools."
+    }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "tool_call",
+          "id": "call_slow_001",
+          "name": "slow",
+          "arguments": {}
+        },
+        {
+          "kind": "tool_call",
+          "id": "call_fast_001",
+          "name": "fast",
+          "arguments": {}
+        },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "kind": "text_delta",
+          "text": "complete"
+        },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "tools": [
+      {
+        "name": "slow",
+        "calls": [
+          {
+            "arguments": {},
+            "yield_once": true,
+            "result": {
+              "is_error": false,
+              "content": [
+                { "type": "text", "text": "slow result" }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "fast",
+        "calls": [
+          {
+            "arguments": {},
+            "result": {
+              "is_error": false,
+              "content": [
+                { "type": "text", "text": "fast result" }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "complete"
+  }
+}

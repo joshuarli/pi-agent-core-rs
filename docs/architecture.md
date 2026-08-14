@@ -1,0 +1,245 @@
+# V0 architecture
+
+The implementation is an executor-owned Rust library with an explicit capability boundary. The
+architecture follows `plan.md`: Rust owns mechanism; callers own transports and capabilities; the
+optional Luau policy plane is downstream and cannot alter the V0 state machine.
+
+## Crate boundaries
+
+```text
+pi-agent-protocol  -> serializable model/message/tool/event/error values
+        ^
+        |
+pi-agent-core      -> Agent state, Run lifecycle, loop, queues, hooks, tool scheduler
+        |
+        +--> pi-agent-trace   (optional immutable event consumer; later V0 milestone)
+        |
+        +--> pi-agent-luau    (optional V1 policy adapter; depends on core only)
+```
+
+The planned workspace crates are:
+
+| Crate | Owns | Must not own |
+| --- | --- | --- |
+| `pi-agent-protocol` | `ModelDescriptor`, messages/content, tool definitions/results, events, usage, stop reasons, typed wire errors | Scheduler state, provider SDKs, Luau types, filesystem APIs |
+| `pi-agent-core` | Agent FSM, one-active-run ownership, context conversion boundary, model stream trait, tool validation/scheduling, hooks/queues, cancellation and settlement | HTTP/provider implementations, cwd/home/config discovery, sessions, TUI, VM/runtime, Tokio executor |
+| `pi-agent-trace` | Immutable event-to-linear-episode recorder, redaction and caller-selected JSONL/CBOR sinks | Agent state, session tree, replay mutations, sink-driven behavior |
+| `pi-agent-luau` (V1) | Hermetic VM, capability manifest/modules, policy hooks/tools, script error/limit translation | Core lifecycle/state/scheduling, ambient OS authority, event-loop ownership |
+
+`PiDefaultCodingProfile` belongs with the explicit profile/tool adapters. It may be a module in
+`pi-agent-core` or a narrowly separated profile crate selected during implementation, but it must
+depend only on the core/protocol boundaries and caller-provided operation traits. It must not import
+the upstream SDK or make upstream source a runtime dependency.
+
+## Ports and adapters
+
+```text
+             caller-owned Smol executor
+                       |
+                       v
+  +------------------------------------------------+
+  | Agent                                         |
+  |  durable state + Run ownership + event reduce |
+  +--------------------+---------------------------+
+                       |
+                 Agent loop FSM
+              /        |          \
+             /         |           \
+    ModelStream      ToolScheduler   Hook/queue ports
+        |                 |                 |
+  caller provider   AgentTool + policy   caller callbacks
+        |                 |                 |
+  no HTTP in core    explicit capabilities  no hidden mailbox
+```
+
+The core consumes a `ModelStream` port with a request containing only model descriptor, system
+prompt, converted messages, ordered tool definitions, thinking level, stream options, and child
+cancellation. A provider adapter may use HTTP, a native model, a world runtime, or a deterministic
+fixture; none of those mechanisms appears in core state.
+
+Tools expose name, description, raw JSON Schema, execution mode, and an async execute operation.
+Preparation/validation and scheduling are generic. A tool receives a call ID, validated JSON,
+cancellation, and an update sink. Standard coding tools are ordinary tools behind explicit profile
+operation ports.
+
+## Ownership and state transitions
+
+One owned `Agent` has exactly zero or one active `Run`. The application owns the `Agent` and drives
+its futures; the core does not create an executor, spawn detached work, or maintain a background
+thread pool. A run owns a child cancellation scope and all in-flight provider/tool/hook work.
+
+```text
+Idle
+  | prompt/continue (reserve run, clear transient state)
+  v
+Active: Starting -> Streaming -> PreparingTools -> ExecutingTools
+                  ^                         |              |
+                  |                         +--------------+
+                  |                                turn end
+                  +------ queue/next-turn -----------+
+                                   |
+                              AgentEnd emitted
+                                   v
+                     Awaiting terminal observers
+                                   |
+                                   v
+                                  Idle
+```
+
+Cancellation or failure can occur in every active state. All terminal paths pass through one
+settlement routine that clears `is_streaming`, partial message, pending tool IDs and active-run
+ownership before allowing reuse. `agent_end` is emitted once as the final event; awaited terminal
+observers may delay the transition to idle. A Rust `Run` drop policy must be chosen and fixture
+tested before exposing the final ergonomic API.
+
+## Event reduction
+
+The event reducer updates the state snapshot before invoking observers:
+
+| Event | State reduction |
+| --- | --- |
+| `message_start` | Set current streaming/message snapshot |
+| `message_update` | Replace current partial assistant snapshot |
+| `message_end` | Clear current snapshot and append message to transcript |
+| `tool_execution_start` | Add call ID to pending set |
+| `tool_execution_update` | Observer/trace data only; pending set unchanged |
+| `tool_execution_end` | Remove call ID from pending set |
+| `turn_end` | Record assistant error text when present |
+| `agent_end` | Clear streaming snapshot; settlement still awaits terminal observers |
+
+The reducer never invokes a tool, provider, filesystem operation, or policy decision. It is the
+single place where runtime-owned state is made observable, so event/state fixtures can compare both
+the event stream and snapshots.
+
+## Model request and message boundary
+
+```text
+AgentMessage[] (host transcript)
+       -> transform_context (optional host-message operation)
+       -> convert_to_llm (explicit filtering/conversion)
+       -> ModelRequest
+       -> AssistantStream events
+       -> AssistantMessage + AgentEvent reduction
+```
+
+The persisted host envelope is versioned if applications need custom messages. The core does not
+invent UI concepts or provider-specific fields. `convert_to_llm` is called only at the model
+boundary; a transform failure, conversion failure, provider protocol violation, or provider
+transport failure has a typed terminal path and cannot bypass cleanup.
+
+## Tool scheduling and ordering
+
+For one assistant message:
+
+```text
+source calls A, B, C
+      |
+      +--> prepare/validate A -> B -> C (always source order)
+      |
+      +--> execute allowed calls concurrently (parallel mode)
+      |       completion: C -> A -> B
+      |
+      +--> tool_execution_end: C -> A -> B
+      |
+      +--> tool-result messages/context: A -> B -> C
+```
+
+Sequential mode performs the entire prepare/execute/finalize/result cycle in source order. The
+selected upstream commit currently serializes the entire batch when any call has a sequential
+override; the mixed-mode fixture in `docs/semantics.md` decides whether V0 preserves that exact
+rule. Partial updates are awaited before a tool end event and ignored after settlement. Tool
+results are inserted in source order even when completion events are not.
+
+## Hooks and policy boundary
+
+Rust hooks are explicit ports:
+
+```text
+before_tool_call -> allow | block(reason, terminate?)
+tool execute     -> result/update/error
+after_tool_call  -> field replacements (no deep merge)
+turn_end         -> prepare_next_turn and/or should_stop_after_turn
+```
+
+Hook callbacks receive the active cancellation scope and typed contexts. They cannot mutate core
+state directly, bypass event reduction, or reorder tool-result insertion. Hook errors are typed and
+follow the fixture-defined abort/block/structured-result rule.
+
+V1 Luau adapters may call those ports, register ordinary Rust tools, request stop, or annotate a
+trace. They cannot own the loop, mutate transcript storage, schedule tools, define queue semantics,
+hold resource ownership, or emit post-settlement events.
+
+## Cancellation and resource ownership
+
+The run's child cancellation scope is passed to provider stream, tool preparation/execution,
+updates, hooks, and queue wait points. Cancellation must settle pending futures and observers,
+prevent post-terminal events, clear pending call IDs, and leave the agent reusable. No operation is
+detached from the run. The application may choose how to run parallel futures on Smol, but the core
+does not spawn or own an executor.
+
+The core has no unsafe Rust and no Tokio type in public or private APIs. Dependency review must
+keep cancellation executor-agnostic and isolate the chosen token implementation behind the core
+contract.
+
+## Default coding profile adapter
+
+The profile is a composition layer over the generic tool port:
+
+```text
+explicit workspace + explicit operation adapters + policy wrapper
+                    |
+                    v
+read / bash / edit / write / grep / find / ls definitions
+                    |
+                    v
+ordered prompt template + raw schemas + tool-local guidance
+```
+
+Profile construction cannot discover cwd, `$HOME`, `.pi`, settings, skills, sessions, or provider
+credentials. A caller may provide a sterile profile or replace every operation. Profile prompt
+bytes, active order, schemas, snippets, guidelines and behavior are versioned fixture data as
+specified in `docs/default-coding-profile.md`.
+
+## Tracing boundary
+
+`pi-agent-trace` consumes immutable typed events after the core reducer. It records a linear
+episode, not a Pi session tree. Redaction is selected by the caller for prompts/tool content;
+trace sink failure is reported separately and cannot change the agent result. No trace, JSONL and
+CBOR runs must have identical core behavior.
+
+## V0/V1 boundary and dependency graph
+
+```text
+V0: protocol <- core <- caller provider/tools/hooks/profile
+                  |
+                  +-> optional trace
+
+V1: protocol <- core <- luau adapter -> mlua/Luau VM
+                                  |
+                                  +-> host capability manifest/world/task/trace ports
+```
+
+`pi-agent-core` must compile and operate without `mlua`, Luau, world APIs, scripting types, Node,
+TypeScript, `napi-rs`, `pi-ai`, or a provider implementation. `pi-agent-luau` may depend on core;
+core must not depend on it. V1 module resolution is host-controlled and closed, with no ambient
+filesystem, process, environment, network, home, cwd, clock, FFI, package registry, native plugin,
+or OS-command authority.
+
+## Architecture decision records to close in Milestone 0
+
+These are small but contract-bearing choices and must be settled from fixtures or dependency
+review before implementation:
+
+| Decision | Required evidence |
+| --- | --- |
+| Stable run/turn/message ID representation and normalization | `identity/plain-and-tool-run` |
+| Awaited observer versus non-blocking subscription API and overflow behavior | `events/observer-edge-cases` |
+| Drop unfinished run policy | `cancel/drop-and-observer` |
+| Cancellation token implementation without Tokio | dependency review + `cancel/checkpoints` |
+| Mixed per-tool sequential override behavior | `tools/mixed-execution` |
+| Canonical JSON Schema serialization/hash | `profile/definitions` |
+| Exact generated default prompt bytes/hash and workspace substitution | `profile/default-prompt` |
+| Typed error hierarchy and failure-to-event mapping | `failure/provider-error`, `cancel/failure-shapes` |
+
+No decision may be resolved by an undocumented fallback. An unresolved item remains
+`investigating` in `docs/parity-ledger.md` and blocks the Milestone 0 exit criterion.

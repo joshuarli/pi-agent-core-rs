@@ -1,0 +1,58 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "follow-up-idle-boundary",
+  "description": "Queued follow-up does not affect the initial request and is injected only when the first turn would otherwise stop.",
+  "setup": {
+    "system_prompt": "Respond to each turn deterministically.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-follow-up"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    { "kind": "follow_up", "text": "follow-up input" },
+    { "kind": "prompt", "text": "initial prompt" }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "first response" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "follow-up response" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": { "tools": [] },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "follow-up response"
+  }
+}

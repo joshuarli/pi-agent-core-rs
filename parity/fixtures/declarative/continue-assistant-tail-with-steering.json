@@ -1,0 +1,59 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "continue-assistant-tail-with-steering",
+  "description": "An assistant-tailed transcript cannot continue directly, but queued steering is promoted to the next prompt run.",
+  "setup": {
+    "system_prompt": "Respond to each turn deterministically.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-continuation"
+    },
+    "thinking_level": "off",
+    "tools": []
+  },
+  "actions": [
+    { "kind": "prompt", "text": "initial prompt" },
+    { "kind": "steer", "text": "queued continuation" },
+    { "kind": "continue" }
+  ],
+  "model_script": [
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "first response" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "continued response" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": { "tools": [] },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "continued response"
+  }
+}

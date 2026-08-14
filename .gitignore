@@ -1,0 +1,12 @@
+/target/
+/.runtime/
+.DS_Store
+
+# The parity pin records the immutable source revision.  This local clone is
+# reproducible cache material and must never become a second repository inside
+# this worktree.
+/parity/upstream/source/
+
+# Parity runners may materialize canonical output here; checked-in fixtures live in
+# `declarative/` and `expected/` instead.
+/parity/fixtures/normalized/*.json

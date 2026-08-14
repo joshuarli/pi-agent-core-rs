@@ -1,0 +1,302 @@
+//! The owned records that make up a V0 trace.
+//!
+//! A trace is deliberately smaller than a session or UI event log.  It has one
+//! header, zero or more turn and tool records, and one terminal record.  The
+//! order in which [`TraceEvent`] values are handed to a sink is the trajectory
+//! order; no tree identifiers or session metadata are implied here.
+
+use std::collections::BTreeMap;
+
+/// Version of the compact trace schema described by this crate.
+pub const TRACE_SCHEMA_VERSION: u16 = 0;
+
+/// The stable, host-assigned number of a model turn within an episode.
+pub type TurnIndex = u32;
+
+/// The first record in an episode.
+///
+/// Metadata is intentionally a deterministic string map.  Hosts that need a
+/// richer representation can encode it before crossing this dependency-free
+/// boundary.  Secrets must be removed before this record is sent to a sink.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EpisodeHeader {
+    /// Host-assigned identifier for the episode.
+    pub episode_id: String,
+    /// Optional host metadata used to identify a run or dataset partition.
+    pub metadata: BTreeMap<String, String>,
+    /// Optional wall-clock time supplied by the host, in milliseconds since
+    /// the Unix epoch.  The trace crate does not read a clock.
+    pub started_at_ms: Option<u64>,
+}
+
+impl EpisodeHeader {
+    /// Creates a header with no ambient metadata or timestamp.
+    pub fn new(episode_id: impl Into<String>) -> Self {
+        Self {
+            episode_id: episode_id.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Adds one deterministic metadata field to this header.
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Attaches a host-provided wall-clock start time.
+    pub fn with_started_at_ms(mut self, started_at_ms: u64) -> Self {
+        self.started_at_ms = Some(started_at_ms);
+        self
+    }
+}
+
+/// One model request/response turn in an episode.
+///
+/// A missing response represents a turn that did not produce a completed
+/// assistant response.  It is preferable to inventing a response merely to
+/// make an incomplete run look successful.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Turn {
+    /// Zero-based turn number within the episode.
+    pub index: TurnIndex,
+    /// Redacted model input or a compact host-defined representation of it.
+    pub input: String,
+    /// Redacted assistant output, when one was produced.
+    pub output: Option<String>,
+    /// Host/model stop reason, if one is available.
+    pub stop_reason: Option<String>,
+}
+
+/// Domain spelling for [`Turn`] when the caller wants to emphasize that the
+/// record represents a model turn.
+pub type ModelTurn = Turn;
+
+impl Turn {
+    /// Creates a turn with an input and no response yet.
+    pub fn new(index: TurnIndex, input: impl Into<String>) -> Self {
+        Self {
+            index,
+            input: input.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Sets the assistant output for this turn.
+    pub fn with_output(mut self, output: impl Into<String>) -> Self {
+        self.output = Some(output.into());
+        self
+    }
+
+    /// Sets the host/model stop reason for this turn.
+    pub fn with_stop_reason(mut self, stop_reason: impl Into<String>) -> Self {
+        self.stop_reason = Some(stop_reason.into());
+        self
+    }
+}
+
+/// One tool request and its eventual result.
+///
+/// V0 keeps request and result together so a compact linear sink can write one
+/// record per execution.  A failed tool is represented by [`Tool::error`],
+/// rather than by a sink error: tool failure is part of the trajectory.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tool {
+    /// Turn that requested the tool.
+    pub turn_index: TurnIndex,
+    /// Stable identifier for the request, supplied by the runtime.
+    pub call_id: String,
+    /// Tool name as exposed to the model.
+    pub name: String,
+    /// Redacted tool arguments.
+    pub input: String,
+    /// Redacted tool result, when execution completed successfully.
+    pub output: Option<String>,
+    /// Redacted tool failure, when execution failed.
+    pub error: Option<String>,
+}
+
+/// Domain spelling for [`Tool`] when the caller wants to emphasize execution.
+pub type ToolExecution = Tool;
+
+impl Tool {
+    /// Creates a pending tool record.
+    pub fn new(
+        turn_index: TurnIndex,
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        input: impl Into<String>,
+    ) -> Self {
+        Self {
+            turn_index,
+            call_id: call_id.into(),
+            name: name.into(),
+            input: input.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Marks this tool record as successful.
+    pub fn with_output(mut self, output: impl Into<String>) -> Self {
+        self.output = Some(output.into());
+        self.error = None;
+        self
+    }
+
+    /// Marks this tool record as failed.
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        self.error = Some(error.into());
+        self.output = None;
+        self
+    }
+
+    /// Reports whether this record contains a tool failure.
+    pub fn is_failure(&self) -> bool {
+        self.error.is_some()
+    }
+}
+
+/// Why an episode stopped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum EndReason {
+    /// The agent completed normally.
+    #[default]
+    Completed,
+    /// The host cancelled the episode.
+    Cancelled,
+    /// The runtime or model failed.
+    Failed,
+    /// The host stopped the episode for a reason outside the runtime.
+    Aborted,
+    /// A host-defined reason that is still part of the terminal record.
+    Other(String),
+}
+
+/// The final record in an episode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EpisodeEnd {
+    /// Why the episode ended.
+    pub reason: EndReason,
+    /// Optional redacted diagnostic associated with a failed or aborted run.
+    pub error: Option<String>,
+    /// Optional host-provided wall-clock end time in milliseconds since the
+    /// Unix epoch.  The trace crate does not read a clock.
+    pub finished_at_ms: Option<u64>,
+}
+
+impl EpisodeEnd {
+    /// Creates a terminal record for a normal completion.
+    pub fn completed() -> Self {
+        Self::default()
+    }
+
+    /// Creates a terminal record for host cancellation.
+    pub fn cancelled() -> Self {
+        Self {
+            reason: EndReason::Cancelled,
+            ..Self::default()
+        }
+    }
+
+    /// Creates a terminal record for a runtime or model failure.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            reason: EndReason::Failed,
+            error: Some(error.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Attaches a host-provided wall-clock end time.
+    pub fn with_finished_at_ms(mut self, finished_at_ms: u64) -> Self {
+        self.finished_at_ms = Some(finished_at_ms);
+        self
+    }
+}
+
+/// One append-only record in a V0 episode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraceEvent {
+    /// Must be the first record in an episode.
+    EpisodeHeader(EpisodeHeader),
+    /// A model request/response turn.
+    Turn(Turn),
+    /// A tool request and result.
+    Tool(Tool),
+    /// Must be the final record in an episode.
+    EpisodeEnd(EpisodeEnd),
+}
+
+impl TraceEvent {
+    /// Creates the episode-header event.
+    pub fn episode_header(header: EpisodeHeader) -> Self {
+        Self::EpisodeHeader(header)
+    }
+
+    /// Creates a model-turn event.
+    pub fn model_turn(turn: Turn) -> Self {
+        Self::Turn(turn)
+    }
+
+    /// Creates a tool-execution event.
+    pub fn tool_execution(tool: Tool) -> Self {
+        Self::Tool(tool)
+    }
+
+    /// Creates the episode-end event.
+    pub fn episode_end(end: EpisodeEnd) -> Self {
+        Self::EpisodeEnd(end)
+    }
+
+    /// Returns the stable kind of this event without exposing its payload.
+    pub const fn kind(&self) -> TraceEventKind {
+        match self {
+            Self::EpisodeHeader(_) => TraceEventKind::EpisodeHeader,
+            Self::Turn(_) => TraceEventKind::Turn,
+            Self::Tool(_) => TraceEventKind::Tool,
+            Self::EpisodeEnd(_) => TraceEventKind::EpisodeEnd,
+        }
+    }
+
+    /// Whether this event closes its episode.
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::EpisodeEnd(_))
+    }
+}
+
+impl From<EpisodeHeader> for TraceEvent {
+    fn from(value: EpisodeHeader) -> Self {
+        Self::EpisodeHeader(value)
+    }
+}
+
+impl From<Turn> for TraceEvent {
+    fn from(value: Turn) -> Self {
+        Self::Turn(value)
+    }
+}
+
+impl From<Tool> for TraceEvent {
+    fn from(value: Tool) -> Self {
+        Self::Tool(value)
+    }
+}
+
+impl From<EpisodeEnd> for TraceEvent {
+    fn from(value: EpisodeEnd) -> Self {
+        Self::EpisodeEnd(value)
+    }
+}
+
+/// The finite set of event kinds in the V0 contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceEventKind {
+    /// Episode header.
+    EpisodeHeader,
+    /// Model turn.
+    Turn,
+    /// Tool execution.
+    Tool,
+    /// Episode end.
+    EpisodeEnd,
+}

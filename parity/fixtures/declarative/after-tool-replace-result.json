@@ -1,0 +1,91 @@
+{
+  "format_version": 1,
+  "kind": "declarative_parity_fixture",
+  "id": "after-tool-replace-result",
+  "description": "The after-tool policy replaces final content and error state before tool-end and tool-result events.",
+  "setup": {
+    "system_prompt": "Use the echo tool when supplied.",
+    "model": {
+      "provider": "fixture",
+      "id": "deterministic-after-hook"
+    },
+    "thinking_level": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Return the supplied text.",
+        "parameters": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "text": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "actions": [{ "kind": "prompt", "text": "Attempt an echo, then recover." }],
+  "model_script": [
+    {
+      "chunks": [
+        {
+          "kind": "tool_call",
+          "id": "call_after_001",
+          "name": "echo",
+          "arguments": { "text": "hello" }
+        },
+        {
+          "kind": "done",
+          "stop_reason": "tool_call",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "chunks": [
+        { "kind": "text_delta", "text": "recovered" },
+        {
+          "kind": "done",
+          "stop_reason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host": {
+    "after_tool_call": {
+      "tool_name": "echo",
+      "content": "after-hook replacement",
+      "is_error": true
+    },
+    "tools": [
+      {
+        "name": "echo",
+        "calls": [
+          {
+            "arguments": { "text": "hello" },
+            "result": {
+              "is_error": false,
+              "content": [{ "type": "text", "text": "host result" }]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assertions": {
+    "outcome": "completed",
+    "assistant_text": "recovered"
+  }
+}

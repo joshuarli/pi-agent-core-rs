@@ -1,0 +1,118 @@
+# Pi upstream parity pin
+
+This parity target is the Pi monorepo at the canonical URL below. GitHub currently
+redirects the historical `badlogic/pi-mono` URL to this repository; both names resolve
+to the same `main` commit at this pin.
+
+Repository: https://github.com/earendil-works/pi.git
+Historical URL: https://github.com/badlogic/pi-mono.git
+Branch: `main`
+Commit: `9d2ec7ffabe927bfad2214c1cee25b6632a78dcf`
+Commit subject: `fix(ai): use pi user agent for Kimi Coding requests`
+Commit timestamp: `2026-08-13T22:26:38+02:00`
+Checked out at: `parity/upstream/source`
+
+The source checkout is intentionally shallow (`--depth 1`) and detached at the exact
+commit above. Verify it with:
+
+```text
+git -C parity/upstream/source rev-parse HEAD
+git -C parity/upstream/source ls-remote origin HEAD
+```
+
+## Package and runtime reproducibility
+
+The pinned package versions are:
+
+* `@earendil-works/pi-agent-core`: `0.84.1`
+* `@earendil-works/pi-ai`: `0.84.1` (protocol/type dependency)
+* `@earendil-works/pi-coding-agent`: `0.84.1` (default coding profile source)
+
+The source root requires Node `>=22.19.0` (`package.json:engines.node`). The checkout was
+inspected with Node `v26.5.0` and npm `11.7.0`; these are observations, not a new runtime
+requirement. Dependency resolution is npm lockfile v3 from
+`parity/upstream/source/package-lock.json` (SHA-256:
+`01bb5df57ed0de4f308ed1b88b4536e43a0b61ce82b0eff3fcb1b922176c3c4c`). The source `.npmrc`
+sets `save-exact=true` and `min-release-age=2`.
+
+Install the locked fixture-runner dependencies from the pin with:
+
+```text
+cd parity/upstream/source
+npm ci --ignore-scripts
+```
+
+At this checkout, `npm run build:offline` stops before completion because the source omits
+`packages/ai/src/providers/data/amazon-bedrock.json` and its `check:model-data` script asks for
+`npm run hydrate:model-data`. That model-catalog hydration is not required by the selected
+agent/profile fixtures and must not become a hidden network prerequisite for parity.
+
+The parity runner is an in-process TypeScript fixture. Invoke the checked-in runners directly
+with `./node_modules/.bin/tsx ../<runner>.mts ...` from `parity/upstream/source`; they import the
+selected SDK source modules and must not invoke the `pi` executable or any Pi CLI. No upstream CLI
+runner was used to establish this pin.
+
+## Exact agent SDK semantic locations
+
+The package public surface is re-exported by `packages/agent/src/index.ts:43-45,144-145`.
+The behavior oracle is split as follows:
+
+* `packages/agent/src/agent.ts:97-238` — `AgentOptions`, `Agent`, default queue modes,
+  default parallel tool execution, and state construction.
+* `packages/agent/src/agent.ts:240-345` — awaited subscriptions, queue APIs, abort,
+  `waitForIdle`, reset, and prompt/continue preconditions.
+* `packages/agent/src/agent.ts:409-535` — context snapshots, loop configuration,
+  lifecycle settlement, failure-to-assistant-message conversion, and idle reset.
+* `packages/agent/src/agent.ts:537-591` — event reducer and awaited listener ordering.
+* `packages/agent/src/agent-loop.ts:27-275` — `agentLoop`, `agentLoopContinue`, prompt
+  insertion, turn/steering/follow-up transitions, and `agent_end`.
+* `packages/agent/src/agent-loop.ts:281-372` — stream event to message lifecycle mapping.
+* `packages/agent/src/agent-loop.ts:408-554` — sequential/parallel tool scheduling,
+  completion/event order, and batch termination.
+* `packages/agent/src/agent-loop.ts:586-765` — argument preparation/validation,
+  before/after hooks, thrown-tool-error conversion, cancellation, and result metadata.
+* `packages/agent/src/agent-loop.ts:777-796` — `ToolResultMessage` construction and
+  message events.
+* `packages/agent/src/types.ts:149-293` — `AgentLoopConfig` contracts for conversion,
+  context transforms, queues, tool execution, hooks, and early termination.
+* `packages/agent/src/types.ts:328-419` — `AgentState`, `AgentToolResult`, `AgentTool`,
+  and `AgentContext` contracts.
+* `packages/agent/src/types.ts:421-443` — complete `AgentEvent` lifecycle union:
+  `agent_start`, `turn_start`, message events, tool execution events, `turn_end`, and
+  `agent_end`.
+
+## Exact default coding prompt/tool locations
+
+The programmatic coding-agent SDK exports the profile factories at
+`packages/coding-agent/src/core/sdk.ts:116-128`. Its initial default active tool names
+are explicitly `['read', 'bash', 'edit', 'write']` at `sdk.ts:247-254`; settings and
+caller allow/exclude lists can replace that set. Factory ordering for the default profile
+is `read, bash, edit, write` at `packages/coding-agent/src/core/tools/index.ts:138-175`.
+All seven built-in definitions and factories (`read`, `bash`, `edit`, `write`, `grep`,
+`find`, `ls`) are enumerated at `index.ts:81-115,156-195`.
+
+Prompt assembly is `packages/coding-agent/src/core/system-prompt.ts:8-25,27-162`:
+`buildSystemPrompt` selects active tools, filters visible snippets, de-duplicates
+guidelines in insertion order, adds the two unconditional guidelines, emits the ordered
+prompt template, and appends the explicit working directory. Session-level rebuilding
+and active-tool replacement are `packages/coding-agent/src/core/agent-session.ts:897-943`
+and `1023-1057`.
+
+Each tool's prompt snippet/guidelines and definition/schema are in the following exact
+locations:
+
+* `core/tools/read.ts:21-32,209-221,356-357` — `readSchema`,
+  `readToolSystemPromptContribution`, `createReadToolDefinition`, `createReadTool`.
+* `core/tools/bash.ts:41-51,322-337,502-509` — bash schema/contribution and factories.
+* `core/tools/edit.ts:34-66,298-310,441-442` — edit schema/contribution and factories.
+* `core/tools/write.ts:15-25,187-199,272-273` — write schema/contribution and factories.
+* `core/tools/grep.ts:24-44,128-138,388-389` — grep schema/contribution and factories.
+* `core/tools/find.ts:29-42,123-133,378-379` — find schema/contribution and factories.
+* `core/tools/ls.ts:14-24,100-110,228-229` — ls schema/contribution and factories.
+
+The default snippets are, in order: `Read file contents`; `Execute bash commands
+(ls, grep, find, etc.)`; `Make precise file edits with exact text replacement, including
+multiple disjoint edits in one call`; and `Create or overwrite files`. Their default
+guidelines are carried by the corresponding `*ToolSystemPromptContribution` symbols;
+`grep`, `find`, and `ls` contribute no guideline bullets. The default prompt always adds
+`Be concise in your responses` and `Show file paths clearly when working with files`.

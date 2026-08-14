@@ -89,14 +89,15 @@ parity/UPSTREAM_COMMIT
 ```text
 packages/agent/              # kernel behavior
 packages/ai/                 # only for protocol/type understanding
-packages/coding-agent/core/system-prompt.ts
-packages/coding-agent/core/tools/  # default profile only
+packages/coding-agent/src/core/system-prompt.ts
+packages/coding-agent/src/core/tools/  # default profile only
 ```
 
-5. Do **not** treat the rest of `packages/coding-agent` as an implementation target.
+5. Do **not** treat the rest of `packages/coding-agent`, Pi's interactive application, or any
+   session/UI package as an implementation target.
 
-The listed system-prompt and tool modules are an explicit profile specification, not permission
-to import session, UI, configuration, resource-discovery, or extension behavior.
+The listed coding-agent system-prompt and tool modules are an explicit profile specification, not
+permission to import session, UI, configuration, resource-discovery, or extension behavior.
 
 Create:
 
@@ -367,13 +368,14 @@ stable-Rust or MSRV compatibility target.
 For example:
 
 ```rust
-#[async_trait]
+type ModelFuture<'a> = Pin<Box<dyn Future<Output = Result<AssistantStream, ModelTransportError>> + Send + 'a>>;
+
 pub trait ModelStream: Send + Sync {
-    async fn stream(
-        &self,
+    fn stream<'a>(
+        &'a self,
         request: ModelRequest,
         cancel: CancellationToken,
-    ) -> Result<AssistantStream, ModelTransportError>;
+    ) -> ModelFuture<'a>;
 }
 ```
 
@@ -398,7 +400,7 @@ Something like:
 pub struct ModelDescriptor {
     pub provider: String,
     pub id: String,
-    pub metadata: serde_json::Value,
+    pub metadata: JsonValue,
 }
 ```
 
@@ -429,7 +431,7 @@ A future provider crate may be added, but provider implementation is not part of
 
 Create a small stable protocol crate.
 
-Use `serde` types for:
+Use explicit Rust protocol types plus Miniserde JSON codecs for:
 
 ```text
 ModelDescriptor
@@ -502,23 +504,24 @@ execute callback
 
 It should not contain tool-specific scheduling paths.
 
-Suggested abstraction:
+Use a standard-future boundary; do not add `async-trait` merely to spell this trait:
 
 ```rust
-#[async_trait]
+type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>>;
+
 pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn schema(&self) -> &serde_json::Value;
+    fn schema(&self) -> &JsonValue;
 
     fn execution_mode(&self) -> Option<ToolExecutionMode>;
 
-    async fn execute(
-        &self,
+    fn execute<'a>(
+        &'a self,
         call: ToolCall,
         cancel: CancellationToken,
         updates: ToolUpdateSink,
-    ) -> Result<ToolResult, ToolError>;
+    ) -> ToolFuture<'a>;
 }
 ```
 

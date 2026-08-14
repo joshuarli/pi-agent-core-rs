@@ -1,0 +1,308 @@
+# Milestone 0 runtime semantics
+
+This is the contract to pin with deterministic in-process fixtures before substantial Rust loop
+work. Paths below refer to the checkout selected by `parity/UPSTREAM_COMMIT`. The current source
+provides useful evidence, but a fixture is required for every edge where a provider, observer,
+or callback can affect externally visible settlement.
+
+## Vocabulary and identity
+
+An **agent** owns durable transcript/configuration state and can have at most one active **run**.
+A run is one `prompt` or `continue` invocation together with all turns, tool work, queue drains,
+observers, and terminal settlement caused by that invocation. A **turn** starts at
+`turn_start`, contains one assistant response and its tool work/results, and ends at `turn_end`.
+A **message** is a transcript item; a **tool call** is an assistant content block and has the
+provider-supplied `toolCallId`.
+
+The upstream public events do not currently carry run, turn, or message IDs. V0 protocol events
+must still have stable correlation IDs. The upstream fixture adapter assigns deterministic IDs in
+source order and records the mapping; the comparator strips only those adapter-generated IDs when
+the upstream event has no equivalent. `toolCallId` is semantic and is never normalized.
+
+### Identity fixture to resolve
+
+```json
+{
+  "scenario": "identity/plain-and-tool-run",
+  "prompt": "first",
+  "provider_script": ["assistant text", "assistant tool call", "assistant text"],
+  "expected": {
+    "run_ids": ["<stable-per-run>", "<new-on-next-run>"],
+    "turn_ids": ["<one-per-turn>"],
+    "message_ids": ["<source-order-or-provider-id>"],
+    "tool_call_ids": ["<provider-id-preserved>"],
+    "normalization": ["generated-id"]
+  }
+}
+```
+
+The fixture must answer whether IDs are monotonic counters, UUID-like values, or adapter-only
+correlation fields. It must also prove that a second run receives a distinct run ID and that IDs
+are not reused after cancellation.
+
+## Agent state and snapshots
+
+The durable state is:
+
+```text
+system_prompt: string
+model: ModelDescriptor
+thinking_level: off | minimal | low | medium | high | xhigh | max
+tools: ordered list of AgentTool definitions
+messages: ordered list of AgentMessage values
+```
+
+The runtime-owned snapshot is:
+
+```text
+is_streaming: bool
+streaming_message: optional partial/final assistant or current message snapshot
+pending_tool_calls: set of toolCallId values
+error_message: optional string from the most recent failed/aborted assistant turn
+active_run: optional RunSnapshot
+```
+
+State inspection returns a snapshot. It never exposes a mutable borrow into the loop. Assigning a
+new message/tool list copies the top-level list; message/content values remain explicit owned
+protocol data.
+
+The terminal invariant is true after every successful, failed, or cancelled run:
+
+```text
+is_streaming == false
+streaming_message is absent
+pending_tool_calls is empty
+active_run is absent
+```
+
+The transcript and `error_message` follow the normalized terminal event result. A later prompt may
+reuse the same agent without reset; `reset` is only legal while idle and clears transcript, queues,
+runtime state, and error.
+
+## Active-run contract
+
+The active-run contract is intentionally explicit because it is the boundary most likely to be
+blurred by an async Rust API.
+
+| Operation/state | Required behavior | Fixture assertion |
+| --- | --- | --- |
+| Start | Reserve the run before emitting `agent_start`; set streaming true and clear streaming/error transient state | Observer sees active run during first event |
+| Direct `prompt` while active | Reject with a typed busy error; do not append input or emit events | Transcript/event stream unchanged |
+| Direct `continue` while active | Reject with typed busy error | Same |
+| `steer` while active or idle | Append to steering queue; never start a run implicitly | Message is injected at the documented drain point of an explicit run |
+| `follow_up` while active or idle | Append to follow-up queue; never start a run implicitly | Message waits until the run would otherwise stop |
+| `abort` idle | No-op | No new run/events |
+| `abort` active | Idempotently signal the child cancellation scope | One terminal outcome and no duplicate settlement |
+| `wait_for_idle` idle | Resolve immediately | No active run |
+| `wait_for_idle` active | Resolve only after terminal event observers settle | Delayed `agent_end` observer holds logical busy state |
+| Drop unfinished run | **Fixture required:** cancel-and-settle or reject/drop prohibition | No orphaned work either way |
+| Finish | Clear transient state before making the agent idle; resolve run exactly once | Next prompt can run normally |
+
+The current upstream `Agent` rejects direct `prompt`/`continue` while `activeRun` exists, exposes
+`abort`, and awaits `subscribe` listeners in registration order. The fixture must pin error shape,
+drop behavior, reentrancy, observer failure, and whether a callback may enqueue messages before the
+next drain point.
+
+### Exact active-run fixture template
+
+```json
+{
+  "scenario": "active-run/<case>",
+  "initial_state": {"messages": [], "tools": []},
+  "actions": [
+    {"at": "before_first_event", "call": "prompt", "input": "hello"},
+    {"at": "during_model_stream", "call": "prompt", "input": "illegal-direct-prompt"},
+    {"at": "during_model_stream", "call": "continue"},
+    {"at": "during_model_stream", "call": "steer", "message": "steer-me"},
+    {"at": "during_model_stream", "call": "follow_up", "message": "follow-me"},
+    {"at": "after_agent_end_before_observer_settlement", "call": "wait_for_idle"},
+    {"at": "observer_settled", "call": "prompt", "input": "reuse"}
+  ],
+  "expected": {
+    "busy_errors": [{"operation": "prompt", "kind": "<typed-kind>"}, {"operation": "continue", "kind": "<typed-kind>"}],
+    "event_order": ["<fill from event grammar>"],
+    "queue_drain_order": ["<fill>"],
+    "idle_observed_before_reuse": true,
+    "terminal_state": {"is_streaming": false, "streaming_message": null, "pending_tool_calls": []}
+  }
+}
+```
+
+## Event contract
+
+Events are emitted in this order and awaited by the active run's event observer:
+
+```text
+agent_start
+turn_start
+message_start*
+message_update*
+message_end
+tool_execution_start*
+tool_execution_update*
+tool_execution_end*
+message_start*
+message_end*
+turn_end
+... (more turns)
+agent_end
+```
+
+The stars are constrained, not arbitrary: prompt messages have start/end with no assistant update;
+assistant streaming has one start, zero or more updates, and one end; tool-result messages have
+start/end and no assistant update; every tool start has at most one matching end. A run has exactly
+one `agent_start` and exactly one terminal `agent_end`, including normal, error, and cancellation
+outcomes. `agent_end` is the final emitted event, although its awaited observers may still keep the
+run logically busy.
+
+### Plain generation grammar
+
+For a prompt run where the provider emits an assistant stream and no tools:
+
+```text
+agent_start
+turn_start
+message_start(user prompt)
+message_end(user prompt)
+message_start(assistant partial)       # omit if provider has no start event
+message_update*                        # assistant stream events only
+message_end(assistant final)
+turn_end(assistant, [])
+agent_end(all new messages)
+```
+
+If the provider returns a final assistant message without a `start` event, the current upstream
+loop emits `message_start(final)` immediately before `message_end(final)`. This distinction must
+remain visible in fixture results.
+
+### Tool grammar and ordering
+
+For each assistant message containing tool calls, preparation starts in assistant/source order.
+Each call emits `tool_execution_start` before validation/preparation finishes. Unknown tools,
+invalid arguments, blocked calls, and aborted preparation produce immediate error results and still
+emit `tool_execution_end` and a tool-result message.
+
+Sequential mode prepares, executes, finalizes, and inserts each result before the next call. In
+parallel mode preparation remains source ordered; allowed executions overlap; each
+`tool_execution_end` is emitted in actual finalization/completion order, while tool-result message
+events and context insertion are assistant/source ordered. The current upstream implementation
+switches the entire batch to sequential when any call has a per-tool `executionMode: "sequential"`;
+the mixed-batch fixture must pin whether that is the target at the selected commit.
+
+Updates are emitted during execution. Updates queued before the tool promise settles are awaited
+before its end event; callbacks after settlement are ignored. An end event contains the finalized
+result and error flag. `afterToolCall` replacement is field-by-field (`content`, `details`, `usage`,
+`isError`, `terminate`) with no deep merge. `terminate` is a boolean replacement and only `true`
+contributes to the all-calls termination rule.
+
+### Event observer and subscription contract
+
+The target distinguishes an awaited `EventObserver` from a non-blocking observational subscription.
+The upstream public `subscribe` currently behaves as an awaited listener: listeners run in
+registration order, receive the run signal, and `agent_end` listener settlement precedes idle.
+V0 must pin the Rust adaptation rather than silently conflating these meanings.
+
+```text
+event emitted/reduced into state
+        -> awaited observer(s), registration order
+        -> terminal observer settles
+        -> run resolves and active state clears
+```
+
+Fixture cases:
+
+```text
+observer-before-first-event
+observer-registration-order
+observer-sees-reduced-state
+agent-end-observer-delays-idle
+observer-cancelled-with-run
+observer-error
+observer-unsubscribe-during-callback
+slow/dropped observational subscriber capacity and overflow
+```
+
+The last two subscription cases are `investigating` until an upstream-compatible Rust contract is
+recorded. A non-blocking subscriber must never hold a run open indefinitely.
+
+## Streaming and context boundary
+
+Before every model request, apply `transform_context` (if present) to host `AgentMessage` values,
+then `convert_to_llm`. Build the request from the current system prompt, model, thinking level,
+converted messages, and ordered tool definitions. A transform can prune/inject host messages;
+conversion can filter them or map them to user/assistant/tool-result messages. No UI/session
+message type is invented by the core.
+
+The provider stream is a caller-supplied abstraction. It reports assistant start/partial/update/end
+or a final error/aborted message. The core owns the partial-message snapshot and updates transcript
+state only through event reduction. Provider transport details and `pi-ai` types do not cross the
+Rust core boundary.
+
+## Queues and turn transitions
+
+The two explicit queues have independent modes: `all` drains every item at a drain point;
+`one-at-a-time` drains only the oldest item. They are not a general mailbox.
+
+| Drain point | Queue | Behavior |
+| --- | --- | --- |
+| Before first model request (prompt run) | steering | Inject messages unless the caller explicitly consumed the continue/steering special case |
+| After assistant tool batch and `turn_end` | steering | Inject before another model request; tool calls from the just-finished message are not skipped |
+| When no tool calls and no steering remain | follow-up | Inject and continue another turn |
+| `should_stop_after_turn == true` | neither | Emit `agent_end` first; do not poll queues |
+| Cancellation | neither | Stop draining; preserve or clear queued messages only as the pinned fixture says |
+
+`continue` requires a non-empty transcript whose last message is not assistant. If the last message
+is assistant, queued steering/follow-up handling is pinned separately; otherwise it is an error.
+Queue mode, mixed queue ordering, messages arriving during tool work, and cancellation with queued
+messages each require a declarative fixture.
+
+## Cancellation and failure
+
+Cancellation is a child scope owned by the run and passed to model streaming, tool preparation,
+tool execution, hooks, and queue waits. Required deterministic checkpoints are:
+
+```text
+before first model token
+between streamed chunks
+before tool preparation
+while one tool runs
+while parallel tools run
+after tools, before next model request
+while before/after/next-turn hook is pending
+while queue wait is pending
+```
+
+Abort is idempotent. There are no events after terminal settlement, no orphaned model/tool/hook
+work, no pending tool IDs, and the same agent accepts a subsequent prompt. The terminal outcome
+must distinguish transport failure, model error, model abort, tool failure, hook failure, protocol
+violation, schema failure, caller cancellation, and internal invariant failure. Expected failures
+are typed results, never Rust panics or an unclassified `anyhow::Error`.
+
+The current upstream wrapper synthesizes an assistant failure message and emits
+`message_start`, `message_end`, `turn_end`, `agent_end` when the loop itself throws; provider
+streams can instead return an assistant `stopReason` of `error` or `aborted`. Fixtures must retain
+that distinction and pin error-message placement.
+
+## Exact event fixture template
+
+```json
+{
+  "scenario": "events/<plain|tool|parallel|cancel|failure>",
+  "provider_script": [{"request": "<predicate>", "events": ["<stream events>"]}],
+  "tool_script": [{"name": "<tool>", "prepare": "<result>", "delay": "<clock step>", "updates": ["<partial>"]}],
+  "observer_script": [{"event": "<type>", "action": "record|await|abort|enqueue|fail"}],
+  "external_actions": [{"at": "<checkpoint>", "action": "abort|steer|follow_up"}],
+  "expected": {
+    "events": ["<canonical event objects in exact order>"],
+    "provider_requests": ["<normalized request objects in order>"],
+    "tool_invocations": ["<preparation and execution observations>"],
+    "messages": ["<source-order context messages>"],
+    "terminal_outcome": "success|transport_error|model_error|aborted|tool_error|hook_error|protocol_error|schema_error|cancelled|invariant_error",
+    "state": {"is_streaming": false, "pending_tool_calls": [], "streaming_message": null},
+    "normalization": ["timestamps only", "generated IDs only", "durations only"]
+  }
+}
+```
+
+No fixture may embed runner-specific callbacks or arbitrary Rust/TypeScript code. The scenario
+language is declarative so upstream and Rust execute the same schedule.
