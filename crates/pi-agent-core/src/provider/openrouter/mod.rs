@@ -72,6 +72,8 @@ pub struct OpenRouterErrorReport {
     pub attempt: u32,
     /// Total response body bytes captured before parsing.
     pub response_bytes: Option<usize>,
+    /// Total request payload bytes sent to the provider.
+    pub request_bytes: Option<usize>,
     /// Bounded, redacted response body prefix for trusted diagnostics.
     pub response_prefix: Option<String>,
 }
@@ -91,6 +93,9 @@ impl fmt::Display for OpenRouterErrorReport {
         }
         if let Some(response_bytes) = self.response_bytes {
             write!(formatter, " response_bytes={response_bytes}")?;
+        }
+        if let Some(request_bytes) = self.request_bytes {
+            write!(formatter, " request_bytes={request_bytes}")?;
         }
         if let Some(response_prefix) = &self.response_prefix {
             write!(formatter, " response_prefix={response_prefix:?}")?;
@@ -270,6 +275,7 @@ impl OpenRouterProvider {
                 retryable: false,
                 attempt: 0,
                 response_bytes: None,
+                request_bytes: None,
                 response_prefix: None,
             });
             message
@@ -282,6 +288,7 @@ impl OpenRouterProvider {
                 retryable: false,
                 attempt: 0,
                 response_bytes: None,
+                request_bytes: None,
                 response_prefix: None,
             });
             message
@@ -325,6 +332,7 @@ impl OpenRouterProvider {
                     retryable,
                     attempt: attempts,
                     response_bytes: None,
+                    request_bytes: Some(payload.len()),
                     response_prefix: None,
                 });
                 RetryableError { retryable, message }
@@ -340,6 +348,7 @@ impl OpenRouterProvider {
                     retryable,
                     attempt: attempts,
                     response_bytes: Some(output.body.len()),
+                    request_bytes: Some(payload.len()),
                     response_prefix: Some(response_body_prefix(
                         &output.body,
                         Some(&self.config.api_key),
