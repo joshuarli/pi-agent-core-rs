@@ -6,8 +6,8 @@
 
 use crate::error::HookError;
 use crate::scheduler::CancellationToken;
-use crate::state::{Message, ModelDescriptor, SerializedJson, ThinkingLevel, Usage};
-use crate::tool::{ToolCall, ToolResult};
+use crate::state::{AgentMessage, ModelDescriptor, SerializedJson, ThinkingLevel, Usage};
+use crate::tool::{AgentToolResult, ToolCall};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -68,7 +68,7 @@ pub struct ContextEnvelope {
     /// Version of this host extension envelope.
     pub version: u16,
     /// Messages retained by the core.
-    pub messages: Vec<Message>,
+    pub messages: Vec<AgentMessage>,
     /// Optional serialized host-only additions.
     pub host_messages: Vec<SerializedJson>,
 }
@@ -81,7 +81,7 @@ pub struct ContextEnvelope {
 /// subsequent `prompt` begins again from the builder-supplied model and
 /// thinking defaults.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct NextTurn {
+pub struct AgentLoopTurnUpdate {
     /// Replacement conversation envelope for the next request.
     pub context: Option<ContextEnvelope>,
     /// Replacement model identity for the next request.
@@ -89,6 +89,9 @@ pub struct NextTurn {
     /// Replacement reasoning level for the next request.
     pub thinking_level: Option<ThinkingLevel>,
 }
+
+/// Compatibility spelling retained for existing Rust integrations.
+pub type NextTurn = AgentLoopTurnUpdate;
 
 /// Hook trait implemented by the embedding policy layer.
 pub trait HookSet: Send + Sync {
@@ -98,7 +101,7 @@ pub trait HookSet: Send + Sync {
     fn after_tool_call(
         &self,
         call: &ToolCall,
-        result: &ToolResult,
+        result: &AgentToolResult,
     ) -> Result<AfterToolCall, HookError>;
     /// Transform retained context before conversion to provider messages.
     fn transform_context(&self, context: ContextEnvelope) -> Result<ContextEnvelope, HookError>;
@@ -109,8 +112,11 @@ pub trait HookSet: Send + Sync {
         Ok(false)
     }
     /// Prepare request-scoped context, model, or reasoning replacements for the next turn.
-    fn prepare_next_turn(&self, _context: ContextEnvelope) -> Result<NextTurn, HookError> {
-        Ok(NextTurn::default())
+    fn prepare_next_turn(
+        &self,
+        _context: ContextEnvelope,
+    ) -> Result<AgentLoopTurnUpdate, HookError> {
+        Ok(AgentLoopTurnUpdate::default())
     }
 
     /// Asynchronous, cancellation-aware form of [`Self::before_tool_call`].
@@ -131,7 +137,7 @@ pub trait HookSet: Send + Sync {
     fn after_tool_call_async<'a>(
         &'a self,
         call: &'a ToolCall,
-        result: &'a ToolResult,
+        result: &'a AgentToolResult,
         _context: ContextEnvelope,
         _cancellation: CancellationToken,
     ) -> HookFuture<'a, AfterToolCall> {
@@ -170,7 +176,7 @@ pub trait HookSet: Send + Sync {
         &'a self,
         context: ContextEnvelope,
         _cancellation: CancellationToken,
-    ) -> HookFuture<'a, NextTurn> {
+    ) -> HookFuture<'a, AgentLoopTurnUpdate> {
         Box::pin(std::future::ready(self.prepare_next_turn(context)))
     }
 }
@@ -186,7 +192,7 @@ impl HookSet for NoHooks {
     fn after_tool_call(
         &self,
         _call: &ToolCall,
-        _result: &ToolResult,
+        _result: &AgentToolResult,
     ) -> Result<AfterToolCall, HookError> {
         Ok(AfterToolCall::default())
     }

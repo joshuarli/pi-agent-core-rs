@@ -11,7 +11,7 @@ use crate::event::{AgentEvent, AgentEventKind, CompactionOutcome};
 use crate::run::RunHandle;
 use crate::scheduler::CancellationToken;
 use crate::state::{
-    AgentPhase, Message, MessageId, ModelDescriptor, RunPhase, RunState, StopReason,
+    AgentMessage, AgentPhase, MessageId, ModelDescriptor, RunPhase, RunState, StopReason,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -36,7 +36,7 @@ pub struct CompactionContext {
     /// Selected model identity, if the host configured one.
     pub model: Option<ModelDescriptor>,
     /// Canonical retained conversation.
-    pub messages: Vec<Message>,
+    pub messages: Vec<AgentMessage>,
     /// Explicit host-only context retained beside the conversation.
     pub host_messages: Vec<crate::state::SerializedJson>,
 }
@@ -45,7 +45,7 @@ pub struct CompactionContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompactionResult {
     /// Replacement canonical conversation.
-    pub messages: Vec<Message>,
+    pub messages: Vec<AgentMessage>,
     /// Optional accounting reported by the compactor's own provider call.
     ///
     /// This stays attached to the compaction event because compaction is not a
@@ -55,7 +55,7 @@ pub struct CompactionResult {
 
 impl CompactionResult {
     /// Construct a result with no provider-reported compaction accounting.
-    pub fn new(messages: Vec<Message>) -> Self {
+    pub fn new(messages: Vec<AgentMessage>) -> Self {
         Self {
             messages,
             usage: None,
@@ -251,7 +251,7 @@ impl CompactionHandle {
         {
             return self.settle_emit_failure(error);
         }
-        self.run.succeed(StopReason::EndTurn)
+        self.run.succeed(StopReason::Stop)
     }
 
     async fn settle_failure(
@@ -383,7 +383,7 @@ fn commit_replacement(
     agent: &AgentInner,
     run_id: crate::state::RunId,
     cancellation: &CancellationToken,
-    replacement: Vec<Message>,
+    replacement: Vec<AgentMessage>,
 ) -> Result<(), CoreError> {
     let mut state = agent.state.lock().expect("agent state mutex poisoned");
     if cancellation.is_cancelled() {
@@ -396,7 +396,7 @@ fn commit_replacement(
     Ok(())
 }
 
-fn validate_messages(messages: &[Message]) -> Result<(), CompactionError> {
+fn validate_messages(messages: &[AgentMessage]) -> Result<(), CompactionError> {
     let mut message_ids = BTreeSet::new();
     let mut tool_calls = BTreeMap::new();
     let mut tool_results = BTreeSet::new();
@@ -414,7 +414,7 @@ fn validate_messages(messages: &[Message]) -> Result<(), CompactionError> {
             )));
         }
         match message {
-            Message::Assistant {
+            AgentMessage::Assistant {
                 tool_calls: calls, ..
             } => {
                 for call in calls {
@@ -428,7 +428,7 @@ fn validate_messages(messages: &[Message]) -> Result<(), CompactionError> {
                     }
                 }
             }
-            Message::ToolResult {
+            AgentMessage::ToolResult {
                 tool_call_id,
                 tool_name,
                 ..
@@ -454,16 +454,16 @@ fn validate_messages(messages: &[Message]) -> Result<(), CompactionError> {
                     )));
                 }
             },
-            Message::User { .. } => {}
+            AgentMessage::User { .. } => {}
         }
     }
     Ok(())
 }
 
-fn message_id(message: &Message) -> MessageId {
+fn message_id(message: &AgentMessage) -> MessageId {
     match message {
-        Message::User { id, .. }
-        | Message::Assistant { id, .. }
-        | Message::ToolResult { id, .. } => *id,
+        AgentMessage::User { id, .. }
+        | AgentMessage::Assistant { id, .. }
+        | AgentMessage::ToolResult { id, .. } => *id,
     }
 }

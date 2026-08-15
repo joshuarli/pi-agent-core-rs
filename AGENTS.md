@@ -11,6 +11,8 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
 - [Quickstart](docs/quickstart.md) for an application integration.
 - [Scope](docs/scope.md), [architecture](docs/architecture.md), and
   [semantics](docs/semantics.md) for the durable core contract.
+- [Glossary](docs/glossary.md) for the durable names and boundaries used across
+  the repository.
 - [Default coding profile](docs/default-coding-profile.md) and
   [provider adapters](docs/provider-adapters.md) for optional runtime layers.
 - [Tracing](docs/trace.md) and [Luau extensions](docs/luau-extensions.md) for

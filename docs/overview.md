@@ -50,6 +50,10 @@ downstream optional layers.
   exclusions.
 - [Architecture](architecture.md) — ownership, ports, state machine, and
   scheduling.
+- [Core terminology](core-terminology.md) — upstream Pi vocabulary, Rust
+  names, aliases, and intentional differences for resync work.
+- [Glossary](glossary.md) — repository-wide vocabulary for state, boundaries,
+  lifecycle, tools, policy, and verification layers.
 - [Runtime semantics](semantics.md) — observable lifecycle and cancellation
   contracts.
 - [Fixture format](../parity/fixture-format.md) and [Rust parity guide](../parity/README.md)

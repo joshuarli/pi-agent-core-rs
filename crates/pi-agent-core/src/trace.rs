@@ -13,7 +13,7 @@
 
 use crate::event::{AgentEvent, AgentEventKind, EventObserver, ObserverFuture};
 use crate::scheduler::CancellationToken;
-use crate::state::{Message, MessageId, StopReason, ToolCallId};
+use crate::state::{AgentMessage, MessageId, StopReason, ToolCallId};
 use pi_agent_trace::{
     EndReason, EpisodeEnd, EpisodeHeader, IsolatedSink, Tool, TraceEvent, TraceSink, Turn,
 };
@@ -121,7 +121,7 @@ impl<S: TraceSink> TraceObserver<S> {
             AgentEventKind::MessageStart { message }
             | AgentEventKind::MessageUpdate { message, .. }
             | AgentEventKind::MessageEnd { message } => {
-                if let Message::Assistant { error_message, .. } = message {
+                if let AgentMessage::Assistant { error_message, .. } = message {
                     state.error = error_message.clone();
                 }
                 record_message(&mut state.current_turn, message);
@@ -194,23 +194,23 @@ impl<S: TraceSink> TraceObserver<S> {
     }
 }
 
-fn record_message(turn: &mut Option<PendingTurn>, message: &Message) {
+fn record_message(turn: &mut Option<PendingTurn>, message: &AgentMessage) {
     let Some(turn) = turn.as_mut() else {
         return;
     };
     match message {
-        Message::User { id, content } if turn.last_input_message != Some(*id) => {
+        AgentMessage::User { id, content } if turn.last_input_message != Some(*id) => {
             if !turn.input.is_empty() {
                 turn.input.push('\n');
             }
             turn.input.push_str(content);
             turn.last_input_message = Some(*id);
         }
-        Message::User { .. } => {}
-        Message::Assistant { content, .. } => {
+        AgentMessage::User { .. } => {}
+        AgentMessage::Assistant { content, .. } => {
             turn.output = Some(content.clone());
         }
-        Message::ToolResult { .. } => {}
+        AgentMessage::ToolResult { .. } => {}
     }
 }
 
@@ -220,7 +220,7 @@ fn trace_turn_index(turn_id: u64) -> u32 {
 
 fn stop_reason_name(reason: StopReason) -> &'static str {
     match reason {
-        StopReason::EndTurn => "end_turn",
+        StopReason::Stop => "end_turn",
         StopReason::ToolUse => "tool_use",
         StopReason::Length => "length",
         StopReason::Aborted => "aborted",
@@ -231,7 +231,7 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
 
 fn end_reason(reason: StopReason) -> EndReason {
     match reason {
-        StopReason::EndTurn | StopReason::ToolUse | StopReason::Length => EndReason::Completed,
+        StopReason::Stop | StopReason::ToolUse | StopReason::Length => EndReason::Completed,
         StopReason::Aborted => EndReason::Aborted,
         StopReason::Cancelled => EndReason::Cancelled,
         StopReason::Error => EndReason::Failed,
@@ -252,8 +252,8 @@ impl<S: TraceSink> std::fmt::Debug for TraceObserver<S> {
 mod tests {
     use super::*;
     use crate::event::AgentEvent;
-    use crate::state::{AssistantToolCall, MessageId, RunId, TurnId};
-    use crate::tool::{ToolResult, ToolUpdate};
+    use crate::state::{AgentToolCall, MessageId, RunId, TurnId};
+    use crate::tool::{AgentToolResult, ToolUpdate};
 
     fn observe<S: TraceSink + Send + 'static>(observer: &TraceObserver<S>, kind: AgentEventKind) {
         let event = AgentEvent {
@@ -274,7 +274,7 @@ mod tests {
         observe(
             &observer,
             AgentEventKind::MessageStart {
-                message: Message::User {
+                message: AgentMessage::User {
                     id: MessageId(1),
                     content: "hello".into(),
                 },
@@ -283,7 +283,7 @@ mod tests {
         observe(
             &observer,
             AgentEventKind::MessageEnd {
-                message: Message::User {
+                message: AgentMessage::User {
                     id: MessageId(1),
                     content: "hello".into(),
                 },
@@ -292,10 +292,10 @@ mod tests {
         observe(
             &observer,
             AgentEventKind::MessageEnd {
-                message: Message::Assistant {
+                message: AgentMessage::Assistant {
                     id: MessageId(2),
                     content: "world".into(),
-                    tool_calls: vec![AssistantToolCall {
+                    tool_calls: vec![AgentToolCall {
                         id: call_id.clone(),
                         name: "echo".into(),
                         arguments: crate::state::SerializedJson::new("{}"),
@@ -329,7 +329,7 @@ mod tests {
             AgentEventKind::ToolExecutionEnd {
                 tool_call_id: call_id,
                 tool_name: "echo".into(),
-                result: ToolResult {
+                result: AgentToolResult {
                     tool_call_id: ToolCallId::new("call-1").expect("fixed ID"),
                     content: "result".into(),
                     details: None,

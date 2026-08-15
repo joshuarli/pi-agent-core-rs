@@ -1,0 +1,225 @@
+use crate::grid::Grid;
+use crate::render;
+use crate::terminal::TerminalGuard;
+use pi_agent_core::compaction::CompactionHandle;
+use pi_agent_core::provider::ProviderRegistry;
+use pi_agent_core::state::AgentPhase;
+use pi_agent_core::{Agent, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle};
+use std::ffi::OsStr;
+use std::path::PathBuf;
+use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
+use std::time::Duration;
+
+use super::cli::CliOptions;
+use super::error::AppError;
+use super::host::build_host_agent;
+use super::state::{AppState, UiStatus};
+use super::support::composer_cursor;
+
+/// Assembled v0 terminal application.
+#[derive(Debug)]
+pub struct App {
+    pub(super) options: CliOptions,
+    pub(super) state: AppState,
+    pub(super) core: Option<Agent>,
+    pub(super) registry: ProviderRegistry,
+    pub(super) workspace: Option<PathBuf>,
+    pub(super) subscription: Option<LosslessEventSubscription>,
+    pub(super) active_task: Option<Receiver<Result<(), CoreError>>>,
+    pub(super) previous_grid: Option<Grid>,
+    pub(super) quitting: bool,
+}
+
+impl App {
+    /// Assemble an application from explicit command-line values.
+    pub fn new(options: CliOptions) -> Self {
+        Self {
+            options,
+            state: AppState::new(),
+            core: None,
+            registry: ProviderRegistry::new(),
+            workspace: None,
+            subscription: None,
+            active_task: None,
+            previous_grid: None,
+            quitting: false,
+        }
+    }
+
+    /// Initialize the core boundary and run the terminal loop on Smol.
+    pub fn run(&mut self) -> Result<(), AppError> {
+        self.assemble_agent()?;
+        let mut terminal = crate::terminal::TerminalGuard::enter()?;
+        smol::block_on(self.event_loop(&mut terminal))
+    }
+
+    /// Borrow startup options.
+    pub fn options(&self) -> &CliOptions {
+        &self.options
+    }
+
+    /// Borrow presentation-only state.
+    pub fn state(&self) -> &AppState {
+        &self.state
+    }
+
+    /// Mutably borrow presentation-only state.
+    pub fn state_mut(&mut self) -> &mut AppState {
+        &mut self.state
+    }
+
+    /// Attach an explicitly configured agent for non-terminal integration tests.
+    pub fn attach_agent(&mut self, agent: Agent) {
+        self.state.set_snapshot(agent.snapshot());
+        self.subscription = Some(agent.subscribe_lossless());
+        self.core = Some(agent);
+    }
+
+    /// Borrow the attached core agent, if one exists.
+    pub fn agent(&self) -> Option<&Agent> {
+        self.core.as_ref()
+    }
+
+    fn assemble_agent(&mut self) -> Result<(), AppError> {
+        if self.core.is_some() {
+            return Ok(());
+        }
+        let workspace = match self.options.cwd() {
+            Some(path) => path.to_path_buf(),
+            None => std::env::current_dir().map_err(|error| {
+                AppError::Setup(format!("cannot read current directory: {error}"))
+            })?,
+        };
+        let tools = DefaultCodingTools::new(&workspace)
+            .map_err(|error| AppError::Setup(format!("invalid --cwd: {error}")))?;
+        self.workspace = Some(tools.workspace().as_path().to_path_buf());
+        let builder = build_host_agent(tools)?;
+        self.attach_agent(builder.build());
+
+        match (self.options.provider(), self.options.model()) {
+            (None, None) => self.open_provider_picker(),
+            (Some(provider), None) => self.open_model_picker(os_text(provider, "--provider")?)?,
+            (Some(provider), Some(model)) => {
+                self.select_model(os_text(provider, "--provider")?, os_text(model, "--model")?)?
+            }
+            (None, Some(_)) => {
+                return Err(AppError::Setup(
+                    "--model requires an explicit --provider".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn event_loop(&mut self, terminal: &mut TerminalGuard) -> Result<(), AppError> {
+        loop {
+            self.drain_events();
+            self.reap_task();
+            if self.quitting && self.active_task.is_none() {
+                break;
+            }
+            self.redraw(terminal)?;
+            if let Some(event) = terminal.poll_event(Duration::from_millis(20))? {
+                self.handle_terminal_event(terminal, event)?;
+            }
+            // Crossterm input is synchronous by design. Yield after each poll
+            // so the caller-owned Smol executor drives model/tool work.
+            smol::future::yield_now().await;
+        }
+        Ok(())
+    }
+
+    fn drain_events(&mut self) {
+        let Some(subscription) = self.subscription.as_ref() else {
+            return;
+        };
+        loop {
+            match subscription.try_recv() {
+                Ok(event) => self.state.apply_event(&event),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+        if let Some(agent) = &self.core {
+            self.state.set_snapshot(agent.snapshot());
+        }
+    }
+
+    fn reap_task(&mut self) {
+        let Some(receiver) = self.active_task.as_ref() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Ok(())) => {
+                self.active_task = None;
+                self.state.status = UiStatus::Idle;
+            }
+            Ok(Err(CoreError::Cancelled)) => {
+                self.active_task = None;
+                self.state.notice("cancelled");
+            }
+            Ok(Err(error)) => {
+                self.active_task = None;
+                self.state.notice(error.to_string());
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.active_task = None;
+                self.state.notice("operation task ended unexpectedly");
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
+    fn redraw(&mut self, terminal: &mut TerminalGuard) -> Result<(), AppError> {
+        let (width, height) = terminal.size()?;
+        let (visible_lines, transcript_rows) =
+            render::transcript_metrics(&self.state, width, height);
+        self.state
+            .set_viewport_metrics(visible_lines, transcript_rows);
+        let current = render::render(&self.state, &self.registry, width, height);
+        let diff = current.diff(self.previous_grid.as_ref());
+        let cursor = composer_cursor(&self.state, width, height);
+        terminal.draw(&diff, cursor)?;
+        self.previous_grid = Some(current);
+        Ok(())
+    }
+
+    pub(super) fn spawn_run(&mut self, run: RunHandle) {
+        self.spawn_operation(async move { run.drive().await });
+    }
+
+    pub(super) fn spawn_compaction(&mut self, compaction: CompactionHandle) {
+        self.spawn_operation(async move { compaction.drive().await });
+    }
+
+    fn spawn_operation<F>(&mut self, operation: F)
+    where
+        F: std::future::Future<Output = Result<(), CoreError>> + Send + 'static,
+    {
+        let (sender, receiver) = sync_channel(1);
+        smol::spawn(async move {
+            let _ = sender.send(operation.await);
+        })
+        .detach();
+        self.active_task = Some(receiver);
+        self.state.status = UiStatus::Active;
+    }
+
+    pub(super) fn agent_or_setup(&self) -> Result<&Agent, AppError> {
+        self.core
+            .as_ref()
+            .ok_or_else(|| AppError::Setup("agent is not initialized".into()))
+    }
+
+    pub(super) fn agent_is_active(&self) -> bool {
+        self.core
+            .as_ref()
+            .is_some_and(|agent| !matches!(agent.snapshot().phase, AgentPhase::Idle))
+    }
+}
+
+fn os_text(value: &OsStr, flag: &str) -> Result<String, AppError> {
+    value
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| AppError::Setup(format!("{flag} must be valid UTF-8")))
+}

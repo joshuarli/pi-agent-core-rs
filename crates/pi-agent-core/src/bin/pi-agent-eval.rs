@@ -14,7 +14,7 @@ use pi_agent_core::provider::openrouter::{
     OpenRouterConfig, OpenRouterCostReport, OpenRouterProvider,
 };
 use pi_agent_core::scheduler::ModelProvider;
-use pi_agent_core::state::{Message, ModelDescriptor};
+use pi_agent_core::state::{AgentMessage, ModelDescriptor};
 use pi_agent_core::{Agent, DefaultCodingTools};
 use pi_agent_protocol::{JsonNumber, JsonValue};
 use std::env;
@@ -308,7 +308,7 @@ fn final_text(agent: &Agent) -> String {
         .into_iter()
         .rev()
         .find_map(|message| match message {
-            Message::Assistant { content, .. } => Some(content),
+            AgentMessage::Assistant { content, .. } => Some(content),
             _ => None,
         })
         .unwrap_or_default()

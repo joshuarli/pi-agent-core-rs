@@ -5,8 +5,8 @@
 //! in actual completion order, and context results are recovered in source order.
 
 use crate::error::SchedulerError;
-use crate::state::{AssistantToolCall, ModelDescriptor, ThinkingLevel, ToolCallId};
-use crate::tool::{ToolCall, ToolDefinition, ToolExecutionMode, ToolResult};
+use crate::state::{AgentToolCall, ModelDescriptor, ThinkingLevel, ToolCallId};
+use crate::tool::{AgentToolResult, ToolCall, ToolDefinition, ToolExecutionMode};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -71,7 +71,7 @@ pub enum ModelStreamEvent {
     /// Incremental assistant text.
     TextDelta(String),
     /// A complete assistant tool call.
-    ToolCall(AssistantToolCall),
+    ToolCall(AgentToolCall),
     /// Provider usage update.
     Usage(crate::state::Usage),
     /// Provider/model failure represented as a terminal assistant response.
@@ -266,7 +266,7 @@ impl ToolBatch {
     pub fn record_completion(
         &self,
         results: &mut CompletionSet,
-        result: ToolResult,
+        result: AgentToolResult,
     ) -> Result<(), SchedulerError> {
         if !self
             .calls
@@ -284,11 +284,11 @@ impl ToolBatch {
 /// Tool completions keyed by call ID and emitted in source order when settled.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompletionSet {
-    results: BTreeMap<ToolCallId, ToolResult>,
+    results: BTreeMap<ToolCallId, AgentToolResult>,
 }
 
 impl CompletionSet {
-    fn insert(&mut self, result: ToolResult) -> Result<(), SchedulerError> {
+    fn insert(&mut self, result: AgentToolResult) -> Result<(), SchedulerError> {
         let tool_call_id = result.tool_call_id.clone();
         if self.results.insert(tool_call_id.clone(), result).is_some() {
             return Err(SchedulerError::DuplicateCompletion { tool_call_id });
@@ -297,7 +297,7 @@ impl CompletionSet {
     }
 
     /// Return settled results in assistant/source order, excluding incomplete calls.
-    pub fn in_source_order(&self, batch: &ToolBatch) -> Vec<ToolResult> {
+    pub fn in_source_order(&self, batch: &ToolBatch) -> Vec<AgentToolResult> {
         batch
             .calls
             .iter()

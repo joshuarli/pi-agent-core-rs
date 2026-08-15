@@ -4,22 +4,21 @@
 //! It has no executor and no provider implementation; callers configure those explicit
 //! capabilities and drive the run from their own async environment.
 
-use crate::default_tools::DefaultCodingTools;
 use crate::error::CoreError;
 use crate::event::EventObserver;
-use crate::hooks::{HookSet, NoHooks};
-use crate::profile::PiDefaultCodingProfile;
+use crate::hooks::HookSet;
 use crate::queue::{AgentQueues, QueueMode, QueuedMessage};
 use crate::run::RunHandle;
 use crate::scheduler::{CancellationToken, ModelProvider};
-use crate::state::{
-    AgentPhase, AgentSnapshot, AgentState, Message, ModelDescriptor, ThinkingLevel,
-};
-use crate::tool::{AgentTool, ToolRegistry};
+use crate::state::{AgentMessage, AgentPhase, AgentSnapshot, AgentState, ModelDescriptor};
+use crate::tool::ToolRegistry;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Poll, Waker};
+
+mod builder;
+pub use builder::AgentBuilder;
 
 /// Internal shared ownership record used by `Agent` and its run handle.
 pub(crate) struct AgentInner {
@@ -442,8 +441,8 @@ impl Agent {
                         crate::error::StateTransitionError::new("agent", "empty", "continue"),
                     ));
                 }
-                Some(Message::Assistant { .. }) => true,
-                Some(Message::User { .. } | Message::ToolResult { .. }) => false,
+                Some(AgentMessage::Assistant { .. }) => true,
+                Some(AgentMessage::User { .. } | AgentMessage::ToolResult { .. }) => false,
             }
         };
         if !assistant_tail {
@@ -496,7 +495,7 @@ impl Agent {
         let message_start_index = state.messages.len();
         let initial_messages = initial_contents
             .into_iter()
-            .map(|content| Message::User {
+            .map(|content| AgentMessage::User {
                 id: state.allocate_message_id(),
                 content,
             })
@@ -543,6 +542,11 @@ impl Agent {
             .push(content))
     }
 
+    /// Queue steering input using upstream Pi's `steer` vocabulary.
+    pub fn steer(&self, content: impl Into<String>) -> Result<u64, CoreError> {
+        self.enqueue_steering(content)
+    }
+
     /// Queue follow-up input for the next idle boundary of a run.
     ///
     /// Idle input waits for an explicit prompt or continuation; queuing is never an implicit run.
@@ -554,6 +558,11 @@ impl Agent {
             .expect("queue mutex poisoned")
             .follow_up
             .push(content))
+    }
+
+    /// Queue follow-up input using upstream Pi's `followUp` vocabulary.
+    pub fn follow_up(&self, content: impl Into<String>) -> Result<u64, CoreError> {
+        self.enqueue_follow_up(content)
     }
 
     /// Remove queued steering messages without changing conversation history.
@@ -720,184 +729,5 @@ impl Agent {
                 .phase,
             AgentPhase::Idle
         )
-    }
-}
-
-/// Configuration builder for an [`Agent`].
-#[derive(Default)]
-pub struct AgentBuilder {
-    system_prompt: String,
-    model: Option<ModelDescriptor>,
-    thinking_level: ThinkingLevel,
-    host_messages: Vec<crate::state::SerializedJson>,
-    tools: ToolRegistry,
-    provider: Option<Arc<dyn ModelProvider>>,
-    compactor: Option<Arc<dyn crate::compaction::Compactor>>,
-    hooks: Option<Arc<dyn HookSet>>,
-    observers: Vec<Arc<dyn EventObserver>>,
-    steering_mode: QueueMode,
-    follow_up_mode: QueueMode,
-}
-
-impl std::fmt::Debug for AgentBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentBuilder")
-            .field("system_prompt", &self.system_prompt)
-            .field("model", &self.model)
-            .field("thinking_level", &self.thinking_level)
-            .field("tools", &self.tools)
-            .finish()
-    }
-}
-
-impl AgentBuilder {
-    /// Set system instructions.
-    pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = prompt.into();
-        self
-    }
-
-    /// Set provider-independent model identity.
-    pub fn model(mut self, model: ModelDescriptor) -> Self {
-        self.model = Some(model);
-        self
-    }
-
-    /// Set reasoning level.
-    pub fn thinking_level(mut self, level: ThinkingLevel) -> Self {
-        self.thinking_level = level;
-        self
-    }
-
-    /// Add one explicit host-only context value.
-    ///
-    /// Host messages are not ambient configuration and are not converted to a
-    /// provider request unless the configured context hook chooses to do so.
-    pub fn host_message(mut self, message: crate::state::SerializedJson) -> Self {
-        self.host_messages.push(message);
-        self
-    }
-
-    /// Replace the complete executable tool registry.
-    pub fn tools(mut self, tools: ToolRegistry) -> Self {
-        self.tools = tools;
-        self
-    }
-
-    /// Add one executable tool while preserving insertion order.
-    pub fn tool(mut self, tool: Arc<dyn AgentTool>) -> Self {
-        self.tools.insert(tool);
-        self
-    }
-
-    /// Remove one named executable capability before building the agent.
-    ///
-    /// This makes profile composition explicit: callers may start with the
-    /// batteries-included set and deliberately omit a capability without
-    /// changing its prompt or scheduler implementation behind the scenes.
-    pub fn remove_tool(mut self, name: &str) -> Self {
-        self.tools.remove(name);
-        self
-    }
-
-    /// Attach a caller-owned model provider.
-    pub fn model_provider(mut self, provider: Arc<dyn ModelProvider>) -> Self {
-        self.provider = Some(provider);
-        self
-    }
-
-    /// Attach a caller-owned manual compactor.
-    pub fn compactor(mut self, compactor: Arc<dyn crate::compaction::Compactor>) -> Self {
-        self.compactor = Some(compactor);
-        self
-    }
-
-    /// Attach host policy hooks.
-    pub fn hooks(mut self, hooks: Arc<dyn HookSet>) -> Self {
-        self.hooks = Some(hooks);
-        self
-    }
-
-    /// Add an awaited lifecycle observer in registration order.
-    pub fn observer(mut self, observer: Arc<dyn EventObserver>) -> Self {
-        self.observers.push(observer);
-        self
-    }
-
-    /// Select how steering messages are drained at eligible turn boundaries.
-    pub fn steering_mode(mut self, mode: QueueMode) -> Self {
-        self.steering_mode = mode;
-        self
-    }
-
-    /// Select how follow-up messages are drained at the idle boundary.
-    pub fn follow_up_mode(mut self, mode: QueueMode) -> Self {
-        self.follow_up_mode = mode;
-        self
-    }
-
-    /// Apply a captured profile's prompt.  Executable tools still come from the caller.
-    pub fn profile(mut self, profile: &PiDefaultCodingProfile) -> Self {
-        self.system_prompt = profile.system_prompt();
-        self
-    }
-
-    /// Apply the pinned Pi coding prompt and its explicit executable default tools.
-    ///
-    /// `tools` is constructed by the embedding with an explicit workspace and
-    /// capability adapter. This convenience method never discovers a cwd,
-    /// home directory, Pi installation, or authority on the caller's behalf.
-    /// Subsequent [`Self::tool`] calls replace/extend individual tools and
-    /// [`Self::remove_tool`] deliberately removes them.
-    pub fn pinned_default_coding_profile(
-        mut self,
-        tools: DefaultCodingTools,
-    ) -> Result<Self, crate::error::ProfileError> {
-        let profile = PiDefaultCodingProfile::pinned_default()?;
-        let registry = tools.registry();
-        profile.validate_registry(&registry)?;
-        self.system_prompt = profile.system_prompt_for_workspace(tools.workspace().as_path());
-        self.tools = registry;
-        Ok(self)
-    }
-
-    /// Build an owned agent.
-    pub fn build(self) -> Agent {
-        let next_observer_id = self.observers.len() as u64;
-        let mut state = AgentState::default();
-        state.system_prompt = self.system_prompt;
-        state.model = self.model;
-        state.thinking_level = self.thinking_level;
-        state.host_messages = self.host_messages;
-        Agent {
-            inner: Arc::new(AgentInner {
-                state: Mutex::new(state),
-                queues: Mutex::new(AgentQueues::default()),
-                active_run: Mutex::new(None),
-                tools: self.tools,
-                steering_mode: Mutex::new(self.steering_mode),
-                follow_up_mode: Mutex::new(self.follow_up_mode),
-                provider: RwLock::new(self.provider),
-                compactor: RwLock::new(self.compactor),
-                hooks: self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),
-                observers: Mutex::new(
-                    self.observers
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, observer)| ObserverRegistration {
-                            id: (index as u64).saturating_add(1),
-                            observer,
-                        })
-                        .collect(),
-                ),
-                next_observer_id: AtomicU64::new(next_observer_id),
-                subscribers: Mutex::new(Vec::new()),
-                next_subscriber_id: AtomicU64::new(0),
-                lossless_subscribers: Mutex::new(Vec::new()),
-                next_lossless_subscriber_id: AtomicU64::new(0),
-                next_run_id: AtomicU64::new(0),
-                idle_notifier: IdleNotifier::default(),
-            }),
-        }
     }
 }

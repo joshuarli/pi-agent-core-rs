@@ -1,0 +1,163 @@
+//! Explicit JSON Lines and CBOR sinks for compact trajectory records.
+//!
+//! The trace contract deliberately does not choose a storage location. These
+//! sinks only serialize each owned [`TraceEvent`](crate::TraceEvent) to a
+//! caller-supplied writer; they do not open files, read clocks, buffer an
+//! episode, or make any runtime decision. JSON Lines is convenient for human
+//! inspection and streaming pipelines. CBOR is a compact, self-delimiting
+//! sequence of the same records for machine-oriented archives.
+
+use crate::event::{EndReason, TraceEvent};
+use crate::sink::TraceSink;
+use std::io::{self, Write};
+
+mod cbor;
+mod json;
+
+/// A [`TraceSink`] that writes one JSON object followed by a newline per event.
+///
+/// The JSON shape is an explicit V0 wire format. Every object carries
+/// `schema_version` and a `type` discriminator. Its key order is stable, so
+/// deterministic traces stay diff-friendly without an external serializer.
+pub struct JsonLinesSink<W> {
+    writer: W,
+}
+
+impl<W> JsonLinesSink<W> {
+    /// Wrap a caller-owned writer.
+    pub const fn new(writer: W) -> Self {
+        Self { writer }
+    }
+
+    /// Return the underlying writer.
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
+
+    /// Borrow the underlying writer.
+    pub const fn inner(&self) -> &W {
+        &self.writer
+    }
+
+    /// Mutably borrow the underlying writer.
+    pub fn inner_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+}
+
+impl<W: Write> TraceSink for JsonLinesSink<W> {
+    type Error = io::Error;
+
+    fn append(&mut self, event: TraceEvent) -> Result<(), Self::Error> {
+        let mut record = String::new();
+        json::write_json_event(&mut record, &event);
+        self.writer.write_all(record.as_bytes())?;
+        self.writer.write_all(b"\n")
+    }
+}
+
+/// A [`TraceSink`] that appends one self-delimiting CBOR map per event.
+///
+/// The wire shape mirrors [`JsonLinesSink`]. Values use only definite-length
+/// CBOR major types for maps, arrays, text, unsigned integers, booleans, and null;
+/// no indefinite lengths, tags, floats, or host-specific extensions are used.
+/// Concatenated values are intentionally valid CBOR sequence framing, which
+/// allows a caller to stream records without a precomputed episode length.
+pub struct CborSink<W> {
+    writer: W,
+}
+
+impl<W> CborSink<W> {
+    /// Wrap a caller-owned writer.
+    pub const fn new(writer: W) -> Self {
+        Self { writer }
+    }
+
+    /// Return the underlying writer.
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
+
+    /// Borrow the underlying writer.
+    pub const fn inner(&self) -> &W {
+        &self.writer
+    }
+
+    /// Mutably borrow the underlying writer.
+    pub fn inner_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+}
+
+impl<W: Write> TraceSink for CborSink<W> {
+    type Error = io::Error;
+
+    fn append(&mut self, event: TraceEvent) -> Result<(), Self::Error> {
+        let mut bytes = Vec::new();
+        cbor::write_cbor_event(&mut bytes, &event);
+        self.writer.write_all(&bytes)
+    }
+}
+
+fn event_type(event: &TraceEvent) -> &'static str {
+    match event {
+        TraceEvent::EpisodeHeader(_) => "episode_header",
+        TraceEvent::Turn(_) => "turn",
+        TraceEvent::Tool(_) => "tool",
+        TraceEvent::EpisodeEnd(_) => "episode_end",
+    }
+}
+
+fn end_reason_name(reason: &EndReason) -> &str {
+    match reason {
+        EndReason::Completed => "completed",
+        EndReason::Cancelled => "cancelled",
+        EndReason::Failed => "failed",
+        EndReason::Aborted => "aborted",
+        EndReason::Other(value) => value,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EpisodeHeader, TraceEvent, Turn};
+
+    #[test]
+    fn json_lines_is_one_stable_escaped_object_per_record() {
+        let mut sink = JsonLinesSink::new(Vec::new());
+        sink.append(TraceEvent::from(
+            EpisodeHeader::new("episode\n1").with_metadata("z", "\u{0001}\""),
+        ))
+        .expect("in-memory write succeeds");
+        sink.append(TraceEvent::from(
+            Turn::new(3, "input").with_output("output"),
+        ))
+        .expect("in-memory write succeeds");
+        let text = String::from_utf8(sink.into_inner()).expect("JSON is UTF-8");
+        assert_eq!(text.lines().count(), 2);
+        assert_eq!(
+            text.lines().next(),
+            Some(
+                r#"{"schema_version":0,"type":"episode_header","episode_id":"episode\n1","metadata":{"z":"\u0001\""},"started_at_ms":null}"#
+            ),
+        );
+        assert!(text.contains(r#""type":"turn"#));
+    }
+
+    #[test]
+    fn cbor_uses_definite_maps_and_has_no_json_line_delimiter() {
+        let mut sink = CborSink::new(Vec::new());
+        sink.append(TraceEvent::from(EpisodeHeader::new("episode")))
+            .expect("in-memory write succeeds");
+        let bytes = sink.into_inner();
+        // Major type 5 (map), length 5. The record is one CBOR value, not a
+        // newline-delimited JSON encoding.
+        assert_eq!(bytes.first(), Some(&0xa5));
+        assert!(!bytes.contains(&b'\n'));
+        assert!(
+            bytes
+                .windows("episode_header".len())
+                .any(|window| window == b"episode_header")
+        );
+    }
+}

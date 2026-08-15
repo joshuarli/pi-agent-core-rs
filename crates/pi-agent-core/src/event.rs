@@ -7,9 +7,9 @@
 use crate::error::CoreError;
 use crate::scheduler::CancellationToken;
 use crate::state::{
-    Message, ModelTurnAccounting, RunId, SerializedJson, StopReason, ToolCallId, TurnId,
+    AgentMessage, ModelTurnAccounting, RunId, SerializedJson, StopReason, ToolCallId, TurnId,
 };
-use crate::tool::{ToolResult, ToolUpdate};
+use crate::tool::{AgentToolResult, ToolUpdate};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -71,7 +71,7 @@ pub enum AgentEventKind {
     /// A model turn began.
     TurnStart { turn_id: TurnId },
     /// A message became visible.
-    MessageStart { message: Message },
+    MessageStart { message: AgentMessage },
     /// A partial message update.
     ///
     /// `text_delta` is the provider event payload, while `message` is the
@@ -80,12 +80,12 @@ pub enum AgentEventKind {
     /// text, thinking, or future interleaved content blocks).
     MessageUpdate {
         /// Reduced message snapshot after this update.
-        message: Message,
+        message: AgentMessage,
         /// Exact text fragment delivered by the current V0 stream event.
         text_delta: Option<String>,
     },
     /// A message settled.
-    MessageEnd { message: Message },
+    MessageEnd { message: AgentMessage },
     /// Tool execution began.
     ToolExecutionStart {
         tool_call_id: ToolCallId,
@@ -110,7 +110,7 @@ pub enum AgentEventKind {
     ToolExecutionEnd {
         tool_call_id: ToolCallId,
         tool_name: String,
-        result: ToolResult,
+        result: AgentToolResult,
     },
     /// A model turn settled.
     TurnEnd { turn_id: TurnId, reason: StopReason },
@@ -121,8 +121,15 @@ pub enum AgentEventKind {
     ModelTurnUsage { accounting: ModelTurnAccounting },
     /// The loop emitted its final event. Awaited observers may still keep the
     /// agent active before terminal settlement makes it idle.
-    AgentEnd { messages: Vec<Message> },
+    AgentEnd { messages: Vec<AgentMessage> },
 }
+
+/// Payload-only view of an [`AgentEvent`].
+///
+/// Upstream Pi exposes the event union directly as `AgentEvent`; Rust keeps a
+/// stable envelope for run identity and ordering, so the payload retains the
+/// explicit `AgentEventKind` name.
+pub type AgentEventPayload = AgentEventKind;
 
 /// A boxed observer future that is settled before the run advances.
 pub type ObserverFuture<'a> = Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>>;

@@ -16,7 +16,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 /// A boxed future used so callers may drive tools on their own executor.
-pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>>;
+pub type ToolFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<AgentToolResult, ToolError>> + Send + 'a>>;
 
 /// Whether calls to a tool may overlap within one assistant message.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -41,7 +42,7 @@ pub struct ToolCall {
 
 /// A tool result to be inserted into model context.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ToolResult {
+pub struct AgentToolResult {
     /// Call to which the result belongs.
     pub tool_call_id: ToolCallId,
     /// Serialized result content.
@@ -62,6 +63,9 @@ pub struct ToolResult {
     /// Whether the result represents a tool failure.
     pub is_error: bool,
 }
+
+/// Compatibility spelling retained for existing Rust integrations.
+pub type ToolResult = AgentToolResult;
 
 /// A partial update emitted during tool execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,6 +132,13 @@ pub trait AgentTool: Send + Sync {
     /// Rust schema DSL or a Serde value. The validator adapter remains private
     /// to the core and must not leak its dependency types here.
     fn schema(&self) -> &JsonValue;
+    /// Borrow the parameter schema using upstream Pi's terminology.
+    ///
+    /// `schema` remains the wire-oriented Rust spelling; both methods expose
+    /// the same value and neither performs validation.
+    fn parameters(&self) -> &JsonValue {
+        self.schema()
+    }
     /// Execution ordering policy.
     fn execution_mode(&self) -> ToolExecutionMode {
         ToolExecutionMode::Parallel
@@ -163,6 +174,11 @@ impl ToolDefinition {
             schema: tool.schema().clone(),
             execution_mode: tool.execution_mode(),
         }
+    }
+
+    /// Borrow the parameter schema using upstream Pi's terminology.
+    pub fn parameters(&self) -> &JsonValue {
+        &self.schema
     }
 }
 

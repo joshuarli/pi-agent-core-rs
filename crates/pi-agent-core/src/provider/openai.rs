@@ -1,9 +1,9 @@
 //! OpenAI-compatible context conversion for the concrete HTTP adapters.
 
 use crate::error::HookError;
-use crate::hooks::{AfterToolCall, BeforeToolCall, ContextEnvelope, HookSet, NextTurn};
+use crate::hooks::{AfterToolCall, AgentLoopTurnUpdate, BeforeToolCall, ContextEnvelope, HookSet};
 use crate::json::JsonValue;
-use crate::state::Message;
+use crate::state::AgentMessage;
 
 /// Convert the core transcript into an OpenAI Chat Completions message array.
 ///
@@ -21,7 +21,7 @@ impl HookSet for OpenAiContextHook {
     fn after_tool_call(
         &self,
         _call: &crate::tool::ToolCall,
-        _result: &crate::tool::ToolResult,
+        _result: &crate::tool::AgentToolResult,
     ) -> Result<AfterToolCall, HookError> {
         Ok(AfterToolCall::default())
     }
@@ -45,18 +45,21 @@ impl HookSet for OpenAiContextHook {
         Ok(false)
     }
 
-    fn prepare_next_turn(&self, _context: ContextEnvelope) -> Result<NextTurn, HookError> {
-        Ok(NextTurn::default())
+    fn prepare_next_turn(
+        &self,
+        _context: ContextEnvelope,
+    ) -> Result<AgentLoopTurnUpdate, HookError> {
+        Ok(AgentLoopTurnUpdate::default())
     }
 }
 
-fn openai_message(message: &Message) -> Result<JsonValue, HookError> {
+fn openai_message(message: &AgentMessage) -> Result<JsonValue, HookError> {
     match message {
-        Message::User { content, .. } => Ok(JsonValue::object([
+        AgentMessage::User { content, .. } => Ok(JsonValue::object([
             ("role", JsonValue::from("user")),
             ("content", JsonValue::from(content.clone())),
         ])),
-        Message::Assistant {
+        AgentMessage::Assistant {
             content,
             tool_calls,
             ..
@@ -90,7 +93,7 @@ fn openai_message(message: &Message) -> Result<JsonValue, HookError> {
                 ("tool_calls", JsonValue::Array(calls)),
             ]))
         }
-        Message::ToolResult {
+        AgentMessage::ToolResult {
             tool_call_id,
             content,
             ..

@@ -29,6 +29,7 @@ pub mod scheduler;
 mod schema_validation;
 pub mod state;
 pub mod tool;
+mod tools;
 #[cfg(feature = "trace")]
 pub mod trace;
 
@@ -47,10 +48,13 @@ pub use default_tools::{
 };
 pub use error::CoreError;
 pub use event::{
-    AgentEvent, AgentEventKind, CompactionOutcome, EventObserver, EventSequence, ObserverFuture,
+    AgentEvent, AgentEventKind, AgentEventPayload, CompactionOutcome, EventObserver, EventSequence,
+    ObserverFuture,
 };
+pub use hooks::AgentLoopTurnUpdate;
 pub use run::RunHandle;
 pub use state::{
-    AgentSnapshot, Message, MessageId, ModelAccountingSnapshot, ModelDescriptor,
-    ModelTurnAccounting, RunId, RunSnapshot, ThinkingLevel, TurnId, Usage,
+    AgentMessage, AgentSnapshot, AgentToolCall, Message, MessageId, ModelAccountingSnapshot,
+    ModelDescriptor, ModelTurnAccounting, RunId, RunSnapshot, ThinkingLevel, TurnId, Usage,
 };
+pub use tool::AgentToolResult;
