@@ -5,8 +5,10 @@ use crate::state::ThinkingLevel;
 use std::collections::BTreeMap;
 pub(super) fn reasoning_effort(level: ThinkingLevel) -> Option<&'static str> {
     match level {
-        ThinkingLevel::Off => Some("off"),
-        ThinkingLevel::Minimal => Some("minimal"),
+        // Command Code's gateway rejects `off` and `minimal`; omitting the field is its
+        // provider-native disabled/default form, while the smallest generic budget maps to low.
+        ThinkingLevel::Off => None,
+        ThinkingLevel::Minimal => Some("low"),
         ThinkingLevel::Low => Some("low"),
         ThinkingLevel::Medium => Some("medium"),
         ThinkingLevel::High => Some("high"),

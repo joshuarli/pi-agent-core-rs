@@ -140,13 +140,20 @@ must match a preceding assistant tool call, so the adapter can preserve its
 tool name instead of guessing it.
 
 The gateway's `text-delta`, `tool-call`, `finish`, usage, error, and abort
-events map directly to core model-stream events. Gateway error payloads stay
-generic before entering agent state, so a remote service cannot inject
-arbitrary error text into a transcript. A trusted host can instead call
+events map directly to core model-stream events. HTTP-level JSON error
+envelopes without an NDJSON `type` are accepted as terminal gateway errors and
+retain their bounded structured diagnostics in `last_error_report()`. Gateway
+error payloads stay generic before entering agent state, so a remote service
+cannot inject arbitrary error text into a transcript. A trusted host can instead call
 `CommandCodeProvider::last_error_report()` for the last failure's source,
 message, status, type, code, and retryability classification. The configured
 API key is redacted from this host-only report, but its remote message remains
-untrusted data and belongs only in private host diagnostics. Reasoning deltas
+untrusted data and belongs only in private host diagnostics. Command Code
+accepts `low`, `medium`, `high`, `xhigh`, and `max` reasoning effort values.
+Generic `Off` omits the provider field, and generic `Minimal` maps to `low`,
+because the gateway rejects `off` and `minimal`.
+
+Reasoning deltas
 are intentionally not retained: the current core model-stream contract has no
 separate reasoning content variant, so treating them as assistant text would
 corrupt the visible answer. This is a known API limitation rather than a hidden

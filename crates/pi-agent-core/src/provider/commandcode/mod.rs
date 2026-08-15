@@ -492,6 +492,14 @@ mod tests {
         .is_some_and(|content| content.contains("[tool details (serialized JSON):")));
     }
 
+    #[test]
+    fn maps_generic_reasoning_levels_to_command_code_vocabulary() {
+        assert_eq!(reasoning_effort(ThinkingLevel::Off), None);
+        assert_eq!(reasoning_effort(ThinkingLevel::Minimal), Some("low"));
+        assert_eq!(reasoning_effort(ThinkingLevel::Low), Some("low"));
+        assert_eq!(reasoning_effort(ThinkingLevel::Max), Some("max"));
+    }
+
     fn field<'a>(value: &'a JsonValue, name: &str) -> &'a JsonValue {
         value
             .get(name)
@@ -562,6 +570,32 @@ mod tests {
                 error_code: None,
                 retryable: Some(true),
             })
+        );
+    }
+
+    #[test]
+    fn http_error_envelope_without_event_type_preserves_gateway_diagnostics() {
+        let parsed = parse_ndjson_response(
+            br#"{"success":false,"error":{"code":"UNAUTHORIZED","status":401,"message":"Invalid token"}}"#,
+            "test-key",
+        )
+        .expect("HTTP error envelope is a terminal provider event");
+        assert_eq!(
+            parsed.error,
+            Some(CommandCodeErrorReport {
+                source: CommandCodeErrorSource::Gateway,
+                message: "Invalid token".into(),
+                status_code: Some(401),
+                error_type: None,
+                error_code: Some("UNAUTHORIZED".into()),
+                retryable: Some(false),
+            })
+        );
+        assert_eq!(
+            parsed.events,
+            vec![ModelStreamEvent::Error {
+                message: "Command Code provider returned an error".into(),
+            }]
         );
     }
 

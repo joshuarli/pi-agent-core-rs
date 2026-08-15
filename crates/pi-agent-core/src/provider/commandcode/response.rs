@@ -29,7 +29,21 @@ pub(super) fn parse_ndjson_response(
         let event = event
             .as_object()
             .ok_or_else(|| "Command Code NDJSON event must be an object".to_owned())?;
-        let event_type = string_field(event, "type", "Command Code NDJSON event")?;
+        let event_type = match event.get("type").and_then(JsonValue::as_str) {
+            Some(event_type) if !event_type.is_empty() => event_type,
+            // The gateway also uses a JSON error envelope for HTTP-level failures. It is
+            // returned on the same endpoint, but has no NDJSON event `type`; preserve its
+            // structured diagnostics instead of reducing it to a malformed-stream error.
+            None if event.contains_key("error") => {
+                error = Some(parse_gateway_error(event, api_key));
+                events.push(ModelStreamEvent::Error {
+                    message: "Command Code provider returned an error".into(),
+                });
+                terminal = true;
+                continue;
+            }
+            _ => return Err("Command Code NDJSON event did not contain type".to_owned()),
+        };
         if terminal {
             // Command Code 1.24.0 emits this non-content metadata envelope after `finish`.
             // It is not a second terminal event and carries no core stream state.
