@@ -13,6 +13,7 @@ default = []
 parity-runner = ["dep:smol"]
 provider-commandcode = []
 provider-openrouter = []
+provider-local = []
 eval-runner = ["dep:smol", "provider-commandcode", "provider-openrouter"]
 trace = ["dep:pi-agent-trace"]
 

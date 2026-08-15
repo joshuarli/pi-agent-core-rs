@@ -81,6 +81,7 @@ pub(crate) struct RetryableError {
 }
 
 impl RetryableError {
+    #[cfg(feature = "provider-openrouter")]
     pub(crate) fn permanent(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -164,6 +165,7 @@ mod tests {
         assert_eq!(attempts, 3);
     }
 
+    #[cfg(feature = "provider-openrouter")]
     #[test]
     fn permanent_failure_does_not_retry() {
         let policy = RetryPolicy::new(3, Duration::ZERO, Duration::ZERO);

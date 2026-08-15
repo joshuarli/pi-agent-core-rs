@@ -18,16 +18,17 @@ opaque caller providers or replay a stream after it has exposed events.
 | --- | --- | --- | --- |
 | `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response transport with packet-bound model validation and cancellation-aware child custody. |
 | `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in Command Code gateway transport; the evaluation runner selects it with `--provider commandcode`. |
+| `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions endpoint | Opt-in finite-response transport for oMLX and similar local servers; no credentials or endpoint discovery. |
 
 Enable only the provider an application owns:
 
 ```toml
 [dependencies]
-pi-agent-core = { path = "../pi-agent-core-rs/crates/pi-agent-core", features = ["provider-commandcode"] }
+pi-agent-core = { path = "../pi-agent-core-rs/crates/pi-agent-core", features = ["provider-local"] }
 ```
 
-Neither feature is enabled by default. The adapters use the caller's selected
-executor and add no Tokio dependency.
+Provider features are opt-in and none is enabled by default. The adapters use
+the caller's selected executor and add no Tokio dependency.
 
 ## Factory-grade OpenRouter contract
 
@@ -150,3 +151,26 @@ finite core stream. They preserve event grammar and terminal validation, but
 they do not yet expose network-time incremental deltas. Hosts needing live
 transport streaming should implement `ModelProvider` directly while preserving
 the same request and event contracts.
+
+## Local oMLX and Laguna
+
+The local adapter accepts an explicit API root and model. Its convenience
+configuration targets the 5-bit `Laguna-XS-2.1-5bit` checkpoint served by oMLX:
+
+```rust,no_run
+use pi_agent_core::provider::local::{LocalConfig, LocalProvider};
+
+let config = LocalConfig::laguna_xs_2_1("http://127.0.0.1:8000/v1");
+config.validate()?;
+let provider = LocalProvider::new(config);
+# let _ = provider;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The request uses `POST /v1/chat/completions` with `stream: false`, OpenAI
+function tools, `max_tokens`, and
+`chat_template_kwargs: {"enable_thinking": true}` for Laguna. The adapter
+maps oMLX's `tool_calls`, `finish_reason`, and prompt/completion/cache usage
+fields into the core stream contract. Reasoning text is intentionally ignored
+because the current core stream model has no separate reasoning-content event;
+turning it into assistant text would corrupt later context.

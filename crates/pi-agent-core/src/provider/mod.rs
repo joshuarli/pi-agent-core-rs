@@ -5,9 +5,14 @@
 //! the default state-machine build.
 
 mod registry;
+#[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
 mod retry;
 
-#[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
+#[cfg(any(
+    feature = "provider-commandcode",
+    feature = "provider-openrouter",
+    feature = "provider-local"
+))]
 pub mod openai;
 
 pub use registry::{
@@ -15,9 +20,12 @@ pub use registry::{
     ProviderConfiguration, ProviderConfigurationKind, ProviderEntry, ProviderRegistry,
     RegistryError, MODEL_CATALOG_VERSION,
 };
+#[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
 pub use retry::RetryPolicy;
 
 #[cfg(feature = "provider-commandcode")]
 pub mod commandcode;
+#[cfg(feature = "provider-local")]
+pub mod local;
 #[cfg(feature = "provider-openrouter")]
 pub mod openrouter;

@@ -17,7 +17,8 @@ pub mod hooks;
 #[cfg(any(
     feature = "eval-runner",
     feature = "provider-commandcode",
-    feature = "provider-openrouter"
+    feature = "provider-openrouter",
+    feature = "provider-local"
 ))]
 mod json;
 pub mod profile;

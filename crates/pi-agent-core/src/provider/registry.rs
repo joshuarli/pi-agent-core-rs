@@ -60,6 +60,9 @@ pub enum ProviderConfigurationKind {
     /// OpenRouter's caller-owned API key and model configuration.
     #[cfg(feature = "provider-openrouter")]
     OpenRouter,
+    /// Local OpenAI-compatible endpoint and model configuration.
+    #[cfg(feature = "provider-local")]
+    Local,
 }
 
 /// Metadata for one adapter compiled into this crate.
@@ -126,6 +129,9 @@ pub enum ProviderConfiguration {
     /// Fully configured OpenRouter adapter.
     #[cfg(feature = "provider-openrouter")]
     OpenRouter(crate::provider::openrouter::OpenRouterConfig),
+    /// Fully configured local OpenAI-compatible adapter.
+    #[cfg(feature = "provider-local")]
+    Local(crate::provider::local::LocalConfig),
 }
 
 /// A provider and the exact model descriptor it was configured to serve.
@@ -249,8 +255,15 @@ static OPENROUTER_MODELS: &[ModelDescriptor] = &[
     },
 ];
 
-#[cfg(all(feature = "provider-commandcode", feature = "provider-openrouter"))]
+#[cfg(feature = "provider-local")]
+static LOCAL_MODELS: &[ModelDescriptor] = &[ModelDescriptor {
+    id: crate::provider::local::LAGUNA_XS_2_1_MODEL,
+    display_name: "Laguna XS 2.1 5-bit (oMLX)",
+    context_window: Some(32_768),
+}];
+
 static COMPILED_PROVIDERS: &[ProviderEntry] = &[
+    #[cfg(feature = "provider-commandcode")]
     ProviderEntry {
         id: "command-code",
         display_name: "Command Code",
@@ -263,6 +276,7 @@ static COMPILED_PROVIDERS: &[ProviderEntry] = &[
             concrete_compactor: false,
         },
     },
+    #[cfg(feature = "provider-openrouter")]
     ProviderEntry {
         id: "openrouter",
         display_name: "OpenRouter",
@@ -275,38 +289,20 @@ static COMPILED_PROVIDERS: &[ProviderEntry] = &[
             concrete_compactor: false,
         },
     },
+    #[cfg(feature = "provider-local")]
+    ProviderEntry {
+        id: "local",
+        display_name: "Local OpenAI-compatible server",
+        model_catalog_version: MODEL_CATALOG_VERSION,
+        models: LOCAL_MODELS,
+        allows_custom_models: true,
+        configuration: ProviderConfigurationKind::Local,
+        capabilities: ProviderCapabilities {
+            provider_reported_cost: false,
+            concrete_compactor: false,
+        },
+    },
 ];
-
-#[cfg(all(feature = "provider-commandcode", not(feature = "provider-openrouter")))]
-static COMPILED_PROVIDERS: &[ProviderEntry] = &[ProviderEntry {
-    id: "command-code",
-    display_name: "Command Code",
-    model_catalog_version: MODEL_CATALOG_VERSION,
-    models: COMMAND_CODE_MODELS,
-    allows_custom_models: true,
-    configuration: ProviderConfigurationKind::CommandCode,
-    capabilities: ProviderCapabilities {
-        provider_reported_cost: false,
-        concrete_compactor: false,
-    },
-}];
-
-#[cfg(all(feature = "provider-openrouter", not(feature = "provider-commandcode")))]
-static COMPILED_PROVIDERS: &[ProviderEntry] = &[ProviderEntry {
-    id: "openrouter",
-    display_name: "OpenRouter",
-    model_catalog_version: MODEL_CATALOG_VERSION,
-    models: OPENROUTER_MODELS,
-    allows_custom_models: true,
-    configuration: ProviderConfigurationKind::OpenRouter,
-    capabilities: ProviderCapabilities {
-        provider_reported_cost: true,
-        concrete_compactor: false,
-    },
-}];
-
-#[cfg(not(any(feature = "provider-commandcode", feature = "provider-openrouter")))]
-static COMPILED_PROVIDERS: &[ProviderEntry] = &[];
 
 /// Explicit registry of adapters selected by Cargo features.
 #[derive(Clone, Copy, Debug, Default)]
@@ -432,6 +428,25 @@ impl ProviderRegistry {
                     )),
                 })
             }
+            #[cfg(feature = "provider-local")]
+            ProviderConfiguration::Local(configuration) => {
+                if descriptor.provider != "local" {
+                    return Err(RegistryError::ConfigurationProviderMismatch {
+                        expected: descriptor.provider.clone(),
+                        actual: "local",
+                    });
+                }
+                if configuration.model() != descriptor.model {
+                    return Err(RegistryError::ConfigurationModelMismatch {
+                        expected: descriptor.model,
+                        actual: configuration.model().to_owned(),
+                    });
+                }
+                Ok(ConfiguredProvider {
+                    descriptor,
+                    provider: Arc::new(crate::provider::local::LocalProvider::new(configuration)),
+                })
+            }
         }
     }
 
@@ -460,7 +475,11 @@ mod tests {
             .all(|entry| entry.model_catalog_version == MODEL_CATALOG_VERSION));
     }
 
-    #[cfg(not(any(feature = "provider-commandcode", feature = "provider-openrouter")))]
+    #[cfg(not(any(
+        feature = "provider-commandcode",
+        feature = "provider-openrouter",
+        feature = "provider-local"
+    )))]
     #[test]
     fn default_build_remains_provider_free() {
         assert!(ProviderRegistry::new().providers().is_empty());
@@ -569,5 +588,29 @@ mod tests {
             error,
             RegistryError::ConfigurationModelMismatch { .. }
         ));
+    }
+
+    #[cfg(feature = "provider-local")]
+    #[test]
+    fn local_feature_exposes_laguna_and_builds_without_transport() {
+        let registry = ProviderRegistry::new();
+        let provider = registry.provider("local").expect("compiled provider");
+        assert_eq!(provider.display_name, "Local OpenAI-compatible server");
+        assert_eq!(provider.configuration, ProviderConfigurationKind::Local);
+        assert!(!provider.capabilities.supports_provider_reported_cost());
+        assert_eq!(provider.models[0].context_window, Some(32_768));
+
+        let selection = registry
+            .resolve_model("local", crate::provider::local::LAGUNA_XS_2_1_MODEL)
+            .expect("Laguna should be in the local catalog");
+        let configured = registry
+            .build(
+                selection.into_descriptor(),
+                ProviderConfiguration::Local(crate::provider::local::LocalConfig::laguna_xs_2_1(
+                    crate::provider::local::DEFAULT_BASE_URL,
+                )),
+            )
+            .expect("matching local config");
+        assert_eq!(configured.descriptor.provider, "local");
     }
 }

@@ -1,7 +1,9 @@
 //! Small Miniserde-backed helpers for private adapter JSON trees.
 
+#[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
+use pi_agent_protocol::JsonError;
+use pi_agent_protocol::JsonNumber;
 pub(crate) use pi_agent_protocol::JsonValue;
-use pi_agent_protocol::{JsonError, JsonNumber};
 
 /// Convert scalar expressions used by adapter payload builders into protocol JSON values.
 pub(crate) trait JsonScalar {
@@ -106,6 +108,7 @@ where
 }
 
 /// Encode a protocol JSON tree for a byte-oriented transport.
+#[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
 pub(crate) fn to_bytes(value: &JsonValue) -> Result<Vec<u8>, JsonError> {
     value.to_json_string().map(String::into_bytes)
 }
