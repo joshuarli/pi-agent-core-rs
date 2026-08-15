@@ -189,6 +189,7 @@ impl OpenRouterProvider {
         let parsed = retry_with_backoff(self.config.retry_policy, cancellation, || {
             let config_path =
                 write_curl_config(&self.config.api_key).map_err(RetryableError::permanent)?;
+            let request_timeout = self.config.request_timeout.as_secs().max(1).to_string();
             let output = run_curl(
                 Command::new("curl")
                     .arg("--silent")
@@ -196,7 +197,7 @@ impl OpenRouterProvider {
                     .arg("--connect-timeout")
                     .arg("10")
                     .arg("--max-time")
-                    .arg("30")
+                    .arg(&request_timeout)
                     .arg("--request")
                     .arg("POST")
                     .arg(COMPLETIONS_URL)
@@ -312,6 +313,19 @@ mod tests {
     use super::*;
     use crate::json::JsonValue;
     use crate::state::{ModelDescriptor, ThinkingLevel};
+    use std::time::Duration;
+
+    #[test]
+    fn request_timeout_is_explicit_and_not_thirty_seconds() {
+        let config = OpenRouterConfig::new("key", "model");
+        assert_eq!(config.request_timeout(), Duration::from_secs(300));
+        assert_eq!(
+            config
+                .with_request_timeout(Duration::from_secs(42))
+                .request_timeout(),
+            Duration::from_secs(42)
+        );
+    }
 
     #[test]
     fn parses_redacted_generation_cost_without_retaining_identifier() {

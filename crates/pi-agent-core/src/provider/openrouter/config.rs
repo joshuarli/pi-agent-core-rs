@@ -1,7 +1,7 @@
 //! Explicit OpenRouter configuration contracts.
 
 use super::super::retry::RetryPolicy;
-use std::fmt;
+use std::{fmt, time::Duration};
 
 /// Error raised when explicit OpenRouter configuration violates an adapter invariant.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -10,6 +10,8 @@ pub enum OpenRouterConfigError {
     EmptyField(&'static str),
     /// The maximum output token cap was zero.
     ZeroMaxTokens,
+    /// The HTTP request timeout was zero.
+    ZeroRequestTimeout,
     /// The API key contains a line break and cannot be represented safely in a curl config.
     ApiKeyContainsLineBreak,
 }
@@ -20,6 +22,9 @@ impl fmt::Display for OpenRouterConfigError {
             Self::EmptyField(field) => write!(formatter, "OpenRouter {field} must not be empty"),
             Self::ZeroMaxTokens => {
                 formatter.write_str("OpenRouter max tokens must be greater than zero")
+            }
+            Self::ZeroRequestTimeout => {
+                formatter.write_str("OpenRouter request timeout must be greater than zero")
             }
             Self::ApiKeyContainsLineBreak => {
                 formatter.write_str("OpenRouter API key must not contain line breaks")
@@ -39,6 +44,7 @@ pub struct OpenRouterConfig {
     pub(super) api_key: String,
     pub(super) model: String,
     pub(super) max_tokens: u64,
+    pub(super) request_timeout: Duration,
     pub(super) retry_policy: RetryPolicy,
 }
 
@@ -49,6 +55,7 @@ impl OpenRouterConfig {
             api_key: api_key.into(),
             model: model.into(),
             max_tokens: 1024,
+            request_timeout: Duration::from_secs(300),
             retry_policy: RetryPolicy::standard(),
         }
     }
@@ -62,6 +69,17 @@ impl OpenRouterConfig {
     pub fn with_max_tokens(mut self, max_tokens: u64) -> Self {
         self.max_tokens = max_tokens;
         self
+    }
+
+    /// Replace the bounded HTTP request timeout used by the OpenRouter transport.
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    /// Borrow the configured HTTP request timeout.
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
     }
 
     /// Replace the bounded backoff policy used for replay-safe transport attempts.
@@ -80,6 +98,9 @@ impl OpenRouterConfig {
         }
         if self.max_tokens == 0 {
             return Err(OpenRouterConfigError::ZeroMaxTokens);
+        }
+        if self.request_timeout.is_zero() {
+            return Err(OpenRouterConfigError::ZeroRequestTimeout);
         }
         if self.api_key.contains(['\n', '\r']) {
             return Err(OpenRouterConfigError::ApiKeyContainsLineBreak);
@@ -105,6 +126,7 @@ impl fmt::Debug for OpenRouterConfig {
             .field("api_key", &"[redacted]")
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
+            .field("request_timeout", &self.request_timeout)
             .field("retry_policy", &self.retry_policy)
             .finish()
     }
