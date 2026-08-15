@@ -25,6 +25,28 @@ ordering, partial updates, hooks, queues, continuation, and the default profile 
 Recorded provider responses remain immutable evidence and are checked only by their explicit
 provider-free replay adapter.
 
+## Compaction reference parity
+
+Automatic compaction is intentionally not represented as a Pi session-storage
+fixture: this crate owns a canonical in-memory transcript while Pi owns session
+entries, summaries, and storage boundaries. The shared behavioral surface is
+tested in Rust by `crates/pi-agent-core/tests/automatic_policy.rs`: valid cut
+boundaries, split-turn prefix exposure, retained tool-call/result pairing,
+last-valid usage fallback, threshold ordering, and one overflow retry.
+
+When updating that surface, run Pi's independent reference cases beside the
+Rust test, from explicit local checkouts:
+
+```bash
+(cd ~/d/pi/packages/coding-agent && npx vitest --run test/compaction.test.ts)
+cargo test -p pi-agent-core --test automatic_policy
+```
+
+Compare the decision mechanics (`findCutPoint`/`prepareCompaction` and the
+Rust `AutomaticCompactionRequest`), not Pi session entry IDs, persisted summary
+prompts, or application queue behavior. Neither command is part of the
+provider-free checked-in fixture runner.
+
 ## Workflow
 
 1. Add a provider-free JSON fixture under fixtures/declarative/.

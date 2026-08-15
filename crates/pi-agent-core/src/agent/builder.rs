@@ -22,6 +22,9 @@ pub struct AgentBuilder {
     tools: ToolRegistry,
     provider: Option<Arc<dyn ModelProvider>>,
     compactor: Option<Arc<dyn crate::compaction::Compactor>>,
+    automatic_compaction: crate::compaction::AutomaticCompactionPolicy,
+    tool_result_projection: crate::tool::ToolResultProjectionPolicy,
+    tool_failure_circuit_breaker: crate::tool::ToolFailureCircuitBreaker,
     hooks: Option<Arc<dyn HookSet>>,
     observers: Vec<Arc<dyn EventObserver>>,
     steering_mode: QueueMode,
@@ -101,6 +104,46 @@ impl AgentBuilder {
         self
     }
 
+    /// Enable an explicitly configured automatic compaction policy.
+    ///
+    /// A configured policy still requires [`Self::compactor`]; the core never
+    /// invents a summary provider or prompt.
+    pub fn automatic_compaction(
+        mut self,
+        policy: crate::compaction::AutomaticCompactionPolicy,
+    ) -> Result<Self, crate::error::CoreError> {
+        policy.validate().map_err(|message| {
+            crate::error::CoreError::InvalidAutomaticCompactionPolicy {
+                message: message.into(),
+            }
+        })?;
+        self.automatic_compaction = policy;
+        Ok(self)
+    }
+
+    /// Configure bounded model-facing presentation of raw tool results.
+    pub fn tool_result_projection(
+        mut self,
+        policy: crate::tool::ToolResultProjectionPolicy,
+    ) -> Result<Self, crate::error::CoreError> {
+        policy.validate().map_err(|message| {
+            crate::error::CoreError::InvalidToolResultProjectionPolicy {
+                message: message.into(),
+            }
+        })?;
+        self.tool_result_projection = policy;
+        Ok(self)
+    }
+
+    /// Configure the run-local repeated retryable-failure circuit breaker.
+    pub fn tool_failure_circuit_breaker(
+        mut self,
+        policy: crate::tool::ToolFailureCircuitBreaker,
+    ) -> Self {
+        self.tool_failure_circuit_breaker = policy;
+        self
+    }
+
     /// Attach host policy hooks.
     pub fn hooks(mut self, hooks: Arc<dyn HookSet>) -> Self {
         self.hooks = Some(hooks);
@@ -168,6 +211,9 @@ impl AgentBuilder {
                 follow_up_mode: Mutex::new(self.follow_up_mode),
                 provider: RwLock::new(self.provider),
                 compactor: RwLock::new(self.compactor),
+                automatic_compaction: self.automatic_compaction,
+                tool_result_projection: self.tool_result_projection,
+                tool_failure_circuit_breaker: self.tool_failure_circuit_breaker,
                 hooks: self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),
                 observers: Mutex::new(
                     self.observers

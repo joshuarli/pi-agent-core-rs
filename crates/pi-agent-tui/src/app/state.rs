@@ -1,5 +1,7 @@
 use crate::composer::Composer;
-use pi_agent_core::event::{AgentEventKind, CompactionOutcome};
+use pi_agent_core::event::{
+    AgentEventKind, AutomaticCompactionOutcome, CompactionOutcome, ProviderRequestSkipReason,
+};
 use pi_agent_core::provider::ProviderRegistry;
 use pi_agent_core::state::AgentSnapshot;
 use pi_agent_core::{AgentEvent, ModelDescriptor};
@@ -165,6 +167,78 @@ impl AppState {
                 }
                 CompactionOutcome::Cancelled => self.push(sequence, "compaction cancelled".into()),
             },
+            AgentEventKind::AutomaticCompactionStart {
+                source_message_count,
+                reason,
+                count,
+                ..
+            } => {
+                self.status = UiStatus::Active;
+                self.push(
+                    sequence,
+                    format!(
+                        "automatic compaction #{count} ({reason:?}): {source_message_count} messages"
+                    ),
+                );
+            }
+            AgentEventKind::AutomaticCompactionEnd { outcome, .. } => match outcome {
+                AutomaticCompactionOutcome::Succeeded { .. } => {
+                    self.push(sequence, "automatic compaction complete".into())
+                }
+                AutomaticCompactionOutcome::Failed { message } => {
+                    self.push(sequence, format!("automatic compaction failed: {message}"))
+                }
+                AutomaticCompactionOutcome::Cancelled => {
+                    self.push(sequence, "automatic compaction cancelled".into())
+                }
+                AutomaticCompactionOutcome::LimitReached => {
+                    self.push(sequence, "automatic compaction limit reached".into())
+                }
+                AutomaticCompactionOutcome::StillAboveThreshold => self.push(
+                    sequence,
+                    "automatic compaction complete; retained context remains above threshold"
+                        .into(),
+                ),
+                AutomaticCompactionOutcome::Unavailable => {
+                    self.push(sequence, "automatic compaction unavailable".into())
+                }
+            },
+            AgentEventKind::ContextEstimate {
+                estimated_context_tokens,
+                message_count,
+                ..
+            } => self.push(
+                sequence,
+                format!(
+                    "context estimate: {} tokens across {message_count} messages",
+                    estimated_context_tokens
+                        .map(|tokens| tokens.to_string())
+                        .unwrap_or_else(|| "unknown".into())
+                ),
+            ),
+            AgentEventKind::ProviderRequestSkipped { reason } => self.push(
+                sequence,
+                match reason {
+                    ProviderRequestSkipReason::AutomaticCompaction => {
+                        "provider request deferred for automatic compaction".into()
+                    }
+                    ProviderRequestSkipReason::ToolCircuitBreaker => {
+                        "provider request skipped after terminal tool failure".into()
+                    }
+                },
+            ),
+            AgentEventKind::ToolFailureObserved {
+                disposition,
+                consecutive_count,
+                terminal,
+                ..
+            } => self.push(
+                sequence,
+                format!(
+                    "tool failure {disposition:?} (consecutive {consecutive_count}){}",
+                    if *terminal { "; ending run" } else { "" }
+                ),
+            ),
             AgentEventKind::AgentEnd { .. } => self.status = UiStatus::Idle,
             AgentEventKind::TurnStart { .. } | AgentEventKind::TurnEnd { .. } => {}
         }

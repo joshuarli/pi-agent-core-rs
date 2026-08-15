@@ -45,6 +45,38 @@ pub enum CompactionOutcome {
     Cancelled,
 }
 
+/// Outcome of one in-run automatic compaction transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AutomaticCompactionOutcome {
+    /// A validated replacement was committed.
+    Succeeded {
+        /// Estimated context tokens after commit, when available.
+        estimated_tokens_after: Option<u64>,
+    },
+    /// The transaction failed before history changed.
+    Failed {
+        /// Bounded redacted diagnostic.
+        message: String,
+    },
+    /// Cancellation won before commit and history stayed unchanged.
+    Cancelled,
+    /// An enabled policy reached its configured attempt limit.
+    LimitReached,
+    /// A retained replacement could not reduce the request below threshold.
+    StillAboveThreshold,
+    /// No caller-owned compactor was configured.
+    Unavailable,
+}
+
+/// Why the core did not start a provider request at its normal boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderRequestSkipReason {
+    /// The request was deferred while automatic compaction ran.
+    AutomaticCompaction,
+    /// A fatal or tripped tool circuit breaker ended the run.
+    ToolCircuitBreaker,
+}
+
 /// Meaningful lifecycle payloads emitted by the core.
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +98,43 @@ pub enum AgentEventKind {
         /// Transaction outcome.
         outcome: CompactionOutcome,
     },
+    /// An in-run automatic compaction transaction started.
+    AutomaticCompactionStart {
+        /// Threshold pressure or explicit provider overflow.
+        reason: crate::compaction::AutomaticCompactionReason,
+        /// Number of canonical messages considered.
+        source_message_count: usize,
+        /// Estimated next-request tokens before compaction, when known.
+        estimated_tokens_before: Option<u64>,
+        /// Whether success will retry an incomplete provider continuation.
+        retry_provider_request: bool,
+        /// One-based automatic compaction count in this run.
+        count: u32,
+    },
+    /// An in-run automatic compaction transaction settled.
+    AutomaticCompactionEnd {
+        /// Trigger that selected the transaction.
+        reason: crate::compaction::AutomaticCompactionReason,
+        /// Whether the same continuation was intended to be retried.
+        retry_provider_request: bool,
+        /// Transaction outcome.
+        outcome: AutomaticCompactionOutcome,
+    },
+    /// Context and payload estimates immediately before a provider request.
+    ContextEstimate {
+        /// Estimated next-request context tokens, when available.
+        estimated_context_tokens: Option<u64>,
+        /// Byte length of serialized provider input plus system prompt.
+        input_bytes: usize,
+        /// Number of canonical conversation messages.
+        message_count: usize,
+        /// Approximate canonical message bytes.
+        message_bytes: usize,
+        /// Approximate raw tool-result bytes within the canonical transcript.
+        tool_result_bytes: usize,
+    },
+    /// The normal provider request boundary was deliberately not entered.
+    ProviderRequestSkipped { reason: ProviderRequestSkipReason },
     /// Run ownership began.
     AgentStart,
     /// A model turn began.
@@ -111,6 +180,21 @@ pub enum AgentEventKind {
         tool_call_id: ToolCallId,
         tool_name: String,
         result: AgentToolResult,
+    },
+    /// A typed failure was observed by the run-local tool circuit breaker.
+    ToolFailureObserved {
+        /// Correlated assistant tool call.
+        tool_call_id: ToolCallId,
+        /// Host-visible recovery semantics.
+        disposition: crate::tool::ToolFailureDisposition,
+        /// Stable host-supplied capability signature, when relevant.
+        signature: Option<String>,
+        /// Consecutive count for the current signature.
+        consecutive_count: u32,
+        /// Whether this result ends the run after batch recording.
+        terminal: bool,
+        /// Bounded model-visible recovery/terminal reason.
+        message: String,
     },
     /// A model turn settled.
     TurnEnd { turn_id: TurnId, reason: StopReason },

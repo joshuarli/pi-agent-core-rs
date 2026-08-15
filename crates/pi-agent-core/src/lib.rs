@@ -40,16 +40,17 @@ pub use agent::{
     Agent, AgentBuilder, EventSubscription, LosslessEventSubscription, ObserverSubscription,
 };
 pub use compaction::{
+    AutomaticCompactionPolicy, AutomaticCompactionReason, AutomaticCompactionRequest,
     CompactionContext, CompactionError, CompactionFuture, CompactionHandle, CompactionResult,
-    Compactor, COMPACTION_CONTEXT_VERSION,
+    Compactor, ContextBudgetSource, OverflowRecovery, COMPACTION_CONTEXT_VERSION,
 };
 pub use default_tools::{
     CodingOperations, DefaultCodingTools, LocalCodingOperations, WorkspaceRoot,
 };
 pub use error::CoreError;
 pub use event::{
-    AgentEvent, AgentEventKind, AgentEventPayload, CompactionOutcome, EventObserver, EventSequence,
-    ObserverFuture,
+    AgentEvent, AgentEventKind, AgentEventPayload, AutomaticCompactionOutcome, CompactionOutcome,
+    EventObserver, EventSequence, ObserverFuture, ProviderRequestSkipReason,
 };
 pub use hooks::AgentLoopTurnUpdate;
 pub use run::RunHandle;
@@ -57,4 +58,7 @@ pub use state::{
     AgentMessage, AgentSnapshot, AgentToolCall, Message, MessageId, ModelAccountingSnapshot,
     ModelDescriptor, ModelTurnAccounting, RunId, RunSnapshot, ThinkingLevel, TurnId, Usage,
 };
-pub use tool::AgentToolResult;
+pub use tool::{
+    AgentToolResult, FailureSignature, ModelToolResult, ToolFailure, ToolFailureCircuitBreaker,
+    ToolFailureDisposition, ToolResultProjectionPolicy,
+};

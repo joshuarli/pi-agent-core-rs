@@ -1,9 +1,10 @@
 //! Tool preparation, execution, update delivery, and result insertion for one run.
 
 use super::{
-    apply_after_tool_call, error_tool_result, next_parallel_step, next_tool_step,
-    tool_error_message, ParallelToolStep, PendingToolExecution, PendingToolUpdate,
-    PendingToolUpdates, PreparedToolCall, PreparedToolExecution, RunHandle, ToolStep,
+    apply_after_tool_call, error_tool_result, error_tool_result_from_error, next_parallel_step,
+    next_tool_step, ParallelToolStep, PendingToolExecution, PendingToolUpdate, PendingToolUpdates,
+    PreparedToolCall, PreparedToolExecution, RunHandle, TerminalToolFailure, ToolBatchOutcome,
+    ToolStep,
 };
 use crate::agent::AgentInner;
 use crate::error::CoreError;
@@ -20,7 +21,7 @@ impl RunHandle {
         &self,
         agent: &AgentInner,
         tool_calls: &[AgentToolCall],
-    ) -> Result<bool, CoreError> {
+    ) -> Result<ToolBatchOutcome, CoreError> {
         let has_sequential_tool = tool_calls.iter().any(|assistant_call| {
             agent.tools.get(&assistant_call.name).is_some_and(|tool| {
                 tool.execution_mode() == crate::tool::ToolExecutionMode::Sequential
@@ -37,9 +38,9 @@ impl RunHandle {
         &self,
         agent: &AgentInner,
         tool_calls: &[AgentToolCall],
-    ) -> Result<bool, CoreError> {
+    ) -> Result<ToolBatchOutcome, CoreError> {
         let mut all_terminate = true;
-        for assistant_call in tool_calls {
+        for (source_index, assistant_call) in tool_calls.iter().enumerate() {
             let call = ToolCall {
                 id: assistant_call.id.clone(),
                 name: assistant_call.name.clone(),
@@ -59,19 +60,37 @@ impl RunHandle {
             )
             .await?;
 
-            let (result, terminate) = self.execute_one_tool_call(agent, call.clone()).await?;
+            let (mut result, terminate) = self.execute_one_tool_call(agent, call.clone()).await?;
+            normalize_result_failure(&mut result);
             self.emit_tool_execution_end(agent, &call, &result).await?;
-            self.append_tool_result_message(agent, call, result).await?;
+            self.append_tool_result_message(agent, call.clone(), result.clone())
+                .await?;
+            if let Some(terminal_failure) = self.observe_tool_failure(agent, &call, &result).await?
+            {
+                self.append_skipped_sequential_calls(
+                    agent,
+                    &tool_calls[source_index.saturating_add(1)..],
+                    &terminal_failure.message,
+                )
+                .await?;
+                return Ok(ToolBatchOutcome {
+                    all_terminate: false,
+                    terminal_failure: Some(terminal_failure),
+                });
+            }
             all_terminate &= terminate;
         }
-        Ok(all_terminate)
+        Ok(ToolBatchOutcome {
+            all_terminate,
+            terminal_failure: None,
+        })
     }
 
     async fn execute_tool_calls_parallel(
         &self,
         agent: &AgentInner,
         tool_calls: &[AgentToolCall],
-    ) -> Result<bool, CoreError> {
+    ) -> Result<ToolBatchOutcome, CoreError> {
         let mut prepared = Vec::with_capacity(tool_calls.len());
         let updates = PendingToolUpdates::default();
         let mut completions = (0..tool_calls.len())
@@ -100,8 +119,9 @@ impl RunHandle {
                 },
             )
             .await?;
-            let preparation = self.prepare_tool_call(agent, &call).await?;
-            if let PreparedToolCall::Immediate { result, terminate } = &preparation {
+            let mut preparation = self.prepare_tool_call(agent, &call).await?;
+            if let PreparedToolCall::Immediate { result, terminate } = &mut preparation {
+                normalize_result_failure(result);
                 self.emit_tool_execution_end(agent, &call, result).await?;
                 completions[source_index] = Some((result.clone(), *terminate));
             }
@@ -126,8 +146,32 @@ impl RunHandle {
                 });
             }
         }
+        let mut allowed_after_cancellation = std::collections::BTreeSet::new();
         while !pending.is_empty() {
-            match next_parallel_step(&mut pending, &updates).await {
+            match next_parallel_step(
+                &mut pending,
+                &updates,
+                &self.cancellation,
+                &mut allowed_after_cancellation,
+            )
+            .await
+            {
+                ParallelToolStep::Cancelled {
+                    updates: pending_updates,
+                } => {
+                    self.emit_tool_updates(agent, pending_updates).await?;
+                    // Drop every pending future immediately. A tool that has
+                    // not implemented cancellation must not keep the caller's
+                    // run busy after the shared scope is cancelled.
+                    for pending_call in std::mem::take(&mut pending) {
+                        updates.close(&pending_call.call.id);
+                        let mut result = error_tool_result(&pending_call.call, "Operation aborted");
+                        result.failure = Some(crate::tool::ToolFailure::cancelled());
+                        self.emit_tool_execution_end(agent, &pending_call.call, &result)
+                            .await?;
+                        completions[pending_call.source_index] = Some((result, false));
+                    }
+                }
                 ParallelToolStep::Updates(pending_updates) => {
                     let update_call_ids = pending_updates
                         .iter()
@@ -163,16 +207,26 @@ impl RunHandle {
                                     self.finalize_executed_tool(agent, &pending_call.call, result)
                                         .await?
                                 }
-                                None => (
-                                    error_tool_result(&pending_call.call, "Operation aborted"),
-                                    false,
-                                ),
+                                None => {
+                                    let mut result =
+                                        error_tool_result(&pending_call.call, "Operation aborted");
+                                    result.failure = Some(crate::tool::ToolFailure::cancelled());
+                                    (result, false)
+                                }
                             };
                             self.emit_tool_execution_end(agent, &pending_call.call, &result)
                                 .await?;
                             completions[pending_call.source_index] = Some((result, terminate));
                         }
                         pending = still_running;
+                        allowed_after_cancellation.extend(
+                            pending
+                                .iter()
+                                .filter(|pending_call| {
+                                    update_call_ids.contains(&pending_call.call.id)
+                                })
+                                .map(|pending_call| pending_call.call.id.clone()),
+                        );
                     }
                 }
                 ParallelToolStep::Completed {
@@ -196,15 +250,26 @@ impl RunHandle {
         drop(pending);
 
         let mut all_terminate = true;
+        let mut terminal_failure = None;
         for prepared_call in prepared {
-            let (result, terminate) = completions[prepared_call.source_index]
+            let (mut result, terminate) = completions[prepared_call.source_index]
                 .take()
                 .expect("each prepared tool call must have exactly one completion");
-            self.append_tool_result_message(agent, prepared_call.call, result)
+            normalize_result_failure(&mut result);
+            self.append_tool_result_message(agent, prepared_call.call.clone(), result.clone())
                 .await?;
+            if let Some(observed) = self
+                .observe_tool_failure(agent, &prepared_call.call, &result)
+                .await?
+            {
+                terminal_failure.get_or_insert(observed);
+            }
             all_terminate &= terminate;
         }
-        Ok(all_terminate)
+        Ok(ToolBatchOutcome {
+            all_terminate,
+            terminal_failure,
+        })
     }
 
     async fn execute_one_tool_call(
@@ -218,10 +283,24 @@ impl RunHandle {
                 let updates = PendingToolUpdates::default();
                 let future = self.start_tool_future(&tool, call.clone(), updates.clone());
                 let mut future = future;
+                // A tool can synchronously emit an update that cancels the
+                // run before returning its future. Preserve the update and
+                // allow one poll for its already-created completion.
+                let mut allow_one_poll_after_cancellation =
+                    self.cancellation.is_cancelled() && updates.has_updates();
                 let execution = loop {
-                    match next_tool_step(&mut future, &updates, &call.id).await {
+                    let allow = std::mem::take(&mut allow_one_poll_after_cancellation);
+                    match next_tool_step(&mut future, &updates, &call.id, &self.cancellation, allow)
+                        .await
+                    {
                         ToolStep::Updates(updates) => {
                             self.emit_tool_updates(agent, updates).await?;
+                            // Preserve Pi's established update-cancellation
+                            // ordering: a tool that became ready while
+                            // producing the cancelling update may still
+                            // report that completion. A still-pending future
+                            // is dropped on that one poll instead.
+                            allow_one_poll_after_cancellation = self.cancellation.is_cancelled();
                         }
                         ToolStep::Completed { result, updates } => {
                             self.emit_tool_updates(agent, updates).await?;
@@ -248,7 +327,7 @@ impl RunHandle {
         };
         if let Err(error) = validate_tool_arguments(&call.name, tool.schema(), &call.arguments) {
             return Ok(PreparedToolCall::Immediate {
-                result: error_tool_result(call, tool_error_message(error)),
+                result: error_tool_result_from_error(call, error),
                 terminate: false,
             });
         }
@@ -279,8 +358,10 @@ impl RunHandle {
             }
         }
         if self.cancellation.is_cancelled() {
+            let mut result = error_tool_result(call, "Operation aborted");
+            result.failure = Some(crate::tool::ToolFailure::cancelled());
             return Ok(PreparedToolCall::Immediate {
-                result: error_tool_result(call, "Operation aborted"),
+                result,
                 // Pi records this tool failure and gives the provider the
                 // already-aborted signal on the next turn. It is not a policy
                 // termination hint.
@@ -327,7 +408,7 @@ impl RunHandle {
                     call.name, result.tool_call_id
                 ),
             ),
-            Err(error) => error_tool_result(call, tool_error_message(error)),
+            Err(error) => error_tool_result_from_error(call, error),
         };
         let context = self.current_context(agent)?;
         let terminate = match agent
@@ -345,6 +426,124 @@ impl RunHandle {
             }
         };
         Ok((result, terminate))
+    }
+
+    async fn append_skipped_sequential_calls(
+        &self,
+        agent: &AgentInner,
+        calls: &[AgentToolCall],
+        terminal_message: &str,
+    ) -> Result<(), CoreError> {
+        let bounded = crate::tool::truncate_middle(terminal_message, 512);
+        for assistant_call in calls {
+            let call = ToolCall {
+                id: assistant_call.id.clone(),
+                name: assistant_call.name.clone(),
+                arguments: assistant_call.arguments.clone(),
+            };
+            let mut result = error_tool_result(
+                &call,
+                format!("Tool call was not executed after terminal capability failure: {bounded}"),
+            );
+            result.failure = Some(crate::tool::ToolFailure::recoverable());
+            // The capability never ran, so no execution start/end event is
+            // emitted. The canonical result still closes the assistant call.
+            self.append_tool_result_message(agent, call, result).await?;
+        }
+        Ok(())
+    }
+
+    async fn observe_tool_failure(
+        &self,
+        agent: &AgentInner,
+        call: &ToolCall,
+        result: &AgentToolResult,
+    ) -> Result<Option<TerminalToolFailure>, CoreError> {
+        if self.cancellation.is_cancelled() {
+            return Ok(None);
+        }
+        if !result.is_error {
+            self.policy
+                .lock()
+                .expect("run policy mutex poisoned")
+                .failure_streak = None;
+            return Ok(None);
+        }
+        let failure = result
+            .failure
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(crate::tool::ToolFailure::recoverable);
+        let signature = failure.signature().cloned();
+        let observe = matches!(
+            failure.disposition(),
+            crate::tool::ToolFailureDisposition::Retryable
+                | crate::tool::ToolFailureDisposition::Fatal
+        ) || agent
+            .tool_failure_circuit_breaker
+            .max_consecutive_retryable_failures
+            .is_some();
+        let (consecutive_count, terminal) = {
+            let mut policy_state = self.policy.lock().expect("run policy mutex poisoned");
+            match (failure.disposition(), signature.clone()) {
+                (crate::tool::ToolFailureDisposition::Retryable, Some(signature)) => {
+                    let count = match &mut policy_state.failure_streak {
+                        Some((previous, count)) if previous == &signature => {
+                            *count = count.saturating_add(1);
+                            *count
+                        }
+                        slot => {
+                            *slot = Some((signature, 1));
+                            1
+                        }
+                    };
+                    let tripped = agent
+                        .tool_failure_circuit_breaker
+                        .max_consecutive_retryable_failures
+                        .is_some_and(|limit| count >= limit.get());
+                    (count, tripped)
+                }
+                (crate::tool::ToolFailureDisposition::Fatal, Some(signature)) => {
+                    policy_state.failure_streak = Some((signature, 1));
+                    (1, true)
+                }
+                _ => {
+                    // An uncorrelated ordinary failure cannot be a consecutive
+                    // retry against the same dead capability.
+                    policy_state.failure_streak = None;
+                    (0, false)
+                }
+            }
+        };
+        if !observe {
+            return Ok(terminal.then_some(TerminalToolFailure {
+                message: crate::tool::truncate_middle(
+                    failure
+                        .recovery_guidance()
+                        .unwrap_or_else(|| result.content.as_str()),
+                    1024,
+                ),
+            }));
+        }
+        let message = crate::tool::truncate_middle(
+            failure
+                .recovery_guidance()
+                .unwrap_or_else(|| result.content.as_str()),
+            1024,
+        );
+        self.emit(
+            agent,
+            AgentEventKind::ToolFailureObserved {
+                tool_call_id: call.id.clone(),
+                disposition: failure.disposition(),
+                signature: signature.map(|signature| signature.as_str().to_owned()),
+                consecutive_count,
+                terminal,
+                message: message.clone(),
+            },
+        )
+        .await?;
+        Ok(terminal.then_some(TerminalToolFailure { message }))
     }
 
     /// Flush any callbacks that raced with an awaited hook or lifecycle
@@ -417,7 +616,9 @@ impl RunHandle {
                 details: result.details,
                 usage: result.usage,
                 added_tool_names: result.added_tool_names,
+                terminate: result.terminate,
                 is_error: result.is_error,
+                failure: result.failure,
             };
             state.messages.push(message.clone());
             message
@@ -432,5 +633,14 @@ impl RunHandle {
         self.emit(agent, AgentEventKind::MessageEnd { message })
             .await?;
         Ok(())
+    }
+}
+
+fn normalize_result_failure(result: &mut AgentToolResult) {
+    if result.is_error && result.failure.is_none() {
+        result.failure = Some(crate::tool::ToolFailure::recoverable());
+    }
+    if !result.is_error {
+        result.failure = None;
     }
 }

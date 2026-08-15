@@ -147,8 +147,10 @@ inference. While idle it clears nonempty input or exits with an empty composer.
 
 The status and `/cost` display only values reported by the provider: input,
 output, reasoning, cache-read, cache-write, and exact decimal cost may each be
-unknown. The host must not manufacture a pricing table, estimated cost,
-context-token estimate, telemetry, or budget behavior.
+unknown. The host must not manufacture a pricing table or estimated cost. The
+core may emit deterministic context estimates only when an explicit
+automatic-compaction policy is configured; those estimates are capacity policy,
+not billing data.
 
 Compaction changes retained context and therefore remains a core transaction.
 The caller-supplied, cancellation-aware `Compactor` receives a versioned,
@@ -157,9 +159,11 @@ tool-call relationships, commits atomically on success, emits typed
 `compaction_start`/`compaction_result`/`compaction_end` events, and leaves the
 old conversation intact on failure, invalid output, or cancellation.
 
-Manual compaction is idle-only. A provider with no documented concrete
-compaction policy is reported unavailable; the TUI must not invent a summary
-prompt or context budget.
+Manual compaction is idle-only. The TUI currently exposes that direct operation;
+an embedding may additionally opt into core `AutomaticCompactionPolicy` with a
+documented host capacity and the same caller-owned compactor. A provider with
+no documented concrete compaction policy is reported unavailable; the TUI must
+not invent a summary prompt or context budget.
 
 ## Dependency and architecture discipline
 

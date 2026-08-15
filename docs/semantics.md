@@ -64,13 +64,55 @@ owned `CompactionContext` (version, prompt, model, retained messages, and host
 messages) plus the operation cancellation token. It proposes a replacement;
 it never receives mutable agent state.
 
-Core validates unique nonzero message IDs and every retained tool-result's
-preceding assistant tool call/name before atomically replacing history. A
+Core validates unique nonzero message IDs and a one-to-one preceding assistant
+tool-call/name relationship for every retained tool result before atomically
+replacing history. A
 failure, invalid replacement, cancellation, active-agent request, or observer
 failure leaves the old history intact. The handle then settles to idle and the
 agent can run another prompt. Core does not derive a summary, choose a model,
 or aggregate the optional compactor usage report into normal model-turn
 accounting.
+
+## Opt-in automatic compaction
+
+`AutomaticCompactionPolicy` extends the same caller-supplied `Compactor` port;
+it never selects a summary model, prompt, executor, or provider. A host supplies
+an explicit `ContextBudgetSource`, reserved compaction tokens, recent-tail
+budget, overflow policy, and per-run compaction/retry limits. An enabled policy
+without a configured compactor stops at a typed `AutomaticCompactionUnavailable`
+boundary instead of inventing a fallback.
+
+After a completed assistant/tool turn and before the next provider request, the
+core estimates context from the last nonzero, non-error provider input usage plus
+only messages appended after that request. If no valid checkpoint exists it uses
+a deterministic canonical-message byte estimate. Zero usage and error responses
+do not reset the checkpoint. Crossing the threshold runs a cancellation-aware,
+transactional compactor operation. `AutomaticCompactionRequest` gives the
+compactor an exact safe retained suffix, summary prefix, and split-turn prefix
+when a retained suffix begins mid-turn, plus the requested recent-token
+budget, reason, and retry intent; compactors may override
+`Compactor::compact_automatic` to use this split while legacy compactors retain
+their `compact` behavior.
+
+```text
+completed assistant/tool turn
+  -> estimate next context
+  -> threshold: compact -> validate pairs -> atomically commit -> request provider
+typed overflow on incomplete response
+  -> restore pre-request transcript -> compact once -> retry the same turn
+cancel/failure/unavailable/limit
+  -> emit outcome, leave pre-transaction history unchanged, settle
+```
+
+Only `ModelStreamEvent::ContextOverflow` authorizes overflow recovery; the core
+does not inspect provider error text. A successful response is never retried.
+Each incomplete continuation is retried at most once; the configured per-run
+retry limit bounds recovery across distinct later continuations.
+If a retained context still exceeds the threshold, the core emits
+`StillAboveThreshold` and blocks an immediate identical compaction loop; normal
+per-run limits remain the final guard. Automatic lifecycle events include the
+reason, before/after estimates where known, count, retry intent, and bounded
+failure detail.
 
 The terminal invariant is true after every successful, failed, or cancelled run:
 
@@ -203,8 +245,38 @@ fixture pins the selected sequentialization rule.
 Updates are emitted during execution. Updates queued before the tool promise settles are awaited
 before its end event; callbacks after settlement are ignored. An end event contains the finalized
 result and error flag. `afterToolCall` replacement is field-by-field (`content`, `details`, `usage`,
-`isError`, `terminate`) with no deep merge. `terminate` is a boolean replacement and only `true`
+`isError`, `failure`, `terminate`) with no deep merge. `terminate` is a boolean replacement and only `true`
 contributes to the all-calls termination rule.
+
+### Tool failure circuit breaker and model projection
+
+`ToolFailure` is explicit host metadata, not a core string heuristic. It carries
+one of `Cancelled`, `InvalidArguments`, `Recoverable`, `Retryable`, or `Fatal`, an optional
+stable `FailureSignature`, and optional recovery guidance. Tools can attach it
+directly to `AgentToolResult`, return `ToolError::Classified`, or a host
+`after_tool_call` hook can replace it. Invalid arguments and ordinary execution
+failures are recoverable by default. A run-local `ToolFailureCircuitBreaker`
+counts only consecutive identical retryable signatures; success, an ordinary
+failure, or a different signature resets that streak. Fatal results always end
+the run after their result is recorded.
+
+In a sequential batch a terminal result prevents later capability execution but
+the core records deterministic skipped error results for later assistant calls,
+so the canonical transcript remains compactable. Parallel siblings already in
+flight settle normally; any fatal/tripped result suppresses the next provider
+request. `ToolFailureObserved` and `ProviderRequestSkipped` make the
+disposition, signature, count, and terminal decision observable without copying
+unbounded error stacks into metrics.
+
+Canonical tool-result `content`, `details`, usage, `terminate`, `is_error`, and
+failure metadata are retained unchanged in `AgentMessage::ToolResult` and
+`ToolExecutionEnd`. Before a provider request, the core clones and curates this
+context using `ToolResultProjectionPolicy`: it deterministically retains
+prefix/suffix around `… [truncated] …`, marks error status/disposition/guidance,
+encodes unsupported structured details as bounded marked text, and suppresses
+later identical error payloads in the same projected context. This projection
+never mutates transcript/audit state. Command Code preserves `isError`; the
+OpenAI-compatible context carries the bounded marked representation.
 
 ### Event observer and subscription contract
 

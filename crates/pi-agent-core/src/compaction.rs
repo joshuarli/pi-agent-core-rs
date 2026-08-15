@@ -16,11 +16,156 @@ use crate::state::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 /// Version of the context shape supplied to [`Compactor`].
 pub const COMPACTION_CONTEXT_VERSION: u32 = 1;
+
+/// Why an automatic compaction transaction was requested.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutomaticCompactionReason {
+    /// The estimated next-request context crossed the configured threshold.
+    Threshold,
+    /// A provider explicitly reported that its context capacity was exceeded.
+    Overflow,
+}
+
+/// The explicit source of a context capacity used by automatic compaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContextBudgetSource {
+    /// A model/provider context window supplied by the embedding.
+    ContextWindow(NonZeroU64),
+    /// A host-selected request budget that may be smaller than a context window.
+    ContextBudget(NonZeroU64),
+}
+
+impl ContextBudgetSource {
+    /// Return the usable input capacity before the compaction reserve is deducted.
+    pub const fn tokens(self) -> u64 {
+        match self {
+            Self::ContextWindow(tokens) | Self::ContextBudget(tokens) => tokens.get(),
+        }
+    }
+}
+
+/// What to do after an explicit provider context-overflow signal.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OverflowRecovery {
+    /// Preserve the provider error; do not compact or retry automatically.
+    #[default]
+    Disabled,
+    /// Compact the prior transcript then retry the incomplete continuation once.
+    CompactAndRetry,
+}
+
+/// Opt-in automatic compaction configuration.
+///
+/// The configuration deliberately has no provider or summary-prompt fields:
+/// a caller must still configure a [`Compactor`] explicitly. `recent_tokens`
+/// is supplied to that compactor along with an exact safe retained suffix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomaticCompactionPolicy {
+    /// Whether automatic compaction participates in normal run progression.
+    pub enabled: bool,
+    /// Explicit context capacity source; the core never guesses from a model name.
+    pub context_budget: ContextBudgetSource,
+    /// Tokens reserved for the compactor request/output and not available to the next request.
+    pub reserved_tokens: u64,
+    /// Approximate number of recent transcript tokens selected as an intact retained suffix.
+    pub recent_tokens: u64,
+    /// Typed overflow recovery policy.
+    pub overflow_recovery: OverflowRecovery,
+    /// Maximum successful or attempted automatic compaction transactions in one run.
+    pub max_compactions_per_run: u32,
+    /// Maximum overflow-recovery retries across distinct continuations in one run.
+    ///
+    /// Each incomplete continuation can still be retried at most once.
+    pub max_overflow_retries_per_run: u32,
+}
+
+impl AutomaticCompactionPolicy {
+    /// Construct a disabled policy with an explicit inert capacity placeholder.
+    ///
+    /// Use [`Self::enabled`] to opt in after selecting a real capacity.
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            // One is inert while disabled and keeps this type free of an
+            // invalid zero-capacity state.
+            context_budget: ContextBudgetSource::ContextBudget(NonZeroU64::MIN),
+            reserved_tokens: 0,
+            recent_tokens: 0,
+            overflow_recovery: OverflowRecovery::Disabled,
+            max_compactions_per_run: 0,
+            max_overflow_retries_per_run: 0,
+        }
+    }
+
+    /// Validate cross-field policy invariants before an agent is built.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.reserved_tokens >= self.context_budget.tokens() {
+            return Err("automatic compaction reserve must be smaller than the context budget");
+        }
+        if self.max_compactions_per_run == 0 {
+            return Err(
+                "enabled automatic compaction requires a non-zero per-run compaction limit",
+            );
+        }
+        if self.overflow_recovery == OverflowRecovery::CompactAndRetry
+            && self.max_overflow_retries_per_run == 0
+        {
+            return Err("overflow retry recovery requires a non-zero retry limit");
+        }
+        Ok(())
+    }
+
+    /// Return the threshold for a normal next model request.
+    pub const fn threshold_tokens(&self) -> u64 {
+        self.context_budget
+            .tokens()
+            .saturating_sub(self.reserved_tokens)
+    }
+}
+
+impl Default for AutomaticCompactionPolicy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+/// The exact automatic split supplied to a compactor.
+///
+/// `retained_messages` is an intact suffix that keeps assistant tool calls
+/// paired with results. `prefix_messages` may end during a tool turn only when
+/// `split_turn_prefix` names the assistant content the compactor should retain
+/// in its summary. The core never fabricates summary text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomaticCompactionRequest {
+    /// Trigger that selected this transaction.
+    pub reason: AutomaticCompactionReason,
+    /// Estimated context tokens before compaction, if known.
+    pub estimated_tokens_before: Option<u64>,
+    /// Configured capacity before the reserve is deducted.
+    pub context_budget_tokens: u64,
+    /// Tokens reserved for the compactor operation.
+    pub reserved_tokens: u64,
+    /// Requested approximate tail size.
+    pub recent_tokens: u64,
+    /// Prefix selected for summary/reduction.
+    pub prefix_messages: Vec<AgentMessage>,
+    /// Intact suffix that the replacement must preserve exactly.
+    pub retained_messages: Vec<AgentMessage>,
+    /// A partial user/assistant/tool turn in the summarized prefix, when the
+    /// intact retained suffix begins at an assistant message.
+    pub split_turn_prefix: Vec<AgentMessage>,
+    /// Whether a successful compaction will retry the same provider continuation.
+    pub retry_provider_request: bool,
+}
 
 /// An owned, versioned view of the conversation a compactor may replace.
 ///
@@ -128,6 +273,21 @@ pub trait Compactor: Send + Sync {
         context: CompactionContext,
         cancellation: CancellationToken,
     ) -> CompactionFuture<'a>;
+
+    /// Produce an automatic replacement using the core-selected safe split.
+    ///
+    /// Existing manual compactors remain valid: by default they receive the
+    /// same complete snapshot through [`Self::compact`]. Compactors that can
+    /// preserve a prior summary and exact recent tail should override this
+    /// method and use `request` rather than inferring boundaries themselves.
+    fn compact_automatic<'a>(
+        &'a self,
+        context: CompactionContext,
+        _request: AutomaticCompactionRequest,
+        cancellation: CancellationToken,
+    ) -> CompactionFuture<'a> {
+        self.compact(context, cancellation)
+    }
 }
 
 /// A reserved, caller-driven manual compaction operation.
@@ -362,13 +522,14 @@ impl Agent {
                 initial_messages: Vec::new(),
                 message_start_index: 0,
                 skip_initial_steering: true,
+                policy: Mutex::new(crate::run::RunPolicyState::default()),
             },
             compactor,
         })
     }
 }
 
-fn snapshot_context(agent: &AgentInner) -> CompactionContext {
+pub(crate) fn snapshot_context(agent: &AgentInner) -> CompactionContext {
     let state = agent.state.lock().expect("agent state mutex poisoned");
     CompactionContext {
         version: COMPACTION_CONTEXT_VERSION,
@@ -379,7 +540,7 @@ fn snapshot_context(agent: &AgentInner) -> CompactionContext {
     }
 }
 
-fn commit_replacement(
+pub(crate) fn commit_replacement(
     agent: &AgentInner,
     run_id: crate::state::RunId,
     cancellation: &CancellationToken,
@@ -396,7 +557,7 @@ fn commit_replacement(
     Ok(())
 }
 
-fn validate_messages(messages: &[AgentMessage]) -> Result<(), CompactionError> {
+pub(crate) fn validate_messages(messages: &[AgentMessage]) -> Result<(), CompactionError> {
     let mut message_ids = BTreeSet::new();
     let mut tool_calls = BTreeMap::new();
     let mut tool_results = BTreeSet::new();
@@ -456,6 +617,17 @@ fn validate_messages(messages: &[AgentMessage]) -> Result<(), CompactionError> {
             },
             AgentMessage::User { .. } => {}
         }
+    }
+    let missing_results = tool_calls
+        .keys()
+        .filter(|tool_call_id| !tool_results.contains(*tool_call_id))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if !missing_results.is_empty() {
+        return Err(CompactionError::invalid(format!(
+            "retained assistant tool calls have no result: {}",
+            missing_results.join(", ")
+        )));
     }
     Ok(())
 }

@@ -129,6 +129,11 @@ fn event_name(event: &AgentEventKind) -> &'static str {
         AgentEventKind::CompactionStart { .. } => "compaction_start",
         AgentEventKind::CompactionResult { .. } => "compaction_result",
         AgentEventKind::CompactionEnd { .. } => "compaction_end",
+        AgentEventKind::AutomaticCompactionStart { .. } => "automatic_compaction_start",
+        AgentEventKind::AutomaticCompactionEnd { .. } => "automatic_compaction_end",
+        AgentEventKind::ContextEstimate { .. } => "context_estimate",
+        AgentEventKind::ProviderRequestSkipped { .. } => "provider_request_skipped",
+        AgentEventKind::ToolFailureObserved { .. } => "tool_failure_observed",
         AgentEventKind::AgentStart => "agent_start",
         AgentEventKind::TurnStart { .. } => "turn_start",
         AgentEventKind::MessageStart { .. } => "message_start",
@@ -298,6 +303,17 @@ fn terminal_code(result: &Result<(), pi_agent_core::CoreError>) -> Option<&'stat
         Err(pi_agent_core::CoreError::RunFinished { .. }) => Some("run_finished"),
         Err(pi_agent_core::CoreError::Compaction(_)) => Some("compaction"),
         Err(pi_agent_core::CoreError::MissingCompactor) => Some("missing_compactor"),
+        Err(pi_agent_core::CoreError::AutomaticCompactionUnavailable { .. }) => {
+            Some("automatic_compaction_unavailable")
+        }
+        Err(pi_agent_core::CoreError::AutomaticCompaction { .. }) => Some("automatic_compaction"),
+        Err(pi_agent_core::CoreError::InvalidAutomaticCompactionPolicy { .. }) => {
+            Some("invalid_automatic_compaction_policy")
+        }
+        Err(pi_agent_core::CoreError::InvalidToolResultProjectionPolicy { .. }) => {
+            Some("invalid_tool_result_projection_policy")
+        }
+        Err(pi_agent_core::CoreError::ToolCircuitBreaker { .. }) => Some("tool_circuit_breaker"),
     }
 }
 

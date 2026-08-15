@@ -83,6 +83,13 @@ pub enum ModelStreamEvent {
         /// Redacted provider/model diagnostic.
         message: String,
     },
+    /// The provider explicitly identified the incomplete response as a
+    /// context-capacity overflow. This is typed so the generic core never
+    /// guesses from an HTTP body or error string.
+    ContextOverflow {
+        /// Redacted provider diagnostic.
+        message: String,
+    },
     /// Provider/model cancellation represented as a terminal assistant response.
     ///
     /// This is distinct from host cancellation: the provider independently
@@ -163,6 +170,32 @@ impl CancellationToken {
     /// Check whether cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Register a scheduler waker for cancellation without allocating a
+    /// short-lived wait future. Internal polling loops use this to ensure an
+    /// otherwise cancellation-unaware capability cannot leave a run busy.
+    pub(crate) fn register_waker(&self, waker: &Waker) {
+        if self.is_cancelled() {
+            waker.wake_by_ref();
+            return;
+        }
+        let mut waiters = self
+            .0
+            .waiters
+            .lock()
+            .expect("cancellation waiter mutex poisoned");
+        if self.is_cancelled() {
+            waker.wake_by_ref();
+            return;
+        }
+        if !waiters
+            .iter()
+            .any(|(_, existing)| existing.will_wake(waker))
+        {
+            let id = self.0.next_waiter_id.fetch_add(1, Ordering::Relaxed);
+            waiters.push((id, waker.clone()));
+        }
     }
 
     /// Return a future that resolves as soon as this token is cancelled.

@@ -114,6 +114,7 @@ impl AgentTool for RecordingTool {
             added_tool_names: Vec::new(),
             terminate: false,
             is_error: false,
+            failure: None,
         })))
     }
 }

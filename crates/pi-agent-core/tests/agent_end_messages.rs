@@ -71,6 +71,7 @@ impl AgentTool for TerminatingTool {
             added_tool_names: Vec::new(),
             terminate: true,
             is_error: false,
+            failure: None,
         })))
     }
 }

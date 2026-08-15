@@ -88,6 +88,15 @@ fn commandcode_message(
             let name = tool_names.get(id).ok_or_else(|| {
                 "Command Code tool result has no preceding assistant tool-call name".to_owned()
             })?;
+            let mut content = string_or_null(object, "content")?;
+            if let Some(details) = optional_string_or_null(object, "details")? {
+                content.push_str("\n[tool details (serialized JSON): ");
+                content.push_str(&crate::tool::truncate_middle(
+                    details,
+                    crate::tool::ToolResultProjectionPolicy::default().max_details_bytes,
+                ));
+                content.push(']');
+            }
             Ok(json_value!({
                 "role": "tool",
                 "content": json_value!([json_value!({
@@ -96,7 +105,7 @@ fn commandcode_message(
                     "toolName": name,
                     "output": json_value!({
                         "type": "text",
-                        "value": string_or_null(object, "content")?,
+                        "value": content,
                     }),
                     "isError": object
                         .get("is_error")

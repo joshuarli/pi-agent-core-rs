@@ -44,6 +44,13 @@ and resource interpretation are documented in
 - Deterministic hardening covers lifecycle balance and cleanup, completion
   ordering, profile composition, concurrent run claims, workspace isolation,
   non-blocking observer overflow, and one thousand isolated agents.
+- Automatic policy regression coverage (`tests/automatic_policy.rs`) pins
+  threshold ordering, zero-usage checkpoint retention, overflow compact/retry,
+  and transactional failure behavior. `tests/circuit_breaker.rs` pins fatal and
+  repeated retryable capability failures, while `tests/tool_projection.rs`
+  pins raw-versus-model-facing result curation. These cases are also the local
+  compaction parity surface to compare against Pi's compaction split and
+  overflow-recovery fixtures without importing Pi session storage semantics.
 - The final coding gate ran on 2026-08-14 with the explicit, credential-injected
   provider manifest. The provider-specific report is intentionally ignored; the
   controller contract lives in [`evals/README.md`](../evals/README.md).

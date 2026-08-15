@@ -45,6 +45,7 @@ fn result_for(call: ToolCall) -> ToolResult {
         added_tool_names: Vec::new(),
         terminate: false,
         is_error: false,
+        failure: None,
     }
 }
 
@@ -414,7 +415,12 @@ fn assert_lifecycle_balance(events: &[pi_agent_core::event::AgentEvent]) {
             | AgentEventKind::ModelTurnUsage { .. }
             | AgentEventKind::CompactionStart { .. }
             | AgentEventKind::CompactionResult { .. }
-            | AgentEventKind::CompactionEnd { .. } => {}
+            | AgentEventKind::CompactionEnd { .. }
+            | AgentEventKind::AutomaticCompactionStart { .. }
+            | AgentEventKind::AutomaticCompactionEnd { .. }
+            | AgentEventKind::ContextEstimate { .. }
+            | AgentEventKind::ProviderRequestSkipped { .. }
+            | AgentEventKind::ToolFailureObserved { .. } => {}
         }
     }
     assert_eq!(agent_starts, 1);

@@ -32,7 +32,11 @@ pub enum AgentMessage {
         details: Option<SerializedJson>,
         usage: Option<Usage>,
         added_tool_names: Vec<String>,
+        /// Whether this finalized result requested the run stop after its batch.
+        terminate: bool,
         is_error: bool,
+        /// Typed host classification for an error result, when supplied.
+        failure: Option<crate::tool::ToolFailure>,
     },
 }
 

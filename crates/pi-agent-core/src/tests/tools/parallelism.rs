@@ -1,5 +1,81 @@
 use super::super::*;
 
+struct CancellingPendingParallelTool;
+
+impl AgentTool for CancellingPendingParallelTool {
+    fn name(&self) -> &str {
+        "cancel_pending"
+    }
+
+    fn description(&self) -> &str {
+        "cancels its run and never settles by itself"
+    }
+
+    fn schema(&self) -> &pi_agent_protocol::JsonValue {
+        static SCHEMA: std::sync::OnceLock<pi_agent_protocol::JsonValue> =
+            std::sync::OnceLock::new();
+        SCHEMA.get_or_init(|| pi_agent_protocol::JsonValue::parse(r#"{"type":"object"}"#).unwrap())
+    }
+
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::Parallel
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _call: ToolCall,
+        context: ToolContext,
+        _updates: ToolUpdateSink,
+    ) -> ToolFuture<'a> {
+        Box::pin(std::future::poll_fn(move |_| {
+            context.cancellation.cancel();
+            Poll::Pending
+        }))
+    }
+}
+
+#[test]
+fn cancellation_drops_a_parallel_tool_that_never_settles() {
+    smol::block_on(async {
+        let call_id = ToolCallId::new("cancel-pending").expect("fixture call ID");
+        let provider = Arc::new(ScriptedProvider::new([
+            ModelStream {
+                events: vec![
+                    ModelStreamEvent::ToolCall(AgentToolCall {
+                        id: call_id.clone(),
+                        name: "cancel_pending".into(),
+                        arguments: SerializedJson::new("{}"),
+                    }),
+                    ModelStreamEvent::End(StopReason::ToolUse),
+                ],
+            },
+            ModelStream {
+                events: vec![ModelStreamEvent::End(StopReason::Cancelled)],
+            },
+        ]));
+        let agent = Agent::builder()
+            .model_provider(provider)
+            .tool(Arc::new(CancellingPendingParallelTool))
+            .build();
+        let run = agent.start_prompt("cancel through the pending parallel capability")?;
+
+        assert_eq!(run.drive().await, Err(CoreError::Cancelled));
+        assert_eq!(agent.snapshot().phase, AgentPhase::Idle);
+        assert!(run.events().iter().any(|event| {
+            matches!(
+                &event.kind,
+                AgentEventKind::ToolExecutionEnd { result, .. }
+                    if result.failure.as_ref().is_some_and(|failure| {
+                        failure.disposition() == crate::tool::ToolFailureDisposition::Cancelled
+                    })
+            )
+        }));
+
+        Ok::<(), CoreError>(())
+    })
+    .expect("parallel cancellation must settle the run");
+}
+
 #[test]
 fn tool_turn_executes_then_continues_the_model_loop() {
     smol::block_on(async {
@@ -533,6 +609,7 @@ fn parallel_completions_return_to_source_order_for_context() {
                     added_tool_names: Vec::new(),
                     terminate: false,
                     is_error: false,
+                    failure: None,
                 },
             )
             .expect("planned call");

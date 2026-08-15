@@ -142,6 +142,7 @@ impl AgentTool for EchoTool {
             added_tool_names: Vec::new(),
             terminate: false,
             is_error: false,
+            failure: None,
         })))
     }
 }
@@ -238,6 +239,7 @@ impl AgentTool for ParallelFixtureTool {
             added_tool_names: Vec::new(),
             terminate: false,
             is_error: false,
+            failure: None,
         };
         if self.yield_once {
             Box::pin(YieldOnceToolFuture {
@@ -285,6 +287,7 @@ impl AgentTool for VariableDelayTool {
                 added_tool_names: Vec::new(),
                 terminate: false,
                 is_error: false,
+                failure: None,
             })),
             remaining_yields: self.yields,
         })

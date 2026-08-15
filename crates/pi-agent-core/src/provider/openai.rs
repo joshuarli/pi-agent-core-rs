@@ -96,11 +96,59 @@ fn openai_message(message: &AgentMessage) -> Result<JsonValue, HookError> {
         AgentMessage::ToolResult {
             tool_call_id,
             content,
+            details,
+            is_error,
             ..
-        } => Ok(JsonValue::object([
-            ("role", JsonValue::from("tool")),
-            ("tool_call_id", JsonValue::from(tool_call_id.as_str())),
-            ("content", JsonValue::from(content.clone())),
-        ])),
+        } => {
+            let mut model_content = content.clone();
+            if let Some(details) = details {
+                model_content.push_str("\n[tool details (serialized JSON): ");
+                model_content.push_str(&crate::tool::truncate_middle(
+                    details.as_str(),
+                    crate::tool::ToolResultProjectionPolicy::default().max_details_bytes,
+                ));
+                model_content.push(']');
+            }
+            Ok(JsonValue::object([
+                ("role", JsonValue::from("tool")),
+                ("tool_call_id", JsonValue::from(tool_call_id.as_str())),
+                ("content", JsonValue::from(model_content)),
+                ("is_error", JsonValue::from(*is_error)),
+            ]))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{MessageId, SerializedJson, ToolCallId};
+    use crate::tool::{FailureSignature, ToolFailure};
+
+    #[test]
+    fn tool_projection_keeps_error_state_and_marks_unsupported_details() {
+        let message = AgentMessage::ToolResult {
+            id: MessageId(1),
+            tool_call_id: ToolCallId::new("call-1").expect("fixture call ID"),
+            tool_name: "fixture".into(),
+            content: "error output".into(),
+            details: Some(SerializedJson::new(r#"{"detail":"raw"}"#)),
+            usage: None,
+            added_tool_names: Vec::new(),
+            terminate: false,
+            is_error: true,
+            failure: Some(ToolFailure::fatal(
+                FailureSignature::new("fixture:dead").expect("signature"),
+            )),
+        };
+        let projected = openai_message(&message).expect("projection");
+        assert_eq!(
+            projected.get("is_error").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert!(projected
+            .get("content")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|content| content.contains("[tool details (serialized JSON):")));
     }
 }

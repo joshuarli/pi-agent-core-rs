@@ -101,6 +101,18 @@ impl<S: TraceSink> TraceObserver<S> {
                 // The compact V0 trace schema has no context-replacement record. The
                 // authoritative lifecycle event stream remains available to the host.
             }
+            AgentEventKind::AutomaticCompactionStart { .. }
+            | AgentEventKind::ContextEstimate { .. }
+            | AgentEventKind::ProviderRequestSkipped { .. } => {
+                // These are structured observability events. The compact V0
+                // trace remains content-oriented; hosts that need policy
+                // metrics retain the core lifecycle stream.
+            }
+            AgentEventKind::AutomaticCompactionEnd { outcome, .. } => {
+                if let crate::event::AutomaticCompactionOutcome::Failed { message } = outcome {
+                    state.error = Some(message.clone());
+                }
+            }
             AgentEventKind::AgentStart => {
                 state.current_turn = None;
                 state.pending_tools.clear();
@@ -162,6 +174,12 @@ impl<S: TraceSink> TraceObserver<S> {
                 // The compact V0 trace stores the settled tool record only.
                 // Streaming updates remain available through core observers.
             }
+            AgentEventKind::ToolFailureObserved {
+                terminal: true,
+                message,
+                ..
+            } => state.error = Some(message.clone()),
+            AgentEventKind::ToolFailureObserved { .. } => {}
             AgentEventKind::TurnEnd { turn_id, reason } => {
                 let pending = state.current_turn.take().unwrap_or(PendingTurn {
                     index: trace_turn_index(turn_id.0),
@@ -337,6 +355,7 @@ mod tests {
                     added_tool_names: Vec::new(),
                     terminate: false,
                     is_error: false,
+                    failure: None,
                 },
             },
         );

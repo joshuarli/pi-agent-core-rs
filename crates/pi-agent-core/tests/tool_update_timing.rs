@@ -99,6 +99,7 @@ impl Future for GatedToolFuture {
                 added_tool_names: Vec::new(),
                 terminate: false,
                 is_error: false,
+                failure: None,
             }));
         }
         *self.gate.waker.lock().expect("gate waker mutex") = Some(context.waker().clone());

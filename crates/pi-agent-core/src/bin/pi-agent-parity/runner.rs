@@ -326,6 +326,7 @@ impl AgentTool for FixtureTool {
                 added_tool_names: Vec::new(),
                 terminate: response.terminate,
                 is_error: response.is_error,
+                failure: None,
             }),
             None => Err(pi_agent_core::error::ToolError::Execution {
                 tool: call.name,

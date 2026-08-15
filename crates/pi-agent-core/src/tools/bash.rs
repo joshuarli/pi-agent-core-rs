@@ -96,6 +96,7 @@ impl AgentTool for BashTool {
                     added_tool_names: Vec::new(),
                     terminate: false,
                     is_error: true,
+                    failure: Some(crate::tool::ToolFailure::recoverable()),
                 });
             }
             let mut content = text;

@@ -106,6 +106,17 @@ pub(super) fn normalize_event(
         AgentEventKind::CompactionStart { .. } => ("compaction_start", empty_object()),
         AgentEventKind::CompactionResult { .. } => ("compaction_result", empty_object()),
         AgentEventKind::CompactionEnd { .. } => ("compaction_end", empty_object()),
+        AgentEventKind::AutomaticCompactionStart { .. } => {
+            ("automatic_compaction_start", empty_object())
+        }
+        AgentEventKind::AutomaticCompactionEnd { .. } => {
+            ("automatic_compaction_end", empty_object())
+        }
+        AgentEventKind::ContextEstimate { .. } => ("context_estimate", empty_object()),
+        AgentEventKind::ProviderRequestSkipped { .. } => {
+            ("provider_request_skipped", empty_object())
+        }
+        AgentEventKind::ToolFailureObserved { .. } => ("tool_failure_observed", empty_object()),
         AgentEventKind::AgentStart => ("agent_start", empty_object()),
         AgentEventKind::AgentEnd { .. } => ("agent_end", empty_object()),
         AgentEventKind::TurnStart { turn_id } => (

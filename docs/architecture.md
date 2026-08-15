@@ -120,6 +120,8 @@ The event reducer updates the state snapshot before invoking observers:
 | `tool_execution_end` | Remove call ID from pending set |
 | `model_turn_usage` | Retain one provider-reported model-turn record and update aggregate accounting |
 | `compaction_result` | The validated replacement was already atomically committed before observers see it |
+| `automatic_compaction_*` | Run-local policy transaction; canonical history changes only on validated success |
+| `context_estimate`, `tool_failure_observed`, `provider_request_skipped` | Structured observability; no message content is added to metrics |
 | `turn_end` | Record assistant error text when present |
 | `agent_end` | Clear streaming snapshot; settlement still awaits terminal observers |
 
@@ -198,6 +200,11 @@ spawn or own an executor.
 The core has no unsafe Rust and no Tokio type in public or private APIs. Dependency review must
 keep cancellation executor-agnostic and isolate the chosen token implementation behind the core
 contract.
+
+Concrete curl adapters own their child process to settlement: cancellation kills and reaps Local,
+OpenRouter, and Command Code transport children. The generic core additionally wakes its
+sequential tool poll on cancellation and records a cancellation result rather than leaving an
+uncooperative future holding run ownership.
 
 ## Default coding profile adapter
 

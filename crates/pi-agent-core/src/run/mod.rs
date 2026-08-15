@@ -6,15 +6,20 @@
 
 use crate::agent::AgentInner;
 use crate::error::CoreError;
-use crate::event::{AgentEvent, AgentEventKind, EventSequence};
+use crate::event::{
+    AgentEvent, AgentEventKind, AutomaticCompactionOutcome, EventSequence,
+    ProviderRequestSkipReason,
+};
 use crate::hooks::{AfterToolCall, AgentLoopTurnUpdate, Replacement};
 use crate::scheduler::{CancellationToken, ModelEventStream, ModelRequest, ModelStreamEvent};
 use crate::state::{
     AgentMessage, AgentPhase, AgentToolCall, ModelDescriptor, RunId, RunPhase, RunSnapshot,
     RunState, StopReason, ThinkingLevel, ToolCallId, TurnId, Usage,
 };
-use crate::tool::{AgentTool, AgentToolResult, ToolCall, ToolFuture, ToolUpdate};
-use std::collections::BTreeSet;
+use crate::tool::{
+    project_tool_result_as_text, AgentTool, AgentToolResult, ToolCall, ToolFuture, ToolUpdate,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::TrySendError;
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Poll, Waker};
@@ -84,6 +89,15 @@ impl PendingToolUpdates {
         }
     }
 
+    fn has_updates(&self) -> bool {
+        !self
+            .state
+            .lock()
+            .expect("tool update mutex poisoned")
+            .updates
+            .is_empty()
+    }
+
     fn close(&self, call_id: &ToolCallId) {
         let mut state = self.state.lock().expect("tool update mutex poisoned");
         state.closed_calls.insert(call_id.clone());
@@ -106,6 +120,66 @@ struct CompletedToolExecution {
     result: Result<AgentToolResult, crate::error::ToolError>,
 }
 
+/// Context accounting uses a provider-confirmed input checkpoint plus only the
+/// canonical messages appended after that request. This avoids a zero/error
+/// response accidentally resetting a useful context estimate.
+#[derive(Default)]
+struct ContextEstimator {
+    last_valid_input: Option<(u64, usize)>,
+}
+
+impl ContextEstimator {
+    fn observe_valid_input(&mut self, input_tokens: Option<u64>, request_message_count: usize) {
+        if let Some(input_tokens) = input_tokens.filter(|tokens| *tokens != 0) {
+            self.last_valid_input = Some((input_tokens, request_message_count));
+        }
+    }
+
+    fn estimate(&self, agent: &AgentInner) -> u64 {
+        let state = agent.state.lock().expect("agent state mutex poisoned");
+        match self.last_valid_input {
+            Some((input_tokens, source_message_count))
+                if source_message_count <= state.messages.len() =>
+            {
+                input_tokens.saturating_add(estimate_messages_tokens(
+                    &state.messages[source_message_count..],
+                ))
+            }
+            _ => estimate_messages_tokens(&state.messages),
+        }
+    }
+
+    fn reset_after_compaction(&mut self) {
+        self.last_valid_input = None;
+    }
+}
+
+/// Mutable policy state owned by exactly one run handle.
+#[derive(Default)]
+pub(crate) struct RunPolicyState {
+    failure_streak: Option<(crate::tool::FailureSignature, u32)>,
+    automatic_compactions: u32,
+    overflow_retries: u32,
+    /// An incomplete provider continuation is retried at most once, even if
+    /// the host's total per-run retry budget permits later turns to recover.
+    overflow_retried_this_continuation: bool,
+    /// A successful but insufficient compaction should not immediately loop
+    /// against the exact same retained transcript.
+    compaction_blocked_message_count: Option<usize>,
+    compaction_cancelled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct TerminalToolFailure {
+    pub(super) message: String,
+}
+
+#[derive(Default)]
+pub(super) struct ToolBatchOutcome {
+    pub(super) all_terminate: bool,
+    pub(super) terminal_failure: Option<TerminalToolFailure>,
+}
+
 /// A handle to the one run currently owning an agent.
 pub struct RunHandle {
     pub(crate) agent: Weak<AgentInner>,
@@ -116,6 +190,7 @@ pub struct RunHandle {
     /// reports this suffix, matching Pi continuation semantics.
     pub(crate) message_start_index: usize,
     pub(crate) skip_initial_steering: bool,
+    pub(crate) policy: Mutex<RunPolicyState>,
 }
 
 impl std::fmt::Debug for RunHandle {
@@ -164,7 +239,22 @@ impl RunHandle {
         if let Err(error) = &result {
             if !self.snapshot().phase.is_terminal() {
                 if self.cancellation.is_cancelled() {
-                    self.settle_cancellation().await;
+                    if self
+                        .policy
+                        .lock()
+                        .expect("run policy mutex poisoned")
+                        .compaction_cancelled
+                    {
+                        self.settle_compaction_boundary_cancellation().await;
+                    } else {
+                        self.settle_cancellation().await;
+                    }
+                } else if matches!(
+                    error,
+                    CoreError::AutomaticCompaction { .. }
+                        | CoreError::AutomaticCompactionUnavailable { .. }
+                ) {
+                    self.settle_compaction_boundary_failure(error).await;
                 } else {
                     self.settle_failure(error).await;
                 }
@@ -221,6 +311,67 @@ impl RunHandle {
         let _ = self.fail(error.to_string());
     }
 
+    /// Settle an automatic-policy boundary without adding a synthetic
+    /// assistant message. A compaction failure/cancellation must leave the
+    /// pre-transaction canonical transcript untouched.
+    async fn settle_compaction_boundary_failure(&self, error: &CoreError) {
+        let Some(agent) = self.agent.upgrade() else {
+            let _ = self.fail(error.to_string());
+            return;
+        };
+        {
+            let mut state = agent.state.lock().expect("agent state mutex poisoned");
+            state.partial_response = None;
+            state.is_streaming = false;
+            state.pending_tool_calls.clear();
+        }
+        let turn_id = self.snapshot().turn_id.unwrap_or(TurnId(1));
+        let _ = self
+            .emit(
+                &agent,
+                AgentEventKind::TurnEnd {
+                    turn_id,
+                    reason: StopReason::Error,
+                },
+            )
+            .await;
+        let messages = self.new_messages(&agent);
+        let _ = self
+            .emit(&agent, AgentEventKind::AgentEnd { messages })
+            .await;
+        let _ = self.fail(error.to_string());
+    }
+
+    /// Settle automatic compaction cancellation without adding a synthetic
+    /// assistant message to the pre-transaction transcript.
+    async fn settle_compaction_boundary_cancellation(&self) {
+        let Some(agent) = self.agent.upgrade() else {
+            let _ = self.finish(RunPhase::Cancelled, StopReason::Cancelled, None);
+            return;
+        };
+        {
+            let mut state = agent.state.lock().expect("agent state mutex poisoned");
+            state.partial_response = None;
+            state.is_streaming = false;
+            state.pending_tool_calls.clear();
+        }
+        let turn_id = self.snapshot().turn_id.unwrap_or(TurnId(1));
+        let _ = self
+            .emit(
+                &agent,
+                AgentEventKind::TurnEnd {
+                    turn_id,
+                    reason: StopReason::Cancelled,
+                },
+            )
+            .await;
+        let messages = self.new_messages(&agent);
+        let _ = self
+            .emit(&agent, AgentEventKind::AgentEnd { messages })
+            .await;
+        let _ = self.finish(RunPhase::Cancelled, StopReason::Cancelled, None);
+    }
+
     async fn drive_inner(&self) -> Result<(), CoreError> {
         let agent = self.agent.upgrade().ok_or(CoreError::InvalidTransition(
             crate::error::StateTransitionError::new("run", "orphaned", "drive"),
@@ -259,6 +410,8 @@ impl RunHandle {
         let mut turn_id = TurnId(1);
         let mut model_override = None::<ModelDescriptor>;
         let mut thinking_override = None::<ThinkingLevel>;
+        let mut context_estimator = ContextEstimator::default();
+        let mut completed_assistant_turn = false;
         let mut next_context = if self.skip_initial_steering {
             None
         } else {
@@ -270,6 +423,26 @@ impl RunHandle {
             .await?
         };
         loop {
+            if completed_assistant_turn
+                && self
+                    .maybe_automatic_compaction(
+                        &agent,
+                        &mut context_estimator,
+                        crate::compaction::AutomaticCompactionReason::Threshold,
+                        false,
+                    )
+                    .await?
+            {
+                // A hook-provided next context is a request-scoped clone of
+                // the old canonical transcript. The compaction transaction is
+                // authoritative for the next request, so rebuild from the
+                // committed canonical history.
+                next_context = None;
+            }
+            let request_message_count = {
+                let state = agent.state.lock().expect("agent state mutex poisoned");
+                state.messages.len()
+            };
             let request = self
                 .model_request(
                     &agent,
@@ -279,6 +452,10 @@ impl RunHandle {
                     thinking_override,
                 )
                 .await?;
+            if agent.automatic_compaction.enabled {
+                self.emit_context_estimate(&agent, &request, context_estimator.estimate(&agent))
+                    .await?;
+            }
             let turn_model = request.model.clone();
             let provider = agent
                 .provider
@@ -292,9 +469,68 @@ impl RunHandle {
                 .map_err(|error| CoreError::ModelProvider {
                     message: error.to_string(),
                 })?;
-            let (reason, tool_calls, error_message) = self
-                .consume_assistant_stream(&agent, stream.as_mut(), turn_id, turn_model)
+            let (reason, tool_calls, error_message, valid_input_tokens, provider_context_overflow) =
+                self.consume_assistant_stream(&agent, stream.as_mut(), turn_id, turn_model)
+                    .await?;
+
+            context_estimator.observe_valid_input(valid_input_tokens, request_message_count);
+
+            if !provider_context_overflow {
+                self.policy
+                    .lock()
+                    .expect("run policy mutex poisoned")
+                    .overflow_retried_this_continuation = false;
+            }
+
+            if provider_context_overflow
+                && agent.automatic_compaction.enabled
+                && agent.automatic_compaction.overflow_recovery
+                    == crate::compaction::OverflowRecovery::CompactAndRetry
+            {
+                let retry_allowed = {
+                    let mut policy = self.policy.lock().expect("run policy mutex poisoned");
+                    if policy.overflow_retried_this_continuation
+                        || policy.overflow_retries
+                            >= agent.automatic_compaction.max_overflow_retries_per_run
+                    {
+                        false
+                    } else {
+                        policy.overflow_retries = policy.overflow_retries.saturating_add(1);
+                        policy.overflow_retried_this_continuation = true;
+                        true
+                    }
+                };
+                if retry_allowed {
+                    // The failed provider response is not a model-visible
+                    // continuation. Restore the exact pre-request transcript
+                    // before passing it to the transactional compactor.
+                    {
+                        let mut state = agent.state.lock().expect("agent state mutex poisoned");
+                        state.messages.truncate(request_message_count);
+                        state.partial_response = None;
+                        state.is_streaming = false;
+                    }
+                    self.maybe_automatic_compaction(
+                        &agent,
+                        &mut context_estimator,
+                        crate::compaction::AutomaticCompactionReason::Overflow,
+                        true,
+                    )
+                    .await?;
+                    next_context = None;
+                    completed_assistant_turn = false;
+                    continue;
+                }
+                self.emit(
+                    &agent,
+                    AgentEventKind::AutomaticCompactionEnd {
+                        reason: crate::compaction::AutomaticCompactionReason::Overflow,
+                        retry_provider_request: true,
+                        outcome: AutomaticCompactionOutcome::LimitReached,
+                    },
+                )
                 .await?;
+            }
 
             if matches!(reason, StopReason::Error | StopReason::Aborted) {
                 self.emit(&agent, AgentEventKind::TurnEnd { turn_id, reason })
@@ -326,10 +562,25 @@ impl RunHandle {
                 return Err(error);
             }
 
-            let terminate_tool_batch = if tool_calls.is_empty() {
-                false
+            if reason == StopReason::Cancelled && self.cancellation.is_cancelled() {
+                self.emit(&agent, AgentEventKind::TurnEnd { turn_id, reason })
+                    .await?;
+                let messages = self.new_messages(&agent);
+                self.emit(&agent, AgentEventKind::AgentEnd { messages })
+                    .await?;
+                self.finish(RunPhase::Cancelled, StopReason::Cancelled, None)?;
+                return Err(CoreError::Cancelled);
+            }
+
+            completed_assistant_turn = true;
+
+            let tool_batch = if tool_calls.is_empty() {
+                ToolBatchOutcome::default()
             } else if reason == StopReason::Length {
-                self.fail_truncated_tool_calls(&agent, &tool_calls).await?
+                ToolBatchOutcome {
+                    all_terminate: self.fail_truncated_tool_calls(&agent, &tool_calls).await?,
+                    terminal_failure: None,
+                }
             } else {
                 if reason != StopReason::ToolUse {
                     return Err(CoreError::UnsupportedModelStream {
@@ -340,6 +591,32 @@ impl RunHandle {
                 }
                 self.execute_tool_calls(&agent, &tool_calls).await?
             };
+
+            if let Some(terminal_failure) = tool_batch.terminal_failure {
+                self.emit(
+                    &agent,
+                    AgentEventKind::ProviderRequestSkipped {
+                        reason: ProviderRequestSkipReason::ToolCircuitBreaker,
+                    },
+                )
+                .await?;
+                self.emit(
+                    &agent,
+                    AgentEventKind::TurnEnd {
+                        turn_id,
+                        reason: StopReason::Error,
+                    },
+                )
+                .await?;
+                let messages = self.new_messages(&agent);
+                self.emit(&agent, AgentEventKind::AgentEnd { messages })
+                    .await?;
+                let error = CoreError::ToolCircuitBreaker {
+                    message: terminal_failure.message,
+                };
+                self.fail(error.to_string())?;
+                return Err(error);
+            }
 
             self.emit(&agent, AgentEventKind::TurnEnd { turn_id, reason })
                 .await?;
@@ -369,7 +646,7 @@ impl RunHandle {
             }
 
             let mut queued = self.drain_steering(&agent);
-            let has_more_tool_calls = !tool_calls.is_empty() && !terminate_tool_batch;
+            let has_more_tool_calls = !tool_calls.is_empty() && !tool_batch.all_terminate;
             if !has_more_tool_calls && queued.is_empty() {
                 queued = self.drain_follow_up(&agent);
             }
@@ -422,9 +699,10 @@ impl RunHandle {
                 agent.tools.definitions(),
             )
         };
+        let projected_context = project_model_context(context, &agent.tool_result_projection);
         let transformed = agent
             .hooks
-            .transform_context_async(context, self.cancellation.clone())
+            .transform_context_async(projected_context, self.cancellation.clone())
             .await?;
         let request = ModelRequest {
             system_prompt,
@@ -437,6 +715,288 @@ impl RunHandle {
             thinking_level,
         };
         Ok(request)
+    }
+
+    /// Compact at the next-request boundary when the explicit automatic
+    /// policy says context pressure requires it. The transaction is performed
+    /// under this run's cancellation scope rather than via an idle-only
+    /// `CompactionHandle`.
+    async fn maybe_automatic_compaction(
+        &self,
+        agent: &AgentInner,
+        estimator: &mut ContextEstimator,
+        reason: crate::compaction::AutomaticCompactionReason,
+        retry_provider_request: bool,
+    ) -> Result<bool, CoreError> {
+        let policy = &agent.automatic_compaction;
+        if !policy.enabled {
+            return Ok(false);
+        }
+        let estimated_tokens_before = estimator.estimate(agent);
+        if reason == crate::compaction::AutomaticCompactionReason::Threshold
+            && estimated_tokens_before < policy.threshold_tokens()
+        {
+            return Ok(false);
+        }
+        let source_message_count = {
+            let state = agent.state.lock().expect("agent state mutex poisoned");
+            state.messages.len()
+        };
+        {
+            let policy_state = self.policy.lock().expect("run policy mutex poisoned");
+            if reason == crate::compaction::AutomaticCompactionReason::Threshold
+                && policy_state.compaction_blocked_message_count == Some(source_message_count)
+            {
+                return Ok(false);
+            }
+        }
+        let (count, limit_reached) = {
+            let mut policy_state = self.policy.lock().expect("run policy mutex poisoned");
+            if policy_state.automatic_compactions >= policy.max_compactions_per_run {
+                (policy_state.automatic_compactions, true)
+            } else {
+                policy_state.automatic_compactions =
+                    policy_state.automatic_compactions.saturating_add(1);
+                (policy_state.automatic_compactions, false)
+            }
+        };
+        if limit_reached {
+            self.emit(
+                agent,
+                AgentEventKind::AutomaticCompactionEnd {
+                    reason,
+                    retry_provider_request,
+                    outcome: AutomaticCompactionOutcome::LimitReached,
+                },
+            )
+            .await?;
+            return Err(CoreError::AutomaticCompaction {
+                reason,
+                message: "automatic compaction limit reached".into(),
+            });
+        }
+        self.emit(
+            agent,
+            AgentEventKind::AutomaticCompactionStart {
+                reason,
+                source_message_count,
+                estimated_tokens_before: Some(estimated_tokens_before),
+                retry_provider_request,
+                count,
+            },
+        )
+        .await?;
+        self.emit(
+            agent,
+            AgentEventKind::ProviderRequestSkipped {
+                reason: ProviderRequestSkipReason::AutomaticCompaction,
+            },
+        )
+        .await?;
+
+        let Some(compactor) = agent
+            .compactor
+            .read()
+            .expect("agent compactor lock poisoned")
+            .clone()
+        else {
+            self.emit(
+                agent,
+                AgentEventKind::AutomaticCompactionEnd {
+                    reason,
+                    retry_provider_request,
+                    outcome: AutomaticCompactionOutcome::Unavailable,
+                },
+            )
+            .await?;
+            return Err(CoreError::AutomaticCompactionUnavailable { reason });
+        };
+
+        let context = crate::compaction::snapshot_context(agent);
+        let (prefix_messages, retained_messages, split_turn_prefix) =
+            automatic_compaction_split(&context.messages, policy.recent_tokens);
+        let request = crate::compaction::AutomaticCompactionRequest {
+            reason,
+            estimated_tokens_before: Some(estimated_tokens_before),
+            context_budget_tokens: policy.context_budget.tokens(),
+            reserved_tokens: policy.reserved_tokens,
+            recent_tokens: policy.recent_tokens,
+            prefix_messages,
+            retained_messages: retained_messages.clone(),
+            split_turn_prefix,
+            retry_provider_request,
+        };
+        let replacement = match compactor
+            .compact_automatic(context, request, self.cancellation.clone())
+            .await
+        {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                if self.cancellation.is_cancelled() {
+                    self.policy
+                        .lock()
+                        .expect("run policy mutex poisoned")
+                        .compaction_cancelled = true;
+                    self.emit(
+                        agent,
+                        AgentEventKind::AutomaticCompactionEnd {
+                            reason,
+                            retry_provider_request,
+                            outcome: AutomaticCompactionOutcome::Cancelled,
+                        },
+                    )
+                    .await?;
+                    return Err(CoreError::Cancelled);
+                }
+                let message = crate::tool::truncate_middle(&error.to_string(), 1024);
+                self.emit(
+                    agent,
+                    AgentEventKind::AutomaticCompactionEnd {
+                        reason,
+                        retry_provider_request,
+                        outcome: AutomaticCompactionOutcome::Failed {
+                            message: message.clone(),
+                        },
+                    },
+                )
+                .await?;
+                return Err(CoreError::AutomaticCompaction { reason, message });
+            }
+        };
+        if self.cancellation.is_cancelled() {
+            self.policy
+                .lock()
+                .expect("run policy mutex poisoned")
+                .compaction_cancelled = true;
+            self.emit(
+                agent,
+                AgentEventKind::AutomaticCompactionEnd {
+                    reason,
+                    retry_provider_request,
+                    outcome: AutomaticCompactionOutcome::Cancelled,
+                },
+            )
+            .await?;
+            return Err(CoreError::Cancelled);
+        }
+        if let Err(error) = crate::compaction::validate_messages(&replacement.messages) {
+            let message = crate::tool::truncate_middle(&error.to_string(), 1024);
+            self.emit(
+                agent,
+                AgentEventKind::AutomaticCompactionEnd {
+                    reason,
+                    retry_provider_request,
+                    outcome: AutomaticCompactionOutcome::Failed {
+                        message: message.clone(),
+                    },
+                },
+            )
+            .await?;
+            return Err(CoreError::AutomaticCompaction { reason, message });
+        }
+        if !retained_messages.is_empty()
+            && !replacement.messages.ends_with(retained_messages.as_slice())
+        {
+            let message = "automatic compactor did not preserve the requested intact recent suffix";
+            self.emit(
+                agent,
+                AgentEventKind::AutomaticCompactionEnd {
+                    reason,
+                    retry_provider_request,
+                    outcome: AutomaticCompactionOutcome::Failed {
+                        message: message.into(),
+                    },
+                },
+            )
+            .await?;
+            return Err(CoreError::AutomaticCompaction {
+                reason,
+                message: message.into(),
+            });
+        }
+        if let Err(error) = crate::compaction::commit_replacement(
+            agent,
+            self.id(),
+            &self.cancellation,
+            replacement.messages,
+        ) {
+            if matches!(error, CoreError::Cancelled) {
+                self.policy
+                    .lock()
+                    .expect("run policy mutex poisoned")
+                    .compaction_cancelled = true;
+                self.emit(
+                    agent,
+                    AgentEventKind::AutomaticCompactionEnd {
+                        reason,
+                        retry_provider_request,
+                        outcome: AutomaticCompactionOutcome::Cancelled,
+                    },
+                )
+                .await?;
+            }
+            return Err(error);
+        }
+        estimator.reset_after_compaction();
+        let estimated_tokens_after = estimator.estimate(agent);
+        let still_above = estimated_tokens_after >= policy.threshold_tokens();
+        if still_above {
+            let message_count = {
+                let state = agent.state.lock().expect("agent state mutex poisoned");
+                state.messages.len()
+            };
+            self.policy
+                .lock()
+                .expect("run policy mutex poisoned")
+                .compaction_blocked_message_count = Some(message_count);
+        }
+        self.emit(
+            agent,
+            AgentEventKind::AutomaticCompactionEnd {
+                reason,
+                retry_provider_request,
+                outcome: if still_above {
+                    AutomaticCompactionOutcome::StillAboveThreshold
+                } else {
+                    AutomaticCompactionOutcome::Succeeded {
+                        estimated_tokens_after: Some(estimated_tokens_after),
+                    }
+                },
+            },
+        )
+        .await?;
+        Ok(true)
+    }
+
+    async fn emit_context_estimate(
+        &self,
+        agent: &AgentInner,
+        request: &ModelRequest,
+        estimated_context_tokens: u64,
+    ) -> Result<(), CoreError> {
+        let (message_count, message_bytes, tool_result_bytes) = {
+            let state = agent.state.lock().expect("agent state mutex poisoned");
+            (
+                state.messages.len(),
+                estimate_messages_bytes(&state.messages),
+                estimate_tool_result_bytes(&state.messages),
+            )
+        };
+        self.emit(
+            agent,
+            AgentEventKind::ContextEstimate {
+                estimated_context_tokens: Some(estimated_context_tokens),
+                input_bytes: request
+                    .system_prompt
+                    .len()
+                    .saturating_add(request.context.len()),
+                message_count,
+                message_bytes,
+                tool_result_bytes,
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     fn current_context(
@@ -527,13 +1087,23 @@ impl RunHandle {
         stream: &mut dyn ModelEventStream,
         turn_id: TurnId,
         model: Option<ModelDescriptor>,
-    ) -> Result<(StopReason, Vec<AgentToolCall>, Option<String>), CoreError> {
+    ) -> Result<
+        (
+            StopReason,
+            Vec<AgentToolCall>,
+            Option<String>,
+            Option<u64>,
+            bool,
+        ),
+        CoreError,
+    > {
         let mut assistant_id = None;
         let mut assistant_text = String::new();
         let mut tool_calls = Vec::new();
         let mut reason = None;
         let mut error_message = None;
         let mut usage: Option<Usage> = None;
+        let mut context_overflow = false;
 
         loop {
             let Some(item) =
@@ -617,6 +1187,11 @@ impl RunHandle {
                     reason = Some(StopReason::Error);
                     error_message = Some(message);
                 }
+                ModelStreamEvent::ContextOverflow { message } => {
+                    reason = Some(StopReason::Error);
+                    error_message = Some(message);
+                    context_overflow = true;
+                }
                 ModelStreamEvent::Aborted { message } => {
                     reason = Some(StopReason::Aborted);
                     error_message = Some(message);
@@ -661,6 +1236,14 @@ impl RunHandle {
         }
         self.emit(agent, AgentEventKind::MessageEnd { message: assistant })
             .await?;
+        let valid_input_tokens = if matches!(reason, StopReason::Error | StopReason::Aborted) {
+            None
+        } else {
+            usage
+                .as_ref()
+                .and_then(|usage| usage.input_tokens)
+                .filter(|tokens| *tokens != 0)
+        };
         if let Some(usage) = usage {
             let accounting = crate::state::ModelTurnAccounting {
                 run_id: self.id(),
@@ -675,7 +1258,13 @@ impl RunHandle {
             self.emit(agent, AgentEventKind::ModelTurnUsage { accounting })
                 .await?;
         }
-        Ok((reason, tool_calls, error_message))
+        Ok((
+            reason,
+            tool_calls,
+            error_message,
+            valid_input_tokens,
+            context_overflow,
+        ))
     }
 
     /// Refuse tool calls from a length-truncated assistant response. The
@@ -1023,6 +1612,154 @@ impl RunHandle {
     }
 }
 
+/// Clone-and-curate the canonical conversation at the model boundary.
+///
+/// The canonical transcript remains raw. In-tree provider adapters currently
+/// have no portable structured tool-details field, so details are encoded into
+/// bounded marked text here while the `is_error` bit stays available to native
+/// adapters such as Command Code.
+fn project_model_context(
+    mut context: crate::hooks::ContextEnvelope,
+    policy: &crate::tool::ToolResultProjectionPolicy,
+) -> crate::hooks::ContextEnvelope {
+    let mut seen_error_payloads = BTreeMap::new();
+    for message in &mut context.messages {
+        if let AgentMessage::ToolResult {
+            content,
+            details,
+            is_error,
+            failure,
+            ..
+        } = message
+        {
+            let projection = project_tool_result_as_text(
+                content,
+                details.as_ref(),
+                *is_error,
+                failure.as_ref(),
+                policy,
+                &mut seen_error_payloads,
+            );
+            *content = projection.content;
+            *details = None;
+        }
+    }
+    context
+}
+
+fn automatic_compaction_split(
+    messages: &[AgentMessage],
+    recent_tokens: u64,
+) -> (Vec<AgentMessage>, Vec<AgentMessage>, Vec<AgentMessage>) {
+    if messages.is_empty() || recent_tokens == 0 {
+        return (messages.to_vec(), Vec::new(), Vec::new());
+    }
+    let mut start = messages.len();
+    let mut retained_tokens = 0_u64;
+    while start > 0 && retained_tokens < recent_tokens {
+        start -= 1;
+        retained_tokens = retained_tokens.saturating_add(estimate_message_tokens(&messages[start]));
+    }
+    // A tool result cannot be the beginning of a retained transcript. Move to
+    // the assistant that owns the retained result(s), which keeps every
+    // assistant tool call paired with its result in the suffix.
+    while start > 0 && matches!(messages[start], AgentMessage::ToolResult { .. }) {
+        start -= 1;
+    }
+    if matches!(messages[start], AgentMessage::Assistant { .. }) {
+        if let Some(turn_start) = (0..start)
+            .rev()
+            .find(|index| matches!(messages[*index], AgentMessage::User { .. }))
+        {
+            return (
+                messages[..turn_start].to_vec(),
+                messages[start..].to_vec(),
+                messages[turn_start..start].to_vec(),
+            );
+        }
+    }
+    (
+        messages[..start].to_vec(),
+        messages[start..].to_vec(),
+        Vec::new(),
+    )
+}
+
+fn estimate_messages_tokens(messages: &[AgentMessage]) -> u64 {
+    messages.iter().map(estimate_message_tokens).sum()
+}
+
+fn estimate_message_tokens(message: &AgentMessage) -> u64 {
+    (estimate_message_bytes(message) as u64).saturating_add(3) / 4
+}
+
+fn estimate_messages_bytes(messages: &[AgentMessage]) -> usize {
+    messages.iter().map(estimate_message_bytes).sum()
+}
+
+fn estimate_tool_result_bytes(messages: &[AgentMessage]) -> usize {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult {
+                content, details, ..
+            } => Some(
+                content
+                    .len()
+                    .saturating_add(details.as_ref().map_or(0, |details| details.as_str().len())),
+            ),
+            _ => None,
+        })
+        .sum()
+}
+
+fn estimate_message_bytes(message: &AgentMessage) -> usize {
+    match message {
+        AgentMessage::User { content, .. } => content.len().saturating_add(16),
+        AgentMessage::Assistant {
+            content,
+            tool_calls,
+            error_message,
+            ..
+        } => content
+            .len()
+            .saturating_add(error_message.as_ref().map_or(0, String::len))
+            .saturating_add(
+                tool_calls
+                    .iter()
+                    .map(|call| {
+                        call.id
+                            .as_str()
+                            .len()
+                            .saturating_add(call.name.len())
+                            .saturating_add(call.arguments.as_str().len())
+                    })
+                    .sum::<usize>(),
+            )
+            .saturating_add(32),
+        AgentMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            content,
+            details,
+            failure,
+            ..
+        } => tool_call_id
+            .as_str()
+            .len()
+            .saturating_add(tool_name.len())
+            .saturating_add(content.len())
+            .saturating_add(details.as_ref().map_or(0, |details| details.as_str().len()))
+            .saturating_add(
+                failure
+                    .as_ref()
+                    .and_then(crate::tool::ToolFailure::recovery_guidance)
+                    .map_or(0, str::len),
+            )
+            .saturating_add(32),
+    }
+}
+
 impl Drop for RunHandle {
     fn drop(&mut self) {
         let should_abort = self
@@ -1045,6 +1782,10 @@ enum ToolStep {
 }
 
 enum ParallelToolStep {
+    /// The caller cancelled while at least one parallel capability was pending.
+    Cancelled {
+        updates: Vec<PendingToolUpdate>,
+    },
     Updates(Vec<PendingToolUpdate>),
     Completed {
         completed: Box<CompletedToolExecution>,
@@ -1060,16 +1801,37 @@ async fn next_tool_step<'a>(
     future: &mut ToolFuture<'a>,
     updates: &PendingToolUpdates,
     call_id: &ToolCallId,
+    cancellation: &CancellationToken,
+    allow_one_poll_after_cancellation: bool,
 ) -> ToolStep {
     std::future::poll_fn(|context| {
+        if cancellation.is_cancelled() && !allow_one_poll_after_cancellation {
+            updates.close(call_id);
+            return Poll::Ready(ToolStep::Completed {
+                result: Err(crate::error::ToolError::Cancelled {
+                    tool: "cancelled operation".into(),
+                }),
+                updates: updates.take().unwrap_or_default(),
+            });
+        }
         if let Some(updates) = updates.take() {
             return Poll::Ready(ToolStep::Updates(updates));
         }
         updates.register_waker(context.waker());
+        cancellation.register_waker(context.waker());
         // Close the check/register race: a callback arriving immediately
         // before registration must still be observed on this poll.
         if let Some(updates) = updates.take() {
             return Poll::Ready(ToolStep::Updates(updates));
+        }
+        if cancellation.is_cancelled() && !allow_one_poll_after_cancellation {
+            updates.close(call_id);
+            return Poll::Ready(ToolStep::Completed {
+                result: Err(crate::error::ToolError::Cancelled {
+                    tool: "cancelled operation".into(),
+                }),
+                updates: updates.take().unwrap_or_default(),
+            });
         }
         match future.as_mut().poll(context) {
             Poll::Ready(result) => {
@@ -1079,10 +1841,21 @@ async fn next_tool_step<'a>(
                     updates: updates.take().unwrap_or_default(),
                 })
             }
-            Poll::Pending => updates
-                .take()
-                .map(ToolStep::Updates)
-                .map_or(Poll::Pending, Poll::Ready),
+            Poll::Pending => {
+                if let Some(updates) = updates.take() {
+                    Poll::Ready(ToolStep::Updates(updates))
+                } else if cancellation.is_cancelled() {
+                    updates.close(call_id);
+                    Poll::Ready(ToolStep::Completed {
+                        result: Err(crate::error::ToolError::Cancelled {
+                            tool: "cancelled operation".into(),
+                        }),
+                        updates: Vec::new(),
+                    })
+                } else {
+                    Poll::Pending
+                }
+            }
         }
     })
     .await
@@ -1094,17 +1867,36 @@ async fn next_tool_step<'a>(
 async fn next_parallel_step<'a>(
     pending: &mut Vec<PendingToolExecution<'a>>,
     updates: &PendingToolUpdates,
+    cancellation: &CancellationToken,
+    allowed_after_cancellation: &mut BTreeSet<ToolCallId>,
 ) -> ParallelToolStep {
     std::future::poll_fn(|context| {
         if let Some(updates) = updates.take() {
             return Poll::Ready(ParallelToolStep::Updates(updates));
         }
+        if cancellation.is_cancelled() && allowed_after_cancellation.is_empty() {
+            return Poll::Ready(ParallelToolStep::Cancelled {
+                updates: Vec::new(),
+            });
+        }
         updates.register_waker(context.waker());
+        cancellation.register_waker(context.waker());
         if let Some(updates) = updates.take() {
             return Poll::Ready(ParallelToolStep::Updates(updates));
         }
+        if cancellation.is_cancelled() && allowed_after_cancellation.is_empty() {
+            return Poll::Ready(ParallelToolStep::Cancelled {
+                updates: updates.take().unwrap_or_default(),
+            });
+        }
         let mut index = 0;
         while index < pending.len() {
+            if cancellation.is_cancelled()
+                && !allowed_after_cancellation.remove(&pending[index].call.id)
+            {
+                index = index.saturating_add(1);
+                continue;
+            }
             if let Poll::Ready(result) = pending[index].future.as_mut().poll(context) {
                 let pending = pending.swap_remove(index);
                 updates.close(&pending.call.id);
@@ -1121,6 +1913,11 @@ async fn next_parallel_step<'a>(
                 return Poll::Ready(ParallelToolStep::Updates(updates));
             }
             index = index.saturating_add(1);
+        }
+        if cancellation.is_cancelled() {
+            return Poll::Ready(ParallelToolStep::Cancelled {
+                updates: updates.take().unwrap_or_default(),
+            });
         }
         updates
             .take()
@@ -1139,16 +1936,37 @@ fn error_tool_result(call: &ToolCall, content: impl Into<String>) -> AgentToolRe
         added_tool_names: Vec::new(),
         terminate: false,
         is_error: true,
+        failure: Some(crate::tool::ToolFailure::recoverable()),
     }
 }
 
 fn tool_error_message(error: crate::error::ToolError) -> String {
     match error {
         crate::error::ToolError::InvalidArguments { message, .. }
-        | crate::error::ToolError::Execution { message, .. } => message,
+        | crate::error::ToolError::Execution { message, .. }
+        | crate::error::ToolError::Classified { message, .. } => message,
         crate::error::ToolError::Blocked { reason, .. } => reason,
         crate::error::ToolError::Cancelled { .. } => "Operation aborted".into(),
     }
+}
+
+fn error_tool_result_from_error(
+    call: &ToolCall,
+    error: crate::error::ToolError,
+) -> AgentToolResult {
+    let failure = match &error {
+        crate::error::ToolError::InvalidArguments { .. } => {
+            Some(crate::tool::ToolFailure::invalid_arguments())
+        }
+        crate::error::ToolError::Classified { failure, .. } => Some(failure.clone()),
+        crate::error::ToolError::Cancelled { .. } => Some(crate::tool::ToolFailure::cancelled()),
+        crate::error::ToolError::Blocked { .. } | crate::error::ToolError::Execution { .. } => {
+            Some(crate::tool::ToolFailure::recoverable())
+        }
+    };
+    let mut result = error_tool_result(call, tool_error_message(error));
+    result.failure = failure;
+    result
 }
 
 fn apply_after_tool_call(result: &mut AgentToolResult, after: AfterToolCall) {
@@ -1169,6 +1987,12 @@ fn apply_after_tool_call(result: &mut AgentToolResult, after: AfterToolCall) {
     }
     if let Replacement::Replace(is_error) = after.is_error {
         result.is_error = is_error;
+        if !is_error {
+            result.failure = None;
+        }
+    }
+    if let Replacement::Replace(failure) = after.failure {
+        result.failure = failure;
     }
 }
 

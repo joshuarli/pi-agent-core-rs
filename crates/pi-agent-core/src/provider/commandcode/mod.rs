@@ -105,6 +105,9 @@ impl CommandCodeProvider {
                     events: response.events,
                 }
             }
+            Err(_message) if cancellation.is_cancelled() => ModelStream {
+                events: vec![ModelStreamEvent::End(StopReason::Cancelled)],
+            },
             Err(message) => {
                 self.record_error(CommandCodeErrorReport {
                     source: CommandCodeErrorSource::Adapter,
@@ -294,7 +297,7 @@ impl CommandCodeProvider {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            run_curl(&mut command, payload).map_err(|message| RetryableError {
+            run_curl(&mut command, payload, cancellation).map_err(|message| RetryableError {
                 retryable: !cancellation.is_cancelled(),
                 message,
             })
@@ -384,7 +387,7 @@ mod tests {
                     "id":"call-1","type":"function",
                     "function":{"name":"read","arguments":"{\"path\":\"README.md\"}"}
                 }]},
-                {"role":"tool","tool_call_id":"call-1","content":"contents"}
+                {"role":"tool","tool_call_id":"call-1","content":"contents","is_error":true,"details":"{\"raw\":\"details\"}"}
             ]"#
             .into(),
             tools: vec![ToolDefinition {
@@ -466,6 +469,27 @@ mod tests {
             .and_then(JsonValue::as_str),
             Some("read")
         );
+        assert_eq!(
+            field(
+                array_item(field(field(&payload, "params"), "messages"), 2),
+                "content"
+            )
+            .as_array()
+            .and_then(|content| content.first())
+            .and_then(|content| content.get("isError"))
+            .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert!(field(
+            array_item(field(field(&payload, "params"), "messages"), 2),
+            "content"
+        )
+        .as_array()
+        .and_then(|content| content.first())
+        .and_then(|content| content.get("output"))
+        .and_then(|output| output.get("value"))
+        .and_then(JsonValue::as_str)
+        .is_some_and(|content| content.contains("[tool details (serialized JSON):")));
     }
 
     fn field<'a>(value: &'a JsonValue, name: &str) -> &'a JsonValue {

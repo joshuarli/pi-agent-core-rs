@@ -124,6 +124,14 @@ the core transcript to the standard Chat Completions message array consumed by
 both adapters. The core default `NoHooks` value is intentionally diagnostic
 Rust text and is not a provider wire format.
 
+Before conversion, core applies the configured `ToolResultProjectionPolicy` to
+a clone of canonical tool results. Raw content/details stay in the transcript
+and lifecycle events; model-facing text is bounded, marks error state and
+recovery guidance, and encodes unsupported details in a marked representation.
+The OpenAI-compatible array carries `is_error` for in-tree native adaptation;
+Command Code maps it to its `isError` field and preserves marked details in the
+text output.
+
 The Command Code adapter consumes a caller-converted standard Chat
 Completions JSON message array from `ModelRequest.context`. It maps textual
 user/assistant messages and function-style assistant tool calls into the
@@ -151,6 +159,11 @@ finite core stream. They preserve event grammar and terminal validation, but
 they do not yet expose network-time incremental deltas. Hosts needing live
 transport streaming should implement `ModelProvider` directly while preserving
 the same request and event contracts.
+
+All in-tree curl adapters own child custody. On the run cancellation token,
+Local, OpenRouter, and Command Code kill and reap their in-flight child before
+settling a cancelled core stream; cancellation does not become a retryable
+transport error.
 
 ## Local oMLX and Laguna
 

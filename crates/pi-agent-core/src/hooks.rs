@@ -49,6 +49,11 @@ pub struct AfterToolCall {
     pub details: Replacement<Option<SerializedJson>>,
     /// Error-flag replacement.
     pub is_error: Replacement<bool>,
+    /// Typed host failure classification replacement.
+    ///
+    /// This lets a policy hook classify a raw capability error without the
+    /// generic scheduler inspecting a diagnostic string.
+    pub failure: Replacement<Option<crate::tool::ToolFailure>>,
     /// Usage replacement for providers that attach usage to tool results.
     pub usage: Replacement<Usage>,
     /// Dynamic capability names attached to the result for a subsequent host

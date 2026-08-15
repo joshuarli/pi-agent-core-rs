@@ -117,6 +117,30 @@ does not modify history on failure or cancellation, and emits
 without a configured compactor returns `CoreError::MissingCompactor` rather
 than silently selecting a provider or summary policy.
 
+For long-running loops, opt in on the builder with an explicit capacity and
+the same compactor. `AutomaticCompactionPolicy` has no provider or prompt
+field: the host owns both summary policy and capacity authority. It compacts
+after a completed assistant/tool turn, before the next request; typed overflow
+recovery accepts only `ModelStreamEvent::ContextOverflow` and retries an
+incomplete continuation at most at the configured limit.
+
+```rust,no_run
+use pi_agent_core::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};
+use std::num::NonZeroU64;
+
+let policy = AutomaticCompactionPolicy {
+    enabled: true,
+    context_budget: ContextBudgetSource::ContextWindow(NonZeroU64::new(128_000).unwrap()),
+    reserved_tokens: 8_000,
+    recent_tokens: 16_000,
+    overflow_recovery: OverflowRecovery::CompactAndRetry,
+    max_compactions_per_run: 4,
+    max_overflow_retries_per_run: 1,
+};
+// let agent = Agent::builder().compactor(my_compactor).automatic_compaction(policy)?.build();
+# let _ = policy;
+```
+
 ## Add the pinned coding profile
 
 The default profile is optional. When selected, provide an existing workspace

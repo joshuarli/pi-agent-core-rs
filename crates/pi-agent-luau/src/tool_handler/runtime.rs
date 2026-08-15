@@ -343,6 +343,7 @@ impl Future for LuaToolExecution<'_> {
                         added_tool_names: Vec::new(),
                         terminate: result.terminate,
                         is_error: result.is_error,
+                        failure: None,
                     }));
                 }
                 status => {

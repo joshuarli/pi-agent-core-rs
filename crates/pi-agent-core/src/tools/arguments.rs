@@ -40,6 +40,7 @@ pub(crate) fn result_ok(call: &ToolCall, content: impl Into<String>) -> AgentToo
         added_tool_names: Vec::new(),
         terminate: false,
         is_error: false,
+        failure: None,
     }
 }
 

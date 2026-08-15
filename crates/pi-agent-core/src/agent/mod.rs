@@ -38,6 +38,12 @@ pub(crate) struct AgentInner {
     pub(crate) provider: RwLock<Option<Arc<dyn ModelProvider>>>,
     /// Optional caller-supplied compactor, driven externally.
     pub(crate) compactor: RwLock<Option<Arc<dyn crate::compaction::Compactor>>>,
+    /// Opt-in automatic-compaction policy; mutable counters stay on each run.
+    pub(crate) automatic_compaction: crate::compaction::AutomaticCompactionPolicy,
+    /// Bounded model-facing presentation for canonical tool results.
+    pub(crate) tool_result_projection: crate::tool::ToolResultProjectionPolicy,
+    /// Immutable circuit-breaker policy; streak state is allocated per run.
+    pub(crate) tool_failure_circuit_breaker: crate::tool::ToolFailureCircuitBreaker,
     /// Hooks are held for the run loop boundary.
     pub(crate) hooks: Arc<dyn HookSet>,
     /// Awaited observers in registration order.
@@ -525,6 +531,7 @@ impl Agent {
             initial_messages,
             message_start_index,
             skip_initial_steering,
+            policy: Mutex::new(crate::run::RunPolicyState::default()),
         })
     }
 

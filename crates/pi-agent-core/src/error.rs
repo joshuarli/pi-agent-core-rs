@@ -34,6 +34,24 @@ pub enum CoreError {
     Compaction(crate::compaction::CompactionError),
     /// Manual compaction was requested without a caller-supplied compactor.
     MissingCompactor,
+    /// An enabled automatic policy reached a boundary without a compactor.
+    AutomaticCompactionUnavailable {
+        /// Trigger that required compaction.
+        reason: crate::compaction::AutomaticCompactionReason,
+    },
+    /// An automatic compaction transaction failed without changing history.
+    AutomaticCompaction {
+        /// Trigger that requested compaction.
+        reason: crate::compaction::AutomaticCompactionReason,
+        /// Redacted compactor diagnostic.
+        message: String,
+    },
+    /// Builder configuration rejected an invalid automatic-compaction policy.
+    InvalidAutomaticCompactionPolicy { message: String },
+    /// Builder configuration rejected an invalid result projection policy.
+    InvalidToolResultProjectionPolicy { message: String },
+    /// A host-classified fatal or repeated retryable tool failure stopped the run.
+    ToolCircuitBreaker { message: String },
 }
 
 /// A state-machine transition was rejected.
@@ -75,6 +93,17 @@ impl fmt::Display for CoreError {
             }
             Self::Compaction(error) => error.fmt(f),
             Self::MissingCompactor => f.write_str("agent has no configured compactor"),
+            Self::AutomaticCompactionUnavailable { reason } => {
+                write!(f, "automatic compaction is unavailable for {reason:?}")
+            }
+            Self::AutomaticCompaction { reason, message } => {
+                write!(f, "automatic compaction failed for {reason:?}: {message}")
+            }
+            Self::InvalidAutomaticCompactionPolicy { message }
+            | Self::InvalidToolResultProjectionPolicy { message } => f.write_str(message),
+            Self::ToolCircuitBreaker { message } => {
+                write!(f, "tool circuit breaker stopped the run: {message}")
+            }
         }
     }
 }
@@ -135,6 +164,12 @@ pub enum ToolError {
     Blocked { tool: String, reason: String },
     /// The host implementation failed.
     Execution { tool: String, message: String },
+    /// The host implementation failed with an explicit recovery classification.
+    Classified {
+        tool: String,
+        message: String,
+        failure: crate::tool::ToolFailure,
+    },
     /// Cancellation interrupted the tool.
     Cancelled { tool: String },
 }
@@ -147,6 +182,7 @@ impl fmt::Display for ToolError {
             }
             Self::Blocked { tool, reason } => write!(f, "tool {tool} blocked: {reason}"),
             Self::Execution { tool, message } => write!(f, "tool {tool} failed: {message}"),
+            Self::Classified { tool, message, .. } => write!(f, "tool {tool} failed: {message}"),
             Self::Cancelled { tool } => write!(f, "tool {tool} cancelled"),
         }
     }
