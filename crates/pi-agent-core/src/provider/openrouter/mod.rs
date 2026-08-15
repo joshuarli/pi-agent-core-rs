@@ -27,15 +27,83 @@ use payload::build_payload;
 #[cfg(test)]
 use response::exact_number_at_path;
 use response::{
-    decimal_add, openrouter_response_retryable, parse_generation_cost, parse_response,
-    unavailable_cost,
+    decimal_add, openrouter_response_retryable, openrouter_status_retryable, parse_generation_cost,
+    parse_response, response_body_prefix, unavailable_cost,
 };
 use transport::{run_curl, write_curl_config, COMPLETIONS_URL, GENERATION_URL};
+
+/// The private source of the most recent OpenRouter failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenRouterErrorSource {
+    /// The local curl subprocess or its capture boundary failed.
+    Transport,
+    /// OpenRouter returned a response that the adapter could not accept.
+    Response,
+    /// The adapter rejected a request before transport.
+    Adapter,
+}
+
+impl OpenRouterErrorSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Response => "response",
+            Self::Adapter => "adapter",
+        }
+    }
+}
+
+/// Bounded diagnostic for the most recent OpenRouter failure.
+///
+/// The agent-facing stream error remains a stable adapter message. Hosts that own a private
+/// diagnostic sink can use this report to distinguish transport, HTTP, and response-shape
+/// failures without retaining the API key or an unbounded provider body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenRouterErrorReport {
+    /// Failure boundary that produced the report.
+    pub source: OpenRouterErrorSource,
+    /// Stable local adapter message.
+    pub message: String,
+    /// HTTP status observed in the captured response headers.
+    pub status_code: Option<u16>,
+    /// Whether the adapter classified the failure as retryable.
+    pub retryable: bool,
+    /// One-based attempt number within the current completion request.
+    pub attempt: u32,
+    /// Total response body bytes captured before parsing.
+    pub response_bytes: Option<usize>,
+    /// Bounded, redacted response body prefix for trusted diagnostics.
+    pub response_prefix: Option<String>,
+}
+
+impl fmt::Display for OpenRouterErrorReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "source={} message={:?} retryable={} attempt={}",
+            self.source.as_str(),
+            self.message,
+            self.retryable,
+            self.attempt
+        )?;
+        if let Some(status_code) = self.status_code {
+            write!(formatter, " status_code={status_code}")?;
+        }
+        if let Some(response_bytes) = self.response_bytes {
+            write!(formatter, " response_bytes={response_bytes}")?;
+        }
+        if let Some(response_prefix) = &self.response_prefix {
+            write!(formatter, " response_prefix={response_prefix:?}")?;
+        }
+        Ok(())
+    }
+}
 
 /// OpenRouter implementation of the generic [`ModelProvider`] port.
 pub struct OpenRouterProvider {
     config: OpenRouterConfig,
     accounting: Arc<Mutex<Accounting>>,
+    last_error: Arc<Mutex<Option<OpenRouterErrorReport>>>,
 }
 
 impl OpenRouterProvider {
@@ -44,7 +112,16 @@ impl OpenRouterProvider {
         Self {
             config,
             accounting: Arc::new(Mutex::new(Accounting::default())),
+            last_error: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Return the most recent adapter or provider failure observed by this provider.
+    pub fn last_error_report(&self) -> Option<OpenRouterErrorReport> {
+        self.last_error
+            .lock()
+            .expect("OpenRouter error mutex poisoned")
+            .clone()
     }
 
     /// Return aggregate portable token usage across settled OpenRouter turns.
@@ -184,9 +261,34 @@ impl OpenRouterProvider {
         request: ModelRequest,
         cancellation: &CancellationToken,
     ) -> Result<(Vec<ModelStreamEvent>, Usage, OpenRouterCostTurn), String> {
-        self.validate_model(&request)?;
-        let payload = build_payload(&self.config, &request)?;
+        self.clear_error();
+        self.validate_model(&request).map_err(|message| {
+            self.record_error(OpenRouterErrorReport {
+                source: OpenRouterErrorSource::Adapter,
+                message: message.clone(),
+                status_code: None,
+                retryable: false,
+                attempt: 0,
+                response_bytes: None,
+                response_prefix: None,
+            });
+            message
+        })?;
+        let payload = build_payload(&self.config, &request).map_err(|message| {
+            self.record_error(OpenRouterErrorReport {
+                source: OpenRouterErrorSource::Adapter,
+                message: message.clone(),
+                status_code: None,
+                retryable: false,
+                attempt: 0,
+                response_bytes: None,
+                response_prefix: None,
+            });
+            message
+        })?;
+        let mut attempts: u32 = 0;
         let parsed = retry_with_backoff(self.config.retry_policy, cancellation, || {
+            attempts = attempts.saturating_add(1);
             let config_path =
                 write_curl_config(&self.config.api_key).map_err(RetryableError::permanent)?;
             let request_timeout = self.config.request_timeout.as_secs().max(1).to_string();
@@ -214,18 +316,42 @@ impl OpenRouterProvider {
                 cancellation,
             );
             let _ = fs::remove_file(&config_path);
-            let output = output.map_err(|message| RetryableError {
-                retryable: !cancellation.is_cancelled(),
-                message,
+            let output = output.map_err(|message| {
+                let retryable = !cancellation.is_cancelled();
+                self.record_error(OpenRouterErrorReport {
+                    source: OpenRouterErrorSource::Transport,
+                    message: message.clone(),
+                    status_code: None,
+                    retryable,
+                    attempt: attempts,
+                    response_bytes: None,
+                    response_prefix: None,
+                });
+                RetryableError { retryable, message }
             })?;
-            parse_response(&output).map_err(|message| RetryableError {
-                retryable: openrouter_response_retryable(&output),
-                message,
+            let retryable = openrouter_status_retryable(output.status_code)
+                || openrouter_response_retryable(&output.body);
+            parse_response(&output.body).map_err(|message| {
+                let message = message.replace(&self.config.api_key, "[redacted]");
+                self.record_error(OpenRouterErrorReport {
+                    source: OpenRouterErrorSource::Response,
+                    message: message.clone(),
+                    status_code: output.status_code,
+                    retryable,
+                    attempt: attempts,
+                    response_bytes: Some(output.body.len()),
+                    response_prefix: Some(response_body_prefix(
+                        &output.body,
+                        Some(&self.config.api_key),
+                    )),
+                });
+                RetryableError { retryable, message }
             })
         })?;
         if cancellation.is_cancelled() {
             return Err("OpenRouter HTTP transport cancelled".into());
         }
+        self.clear_error();
         // The completion's own `usage.cost` is the immediate accounting source. Query the
         // generation endpoint only when that provider field is absent: this avoids adding a
         // retention-sensitive metadata round trip to ordinary model turns.
@@ -271,7 +397,7 @@ impl OpenRouterProvider {
             let output = run_curl(&mut command, &[], cancellation);
             let _ = fs::remove_file(&config_path);
             if let Ok(output) = output {
-                if let Some(cost) = parse_generation_cost(&output, usage) {
+                if let Some(cost) = parse_generation_cost(&output.body, usage) {
                     return Some(cost);
                 }
             }
@@ -285,6 +411,20 @@ impl OpenRouterProvider {
             }
         }
         None
+    }
+
+    fn record_error(&self, report: OpenRouterErrorReport) {
+        *self
+            .last_error
+            .lock()
+            .expect("OpenRouter error mutex poisoned") = Some(report);
+    }
+
+    fn clear_error(&self) {
+        *self
+            .last_error
+            .lock()
+            .expect("OpenRouter error mutex poisoned") = None;
     }
 }
 
@@ -459,6 +599,26 @@ mod tests {
         assert!(!openrouter_response_retryable(
             br#"{"error":{"message":"invalid request"}}"#
         ));
+        assert!(openrouter_status_retryable(Some(502)));
+        assert!(!openrouter_status_retryable(Some(400)));
+    }
+
+    #[test]
+    fn non_json_response_keeps_stream_error_stable_and_report_body_bounded() {
+        let error = match parse_response(
+            br#"<html><body>upstream gateway failure with a very long diagnostic</body></html>"#,
+        ) {
+            Ok(_) => panic!("non-JSON response unexpectedly parsed"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "OpenRouter returned a non-JSON response");
+        assert_eq!(
+            response_body_prefix(
+                br#"<html><body>upstream gateway failure with a very long diagnostic</body></html>"#,
+                Some("failure"),
+            ),
+            "<html><body>upstream gateway [redacted] with a very long diagnostic</body></html>"
+        );
     }
 
     #[test]

@@ -71,6 +71,12 @@ OpenRouter maps reported cache fields and exact total cost into that update;
 Command Code maps the token fields it reports and leaves cache and cost
 unknown. The core performs no pricing lookup.
 
+`OpenRouterProvider::last_error_report` exposes the most recent trusted-host
+diagnostic. It retains the failure boundary, captured HTTP status, retry
+classification, attempt number, response byte count, and a bounded redacted
+response prefix. The generic model stream still receives only the stable
+adapter error, so provider text cannot enter agent state unboundedly.
+
 ## Credentials and host authority
 
 Both adapters accept a key directly in their configuration. They never read

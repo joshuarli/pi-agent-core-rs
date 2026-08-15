@@ -466,6 +466,35 @@ pub(super) fn openrouter_response_retryable(bytes: &[u8]) -> bool {
     matches!(status, Some(429) | Some(500..=599))
 }
 
+pub(super) fn openrouter_status_retryable(status: Option<u16>) -> bool {
+    matches!(status, Some(429) | Some(500..=599))
+}
+
+pub(super) fn response_body_prefix(bytes: &[u8], secret: Option<&str>) -> String {
+    const MAX_BYTES: usize = 512;
+    let bounded = &bytes[..bytes.len().min(MAX_BYTES)];
+    let mut value = String::from_utf8_lossy(bounded).into_owned();
+    if let Some(secret) = secret.filter(|secret| !secret.is_empty()) {
+        value = value.replace(secret, "[redacted]");
+    }
+    let value = value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let value = value.trim();
+    if value.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
 pub(super) fn parse_generation_cost(
     bytes: &[u8],
     fallback_usage: &Usage,

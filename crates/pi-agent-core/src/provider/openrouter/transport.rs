@@ -15,11 +15,17 @@ pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation
 
 static TRANSPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug)]
+pub(super) struct TransportResponse {
+    pub(super) body: Vec<u8>,
+    pub(super) status_code: Option<u16>,
+}
+
 pub(super) fn run_curl(
     command: &mut Command,
     payload: &[u8],
     cancellation: &CancellationToken,
-) -> Result<Vec<u8>, String> {
+) -> Result<TransportResponse, String> {
     let (stdout_path, stdout) = capture_file("stdout")?;
     let (stderr_path, stderr) = match capture_file("stderr") {
         Ok(capture) => capture,
@@ -28,13 +34,24 @@ pub(super) fn run_curl(
             return Err(error);
         }
     };
+    let (headers_path, _headers) = match capture_file("headers") {
+        Ok(capture) => capture,
+        Err(error) => {
+            let _ = fs::remove_file(&stdout_path);
+            let _ = fs::remove_file(&stderr_path);
+            return Err(error);
+        }
+    };
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+        .stderr(Stdio::from(stderr))
+        .arg("--dump-header")
+        .arg(&headers_path);
     let mut child = command.spawn().map_err(|error| {
         let _ = fs::remove_file(&stdout_path);
         let _ = fs::remove_file(&stderr_path);
+        let _ = fs::remove_file(&headers_path);
         format!("could not start the OpenRouter HTTP transport: {error}")
     })?;
     let write_result = child
@@ -51,14 +68,17 @@ pub(super) fn run_curl(
         let _ = child.wait();
         let _ = fs::remove_file(&stdout_path);
         let _ = fs::remove_file(&stderr_path);
+        let _ = fs::remove_file(&headers_path);
         return Err(error);
     }
     let (status, cancelled) = wait_for_child_or_cancellation(&mut child, cancellation)?;
     let output = fs::read(&stdout_path)
         .map_err(|error| format!("could not read OpenRouter response capture: {error}"));
     let error_output = fs::read(&stderr_path).unwrap_or_default();
+    let header_output = fs::read(&headers_path).unwrap_or_default();
     let _ = fs::remove_file(&stdout_path);
     let _ = fs::remove_file(&stderr_path);
+    let _ = fs::remove_file(&headers_path);
     let output = output?;
     if cancelled {
         return Err("OpenRouter HTTP transport cancelled".into());
@@ -72,7 +92,26 @@ pub(super) fn run_curl(
             "OpenRouter HTTP transport failed before a provider response: {detail}"
         ));
     }
-    Ok(output)
+    Ok(TransportResponse {
+        body: output,
+        status_code: http_status_code(&header_output),
+    })
+}
+
+pub(super) fn http_status_code(headers: &[u8]) -> Option<u16> {
+    headers
+        .split(|byte| *byte == b'\n')
+        .rev()
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let mut fields = line.split(|byte| *byte == b' ' || *byte == b'\t');
+            let version = fields.next()?;
+            if !version.starts_with(b"HTTP/") {
+                return None;
+            }
+            std::str::from_utf8(fields.next()?).ok()?.parse().ok()
+        })
+        .next()
 }
 
 fn capture_file(stream: &str) -> Result<(PathBuf, File), String> {
@@ -156,5 +195,23 @@ fn wait_for_child_or_cancellation(
             return Ok((status, true));
         }
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_status_code;
+
+    #[test]
+    fn reads_the_last_http_status_from_captured_headers() {
+        assert_eq!(
+            http_status_code(b"HTTP/2 502 Bad Gateway\r\ncontent-type: text/html\r\n\r\n"),
+            Some(502)
+        );
+    }
+
+    #[test]
+    fn ignores_non_http_capture_lines() {
+        assert_eq!(http_status_code(b"curl: (28) timed out\n"), None);
     }
 }
