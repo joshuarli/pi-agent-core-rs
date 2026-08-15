@@ -87,7 +87,10 @@ impl ThinkingLevel {
 }
 
 /// Provider-independent model identity.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+///
+/// There is intentionally no `Default` implementation: a host must choose a
+/// concrete provider and model before binding a provider-backed run.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelDescriptor {
     /// Provider name chosen by the host.
     pub provider: String,
