@@ -216,7 +216,12 @@ fn wait_for_child_or_cancellation(
         if meaningful_progress {
             last_meaningful_progress = std::time::Instant::now();
         }
-        if last_meaningful_progress.elapsed() >= stall_timeout {
+        // Chat Completions requests are finite (`stream: false`), so a healthy
+        // provider may legitimately emit no body bytes while it is generating
+        // the response.  The request's curl max-time owns that pre-response
+        // bound; only a response that has started and then stopped making
+        // meaningful progress is a transport stall.
+        if observed_bytes > 0 && last_meaningful_progress.elapsed() >= stall_timeout {
             match child.kill() {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
@@ -292,5 +297,20 @@ mod tests {
         let error = result.expect_err("whitespace-only response should stall");
         assert!(error.contains("stalled"), "unexpected error: {error}");
         assert!(error.contains("3 response bytes"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn permits_finite_response_without_pre_response_bytes() {
+        let cancellation = CancellationToken::new();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 0.01"]);
+        let result = run_curl(
+            &mut command,
+            b"{}",
+            &cancellation,
+            std::time::Duration::from_millis(25),
+        )
+        .expect("a finite response may have no body bytes before exit");
+        assert!(result.body.is_empty());
     }
 }

@@ -43,13 +43,15 @@ network request.
 
 The configured `max_tokens` is sent as the OpenRouter `max_tokens` output cap.
 The adapter defaults each finite HTTP request to a 300-second timeout and
-detects a response that has produced no non-whitespace bytes for 60 seconds;
-callers can replace both with `OpenRouterConfig::with_request_timeout` and
-`with_stall_timeout` to keep retries inside their own session wall budget. The
-factory host derives both timeouts from the admitted assignment wall limit
-rather than using the adapter defaults. A stall kills and reaps the direct
-`curl` child and enters the same bounded retry policy as other transport
-failures.
+detects a response that has started but then produced no non-whitespace bytes
+for 60 seconds. A finite (`stream: false`) request may legitimately have no
+body bytes while the provider is generating it, so the request timeout bounds
+that pre-response period; callers can replace both with
+`OpenRouterConfig::with_request_timeout` and `with_stall_timeout` to keep
+retries inside their own session wall budget. The factory host derives both
+timeouts from the admitted assignment wall limit rather than using the adapter
+defaults. A response stall kills and reaps the direct `curl` child and enters
+the same bounded retry policy as other transport failures.
 Request-scoped `ThinkingLevel` values are mapped to OpenRouter's native
 `reasoning: { "effort": ... }` object (`off` maps to `none`); the default level
 omits the field. This keeps provider-specific wire details in the adapter while
