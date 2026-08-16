@@ -42,10 +42,14 @@ mismatched descriptor is a terminal adapter error and never results in a
 network request.
 
 The configured `max_tokens` is sent as the OpenRouter `max_tokens` output cap.
-The adapter defaults each finite HTTP request to a 300-second timeout; callers
-can replace it with `OpenRouterConfig::with_request_timeout` to keep retries
-inside their own session wall budget. The factory host derives this timeout
-from the admitted assignment wall limit rather than using the adapter default.
+The adapter defaults each finite HTTP request to a 300-second timeout and
+detects a response that has produced no non-whitespace bytes for 60 seconds;
+callers can replace both with `OpenRouterConfig::with_request_timeout` and
+`with_stall_timeout` to keep retries inside their own session wall budget. The
+factory host derives both timeouts from the admitted assignment wall limit
+rather than using the adapter defaults. A stall kills and reaps the direct
+`curl` child and enters the same bounded retry policy as other transport
+failures.
 Request-scoped `ThinkingLevel` values are mapped to OpenRouter's native
 `reasoning: { "effort": ... }` object (`off` maps to `none`); the default level
 omits the field. This keeps provider-specific wire details in the adapter while

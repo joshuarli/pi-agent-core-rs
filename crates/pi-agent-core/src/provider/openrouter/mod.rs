@@ -321,6 +321,7 @@ impl OpenRouterProvider {
                     .env("PATH", "/usr/bin:/bin"),
                 &payload,
                 cancellation,
+                self.config.stall_timeout,
             );
             let _ = fs::remove_file(&config_path);
             let output = output.map_err(|message| {
@@ -403,7 +404,12 @@ impl OpenRouterProvider {
                 .arg(&config_path)
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin");
-            let output = run_curl(&mut command, &[], cancellation);
+            let output = run_curl(
+                &mut command,
+                &[],
+                cancellation,
+                self.config.stall_timeout,
+            );
             let _ = fs::remove_file(&config_path);
             if let Ok(output) = output {
                 if let Some(cost) = parse_generation_cost(&output.body, usage) {
@@ -468,11 +474,24 @@ mod tests {
     fn request_timeout_is_explicit_and_not_thirty_seconds() {
         let config = OpenRouterConfig::new("key", "model");
         assert_eq!(config.request_timeout(), Duration::from_secs(300));
+        assert_eq!(config.stall_timeout(), Duration::from_secs(60));
         assert_eq!(
             config
                 .with_request_timeout(Duration::from_secs(42))
                 .request_timeout(),
             Duration::from_secs(42)
+        );
+        assert_eq!(
+            OpenRouterConfig::new("key", "model")
+                .with_stall_timeout(Duration::from_secs(7))
+                .stall_timeout(),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            OpenRouterConfig::new("key", "model")
+                .with_stall_timeout(Duration::ZERO)
+                .validate(),
+            Err(OpenRouterConfigError::ZeroStallTimeout)
         );
     }
 
@@ -690,7 +709,12 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 30"]);
         cancellation.cancel();
-        let result = run_curl(&mut command, b"", &cancellation);
+        let result = run_curl(
+            &mut command,
+            b"",
+            &cancellation,
+            std::time::Duration::from_secs(1),
+        );
         assert_eq!(result.unwrap_err(), "OpenRouter HTTP transport cancelled");
     }
 }

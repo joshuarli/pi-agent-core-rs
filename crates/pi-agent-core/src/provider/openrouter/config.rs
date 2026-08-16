@@ -12,6 +12,8 @@ pub enum OpenRouterConfigError {
     ZeroMaxTokens,
     /// The HTTP request timeout was zero.
     ZeroRequestTimeout,
+    /// The response-stall timeout was zero.
+    ZeroStallTimeout,
     /// The API key contains a line break and cannot be represented safely in a curl config.
     ApiKeyContainsLineBreak,
 }
@@ -25,6 +27,9 @@ impl fmt::Display for OpenRouterConfigError {
             }
             Self::ZeroRequestTimeout => {
                 formatter.write_str("OpenRouter request timeout must be greater than zero")
+            }
+            Self::ZeroStallTimeout => {
+                formatter.write_str("OpenRouter stall timeout must be greater than zero")
             }
             Self::ApiKeyContainsLineBreak => {
                 formatter.write_str("OpenRouter API key must not contain line breaks")
@@ -45,6 +50,7 @@ pub struct OpenRouterConfig {
     pub(super) model: String,
     pub(super) max_tokens: u64,
     pub(super) request_timeout: Duration,
+    pub(super) stall_timeout: Duration,
     pub(super) retry_policy: RetryPolicy,
 }
 
@@ -56,6 +62,7 @@ impl OpenRouterConfig {
             model: model.into(),
             max_tokens: 1024,
             request_timeout: Duration::from_secs(300),
+            stall_timeout: Duration::from_secs(60),
             retry_policy: RetryPolicy::standard(),
         }
     }
@@ -82,6 +89,17 @@ impl OpenRouterConfig {
         self.request_timeout
     }
 
+    /// Replace the bounded no-progress timeout used by the OpenRouter transport.
+    pub fn with_stall_timeout(mut self, stall_timeout: Duration) -> Self {
+        self.stall_timeout = stall_timeout;
+        self
+    }
+
+    /// Borrow the configured no-progress timeout.
+    pub fn stall_timeout(&self) -> Duration {
+        self.stall_timeout
+    }
+
     /// Replace the bounded backoff policy used for replay-safe transport attempts.
     pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
         self.retry_policy = retry_policy;
@@ -101,6 +119,9 @@ impl OpenRouterConfig {
         }
         if self.request_timeout.is_zero() {
             return Err(OpenRouterConfigError::ZeroRequestTimeout);
+        }
+        if self.stall_timeout.is_zero() {
+            return Err(OpenRouterConfigError::ZeroStallTimeout);
         }
         if self.api_key.contains(['\n', '\r']) {
             return Err(OpenRouterConfigError::ApiKeyContainsLineBreak);
@@ -127,6 +148,7 @@ impl fmt::Debug for OpenRouterConfig {
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
             .field("request_timeout", &self.request_timeout)
+            .field("stall_timeout", &self.stall_timeout)
             .field("retry_policy", &self.retry_policy)
             .finish()
     }
