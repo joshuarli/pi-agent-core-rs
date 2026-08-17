@@ -216,12 +216,13 @@ fn wait_for_child_or_cancellation(
         if meaningful_progress {
             last_meaningful_progress = std::time::Instant::now();
         }
-        // Chat Completions requests are finite (`stream: false`), so a healthy
-        // provider may legitimately emit no body bytes while it is generating
-        // the response.  The request's curl max-time owns that pre-response
-        // bound; only a response that has started and then stopped making
-        // meaningful progress is a transport stall.
-        if observed_bytes > 0 && last_meaningful_progress.elapsed() >= stall_timeout {
+        // A finite Chat Completions response may take a short time to begin, but
+        // an absent response beyond the stall bound is indistinguishable from a
+        // provider connection that has wedged.  Apply the same bounded retryable
+        // stall policy before and after the first response byte; the request's
+        // longer curl max-time must not turn a dead provider into a wall-clock
+        // session hang.
+        if last_meaningful_progress.elapsed() >= stall_timeout {
             match child.kill() {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
@@ -287,12 +288,12 @@ mod tests {
     fn detects_whitespace_only_response_stall() {
         let cancellation = CancellationToken::new();
         let mut command = Command::new("sh");
-        command.args(["-c", "printf '   '; sleep 30"]);
+        command.args(["-c", "printf '   '; sleep 1"]);
         let result = run_curl(
             &mut command,
             b"{}",
             &cancellation,
-            std::time::Duration::from_millis(25),
+            std::time::Duration::from_millis(200),
         );
         let error = result.expect_err("whitespace-only response should stall");
         assert!(error.contains("stalled"), "unexpected error: {error}");
@@ -300,7 +301,23 @@ mod tests {
     }
 
     #[test]
-    fn permits_finite_response_without_pre_response_bytes() {
+    fn detects_pre_response_stall_without_body_bytes() {
+        let cancellation = CancellationToken::new();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 1"]);
+        let error = run_curl(
+            &mut command,
+            b"{}",
+            &cancellation,
+            std::time::Duration::from_millis(200),
+        )
+        .expect_err("a response that never emits bytes should stall");
+        assert!(error.contains("stalled"), "unexpected error: {error}");
+        assert!(error.contains("0 response bytes"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn permits_finite_response_without_body_before_stall_bound() {
         let cancellation = CancellationToken::new();
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 0.01"]);
@@ -308,7 +325,7 @@ mod tests {
             &mut command,
             b"{}",
             &cancellation,
-            std::time::Duration::from_millis(25),
+            std::time::Duration::from_millis(200),
         )
         .expect("a finite response may have no body bytes before exit");
         assert!(result.body.is_empty());
