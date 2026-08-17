@@ -13,7 +13,7 @@ use std::time::Duration;
 pub(super) const COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
-const SEMANTIC_STALL_MIN_BYTES: u64 = 64 * 1024;
+const SEMANTIC_STALL_MARKER_CHECK_BYTES: usize = 8 * 1024;
 const SEMANTIC_STALL_NO_TOOL_RESPONSE_BYTES: usize = 128 * 1024;
 const SEMANTIC_STALL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const SEMANTIC_STALL_MARKER_LIMIT: usize = 24;
@@ -267,7 +267,7 @@ fn wait_for_child_or_cancellation(
         if meaningful_progress {
             last_meaningful_progress = std::time::Instant::now();
         }
-        if observed_bytes >= SEMANTIC_STALL_MIN_BYTES
+        if observed_bytes >= SEMANTIC_STALL_MARKER_CHECK_BYTES as u64
             && last_semantic_check.elapsed() >= SEMANTIC_STALL_CHECK_INTERVAL
         {
             last_semantic_check = std::time::Instant::now();
@@ -324,7 +324,7 @@ fn response_semantic_stall(stdout_path: &Path) -> bool {
 }
 
 fn response_bytes_semantic_stall(bytes: &[u8]) -> bool {
-    if bytes.len() < SEMANTIC_STALL_MIN_BYTES as usize
+    if bytes.len() < SEMANTIC_STALL_MARKER_CHECK_BYTES
         || bytes.windows(b"tool_calls".len()).any(|window| window == b"tool_calls")
         || bytes
             .windows(br#"finish_reason":"stop"#.len())
@@ -477,6 +477,11 @@ mod tests {
             "Let me ".repeat(10_000)
         );
         assert!(response_bytes_semantic_stall(repeated.as_bytes()));
+        let short_repeated = format!(
+            "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
+            "Let me reconsider. ".repeat(600)
+        );
+        assert!(response_bytes_semantic_stall(short_repeated.as_bytes()));
         let ordinary = format!(
             "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
             "useful prose ".repeat(8_000)
