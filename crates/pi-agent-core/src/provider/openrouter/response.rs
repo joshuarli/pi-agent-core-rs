@@ -486,7 +486,8 @@ fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedRespons
     let mut saw_data = false;
     let mut saw_done = false;
 
-    for line in bytes.split(|byte| *byte == b'\n') {
+    let mut lines = bytes.split(|byte| *byte == b'\n').peekable();
+    while let Some(line) = lines.next() {
         let line = std::str::from_utf8(line)
             .map_err(|_| "OpenRouter returned a non-UTF-8 SSE response".to_owned())?
             .trim();
@@ -501,8 +502,16 @@ fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedRespons
             continue;
         }
         saw_data = true;
-        let chunk = from_bytes(data.as_bytes())
-            .map_err(|_| "OpenRouter returned an invalid SSE event".to_owned())?;
+        let chunk = match from_bytes(data.as_bytes()) {
+            Ok(chunk) => chunk,
+            Err(_) if allow_partial && lines.peek().is_none() => {
+                // A semantic stall can cut curl's capture in the middle of the final SSE JSON
+                // line. Preserve every complete event already observed, but never hide a
+                // malformed event that has a following line behind it.
+                break;
+            }
+            Err(_) => return Err("OpenRouter returned an invalid SSE event".to_owned()),
+        };
         if chunk.get("error").is_some() {
             return Err("OpenRouter rejected the request".into());
         }

@@ -603,6 +603,33 @@ data: [DONE]
     }
 
     #[test]
+    fn partial_sse_ignores_only_a_truncated_final_event() {
+        let bytes = br#"data: {"id":"gen_partial","choices":[{"delta":{"content":"before-cut"},"finish_reason":null}]}
+
+data: {"id":"gen_partial","choices":[{"delta":{"content":"after-cut"}"#;
+        let parsed = parse_partial_response(bytes).expect("partial SSE response parses");
+        assert_eq!(
+            parsed.events[0],
+            ModelStreamEvent::TextDelta("before-cut".into())
+        );
+        assert_eq!(parsed.events[1], ModelStreamEvent::End(StopReason::Length));
+    }
+
+    #[test]
+    fn partial_sse_rejects_a_malformed_event_before_later_data() {
+        let bytes = br#"data: {"id":"gen_partial","choices":[{"delta":{"content":"before"},"finish_reason":null}]}
+
+data: {"id":"gen_partial","choices":[{"delta":{"content":"broken"}
+
+data: {"id":"gen_partial","choices":[{"delta":{"content":"after"},"finish_reason":"stop"}]}
+"#;
+        assert!(matches!(
+            parse_partial_response(bytes),
+            Err(error) if error == "OpenRouter returned an invalid SSE event"
+        ));
+    }
+
+    #[test]
     fn parses_openrouter_sse_tool_call_deltas() {
         let bytes = br#"data: {"id":"gen_tool","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":"}}]},"finish_reason":null}]}
 
