@@ -68,6 +68,23 @@ fn default_projection_preserves_standard_large_tool_results() {
     assert!(!projected.content.contains("[truncated]"));
 }
 
+#[test]
+fn default_projection_preserves_long_diagnostic_details() {
+    let details = SerializedJson::new(format!("{{\"trace\":\"{}\"}}", "x".repeat(32 * 1024)));
+    let mut seen = BTreeMap::new();
+    let projected = project_tool_result_as_text(
+        "",
+        Some(&details),
+        false,
+        None,
+        &ToolResultProjectionPolicy::default(),
+        &mut seen,
+    );
+
+    assert!(projected.content.contains(&details.as_str()[..32 * 1024]));
+    assert!(!projected.content.contains("[truncated]"));
+}
+
 struct CaptureProvider {
     streams: Mutex<Vec<ModelStream>>,
     requests: Mutex<Vec<ModelRequest>>,

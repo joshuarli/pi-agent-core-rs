@@ -167,8 +167,11 @@ impl Default for ToolResultProjectionPolicy {
             // projection above that size so ordinary large reads remain intact instead of
             // silently dropping the middle of the evidence before the model can inspect it.
             max_content_bytes: 64 * 1024,
-            max_details_bytes: 16 * 1024,
-            max_total_bytes: 80 * 1024,
+            // Keep diagnostic prose from being clipped at the old 16 KiB ceiling. The
+            // provider already receives bounded tool content, so give structured details
+            // enough room for a complete investigation trace while retaining a finite total.
+            max_details_bytes: 64 * 1024,
+            max_total_bytes: 128 * 1024,
             deduplicate_repeated_errors: true,
         }
     }
