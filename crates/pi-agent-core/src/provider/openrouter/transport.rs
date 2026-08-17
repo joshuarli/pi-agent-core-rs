@@ -13,6 +13,11 @@ use std::time::Duration;
 pub(super) const COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
+const REPETITION_CHECK_MIN_BYTES: usize = 64 * 1024;
+const REPETITION_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const REPETITION_WINDOW_BYTES: usize = 4 * 1024;
+const REPETITION_MAX_DISTANCE_BYTES: usize = 128 * 1024;
+
 static TRANSPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -73,7 +78,7 @@ pub(super) fn run_curl(
         let _ = fs::remove_file(&headers_path);
         return Err(error);
     }
-    let (status, cancelled, stalled_bytes) = wait_for_child_or_cancellation(
+    let (status, cancelled, stalled_bytes, repetitive) = wait_for_child_or_cancellation(
         &mut child,
         cancellation,
         &stdout_path,
@@ -89,6 +94,9 @@ pub(super) fn run_curl(
     let output = output?;
     if cancelled {
         return Err("OpenRouter HTTP transport cancelled".into());
+    }
+    if repetitive {
+        return Err("OpenRouter HTTP transport stopped after repetitive prose".into());
     }
     if let Some(stalled_bytes) = stalled_bytes {
         if stalled_bytes > 0 && output.iter().any(|byte| !byte.is_ascii_whitespace()) {
@@ -229,16 +237,17 @@ fn wait_for_child_or_cancellation(
     cancellation: &CancellationToken,
     stdout_path: &Path,
     stall_timeout: Duration,
-) -> Result<(ExitStatus, bool, Option<u64>), String> {
+) -> Result<(ExitStatus, bool, Option<u64>, bool), String> {
     let started = std::time::Instant::now();
     let mut last_meaningful_progress = started;
+    let mut last_repetition_check = started;
     let mut observed_bytes = 0_u64;
     loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("OpenRouter transport status could not be read: {error}"))?
         {
-            return Ok((status, false, None));
+            return Ok((status, false, None, false));
         }
         if cancellation.is_cancelled() {
             match child.kill() {
@@ -253,13 +262,33 @@ fn wait_for_child_or_cancellation(
             let status = child.wait().map_err(|error| {
                 format!("cancelled OpenRouter transport could not be reaped: {error}")
             })?;
-            return Ok((status, true, None));
+            return Ok((status, true, None, false));
         }
         let (new_observed_bytes, meaningful_progress) =
             response_progress(stdout_path, observed_bytes);
         observed_bytes = new_observed_bytes;
         if meaningful_progress {
             last_meaningful_progress = std::time::Instant::now();
+        }
+        if observed_bytes >= REPETITION_CHECK_MIN_BYTES as u64
+            && last_repetition_check.elapsed() >= REPETITION_CHECK_INTERVAL
+        {
+            last_repetition_check = std::time::Instant::now();
+            if response_repetition_stall(stdout_path) {
+                match child.kill() {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "repetitive OpenRouter transport could not be killed: {error}"
+                        ));
+                    }
+                }
+                let status = child.wait().map_err(|error| {
+                    format!("repetitive OpenRouter transport could not be reaped: {error}")
+                })?;
+                return Ok((status, false, Some(observed_bytes), true));
+            }
         }
         // A finite Chat Completions response may take a short time to begin, but
         // an absent response beyond the stall bound is indistinguishable from a
@@ -280,10 +309,60 @@ fn wait_for_child_or_cancellation(
             let status = child.wait().map_err(|error| {
                 format!("stalled OpenRouter transport could not be reaped: {error}")
             })?;
-            return Ok((status, false, Some(observed_bytes)));
+            return Ok((status, false, Some(observed_bytes), false));
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn response_repetition_stall(stdout_path: &Path) -> bool {
+    let Ok(bytes) = fs::read(stdout_path) else {
+        return false;
+    };
+    response_bytes_repetition_stall(&bytes)
+}
+
+/// Detect a response that repeats the same prose span instead of making progress.
+///
+/// This deliberately does not reject long or tool-less prose. It requires two adjacent
+/// 4 KiB windows to recur at the same distance, and ignores responses that contain a tool
+/// call or terminal finish marker. Those constraints preserve ordinary analysis while
+/// cutting off the model behavior that can stream the same paragraph indefinitely.
+fn response_bytes_repetition_stall(bytes: &[u8]) -> bool {
+    if bytes.len() < REPETITION_CHECK_MIN_BYTES
+        || bytes.windows(b"tool_calls".len()).any(|window| window == b"tool_calls")
+        || bytes
+            .windows(br#"finish_reason":"stop"#.len())
+            .any(|window| window == br#"finish_reason":"stop"#)
+        || bytes
+            .windows(br#"finish_reason":"length"#.len())
+            .any(|window| window == br#"finish_reason":"length"#)
+    {
+        return false;
+    }
+    let tail_start = bytes.len().saturating_sub(REPETITION_WINDOW_BYTES * 2);
+    let search_start = tail_start.saturating_sub(REPETITION_MAX_DISTANCE_BYTES);
+    let tail = &bytes[tail_start..];
+    let prefix = &tail[..16];
+    let suffix = &tail[REPETITION_WINDOW_BYTES - 16..REPETITION_WINDOW_BYTES];
+    for previous_start in search_start..tail_start {
+        let distance = tail_start.saturating_sub(previous_start);
+        if distance < REPETITION_WINDOW_BYTES
+            || previous_start + REPETITION_WINDOW_BYTES * 2 > bytes.len()
+        {
+            continue;
+        }
+        let previous = &bytes[previous_start..previous_start + REPETITION_WINDOW_BYTES * 2];
+        if &previous[..16] != prefix
+            || &previous[REPETITION_WINDOW_BYTES - 16..REPETITION_WINDOW_BYTES] != suffix
+        {
+            continue;
+        }
+        if previous == tail {
+            return true;
+        }
+    }
+    false
 }
 
 fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
@@ -312,7 +391,9 @@ fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_status_code, retryable_transport_error, run_curl};
+    use super::{
+        http_status_code, response_bytes_repetition_stall, retryable_transport_error, run_curl,
+    };
     use crate::scheduler::CancellationToken;
     use std::process::Command;
 
@@ -390,6 +471,33 @@ mod tests {
         )
         .expect("a finite response may have no body bytes before exit");
         assert!(result.body.is_empty());
+    }
+
+    #[test]
+    fn detects_repeated_prose_without_rejecting_distinct_prose() {
+        let unit = b"data: {\"choices\":[{\"delta\":{\"content\":\"A useful analysis paragraph. \\n";
+        let repeated = unit.repeat(2_000);
+        assert!(response_bytes_repetition_stall(&repeated));
+
+        let distinct = (0..2_000)
+            .map(|index| format!("data: distinct analysis paragraph {index}.\\n"))
+            .collect::<String>();
+        assert!(!response_bytes_repetition_stall(distinct.as_bytes()));
+    }
+
+    #[test]
+    fn cuts_off_a_repetitive_stream_before_request_timeout() {
+        let cancellation = CancellationToken::new();
+        let mut command = Command::new("sh");
+        command.args(["-c", "yes x | head -c 131072; sleep 1"]);
+        let error = run_curl(
+            &mut command,
+            b"{}",
+            &cancellation,
+            std::time::Duration::from_secs(5),
+        )
+        .expect_err("repetitive response should be rejected");
+        assert!(error.contains("repetitive"), "unexpected error: {error}");
     }
 
     #[test]
