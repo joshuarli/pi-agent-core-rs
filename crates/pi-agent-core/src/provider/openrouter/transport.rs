@@ -384,15 +384,23 @@ fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
             break;
         }
         total_read = total_read.saturating_add(read as u64);
-        meaningful |= buffer[..read].iter().any(|byte| !byte.is_ascii_whitespace());
+        meaningful |= response_bytes_meaningful(&buffer[..read]);
     }
     (observed_bytes.saturating_add(total_read), meaningful)
+}
+
+fn response_bytes_meaningful(bytes: &[u8]) -> bool {
+    bytes.split(|byte| *byte == b'\n').any(|line| {
+        let line = line.trim_ascii();
+        !line.is_empty() && !line.starts_with(b":")
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        http_status_code, response_bytes_repetition_stall, retryable_transport_error, run_curl,
+        http_status_code, response_bytes_meaningful, response_bytes_repetition_stall,
+        retryable_transport_error, run_curl,
     };
     use crate::scheduler::CancellationToken;
     use std::process::Command;
@@ -483,6 +491,16 @@ mod tests {
             .map(|index| format!("data: distinct analysis paragraph {index}.\\n"))
             .collect::<String>();
         assert!(!response_bytes_repetition_stall(distinct.as_bytes()));
+    }
+
+    #[test]
+    fn ignores_openrouter_processing_heartbeats_as_progress() {
+        assert!(!response_bytes_meaningful(
+            b": OPENROUTER PROCESSING\n\n: OPENROUTER PROCESSING\n"
+        ));
+        assert!(response_bytes_meaningful(
+            b": OPENROUTER PROCESSING\n\ndata: {\"choices\":[]}\n"
+        ));
     }
 
     #[test]
