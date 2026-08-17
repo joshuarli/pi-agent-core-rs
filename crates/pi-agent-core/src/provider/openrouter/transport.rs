@@ -366,8 +366,20 @@ fn response_bytes_toolless_stall(bytes: &[u8], elapsed: Duration) -> bool {
         .windows(br#""tool_calls""#.len())
         .any(|window| window == br#""tool_calls""#)
         && !bytes
-            .windows(br#""finish_reason""#.len())
-            .any(|window| window == br#""finish_reason""#)
+            .windows(br#""finish_reason":"stop""#.len())
+            .any(|window| window == br#""finish_reason":"stop""#)
+        && !bytes
+            .windows(br#""finish_reason":"length""#.len())
+            .any(|window| window == br#""finish_reason":"length""#)
+        && !bytes
+            .windows(br#""finish_reason":"tool_calls""#.len())
+            .any(|window| window == br#""finish_reason":"tool_calls""#)
+        && !bytes
+            .windows(br#""finish_reason":"content_filter""#.len())
+            .any(|window| window == br#""finish_reason":"content_filter""#)
+        && !bytes
+            .windows(br#""finish_reason":"function_call""#.len())
+            .any(|window| window == br#""finish_reason":"function_call""#)
         && !bytes
             .windows(b"data: [DONE]".len())
             .any(|window| window == b"data: [DONE]")
@@ -557,8 +569,9 @@ mod tests {
             prose.as_bytes(),
             std::time::Duration::from_secs(1),
         ));
+        let finished = format!(r#"{prose}data: {{"finish_reason":"stop"}}\n"#);
         assert!(!response_bytes_toolless_stall(
-            b"data: distinct analysis paragraph\\nfinish_reason\\\":\\\"stop\\\"\\n",
+            finished.as_bytes(),
             std::time::Duration::from_secs(31),
         ));
     }
