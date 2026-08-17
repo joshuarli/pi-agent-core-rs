@@ -14,6 +14,7 @@ pub(super) const COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/comp
 pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
 const SEMANTIC_STALL_MIN_BYTES: u64 = 64 * 1024;
+const SEMANTIC_STALL_NO_TOOL_RESPONSE_BYTES: usize = 128 * 1024;
 const SEMANTIC_STALL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const SEMANTIC_STALL_MARKER_LIMIT: usize = 24;
 
@@ -294,9 +295,10 @@ fn wait_for_child_or_cancellation(
     }
 }
 
-/// Detect a model that is spending a large response on repeated planning prose without ever
-/// emitting a tool-call delta. Ordinary prose remains unrestricted; this only trips after a
-/// bounded amount of output and a high count of the same planning markers.
+/// Detect a model that is spending a large response on prose without ever emitting a tool-call
+/// delta. Ordinary prose remains unrestricted below the semantic bound; this is separate from
+/// the provider's full 32,768-token output allowance and only protects the tool-driven actor
+/// from a no-terminal response that cannot advance the assignment.
 fn response_semantic_stall(stdout_path: &Path) -> bool {
     let Ok(bytes) = fs::read(stdout_path) else {
         return false;
@@ -307,8 +309,17 @@ fn response_semantic_stall(stdout_path: &Path) -> bool {
 fn response_bytes_semantic_stall(bytes: &[u8]) -> bool {
     if bytes.len() < SEMANTIC_STALL_MIN_BYTES as usize
         || bytes.windows(b"tool_calls".len()).any(|window| window == b"tool_calls")
+        || bytes
+            .windows(br#"finish_reason":"stop"#.len())
+            .any(|window| window == br#"finish_reason":"stop"#)
+        || bytes
+            .windows(br#"finish_reason":"length"#.len())
+            .any(|window| window == br#"finish_reason":"length"#)
     {
         return false;
+    }
+    if bytes.len() >= SEMANTIC_STALL_NO_TOOL_RESPONSE_BYTES {
+        return true;
     }
     let text = String::from_utf8_lossy(bytes);
     let marker_count = ["Let me ", "Actually, let me", "I can see that"]
@@ -438,7 +449,14 @@ mod tests {
             "useful prose ".repeat(8_000)
         );
         assert!(!response_bytes_semantic_stall(ordinary.as_bytes()));
+        let long_ordinary = format!(
+            "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
+            "useful prose ".repeat(12_000)
+        );
+        assert!(response_bytes_semantic_stall(long_ordinary.as_bytes()));
         let with_tool = format!("{}tool_calls{}", repeated, "\"workspace_read\"");
         assert!(!response_bytes_semantic_stall(with_tool.as_bytes()));
+        let completed = format!("{}data: {{\"finish_reason\":\"stop\"}}", long_ordinary);
+        assert!(!response_bytes_semantic_stall(completed.as_bytes()));
     }
 }
