@@ -15,7 +15,7 @@ pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation
 
 const SEMANTIC_STALL_MIN_BYTES: u64 = 64 * 1024;
 const SEMANTIC_STALL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-const SEMANTIC_STALL_MARKER_LIMIT: usize = 64;
+const SEMANTIC_STALL_MARKER_LIMIT: usize = 24;
 
 static TRANSPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
