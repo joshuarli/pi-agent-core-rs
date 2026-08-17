@@ -163,9 +163,12 @@ pub struct ToolResultProjectionPolicy {
 impl Default for ToolResultProjectionPolicy {
     fn default() -> Self {
         Self {
-            max_content_bytes: 16 * 1024,
-            max_details_bytes: 4 * 1024,
-            max_total_bytes: 20 * 1024,
+            // The built-in workspace/process tools retain up to 50 KiB. Keep the default
+            // projection above that size so ordinary large reads remain intact instead of
+            // silently dropping the middle of the evidence before the model can inspect it.
+            max_content_bytes: 64 * 1024,
+            max_details_bytes: 16 * 1024,
+            max_total_bytes: 80 * 1024,
             deduplicate_repeated_errors: true,
         }
     }

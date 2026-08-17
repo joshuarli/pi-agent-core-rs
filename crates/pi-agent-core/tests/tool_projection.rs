@@ -51,6 +51,23 @@ fn projection_marks_error_details_truncation_and_repeated_payloads_deterministic
     assert!(truncated.contains("… [truncated] …"));
 }
 
+#[test]
+fn default_projection_preserves_standard_large_tool_results() {
+    let content = "x".repeat(50 * 1024);
+    let mut seen = BTreeMap::new();
+    let projected = project_tool_result_as_text(
+        &content,
+        None,
+        false,
+        None,
+        &ToolResultProjectionPolicy::default(),
+        &mut seen,
+    );
+
+    assert_eq!(projected.content, content);
+    assert!(!projected.content.contains("[truncated]"));
+}
+
 struct CaptureProvider {
     streams: Mutex<Vec<ModelStream>>,
     requests: Mutex<Vec<ModelRequest>>,
