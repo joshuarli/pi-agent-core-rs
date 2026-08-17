@@ -51,10 +51,15 @@ pub(super) fn build_payload(
         "model": config.model.clone(),
         "messages": chat_messages,
         "temperature": 0,
-        "max_tokens": config.max_tokens,
         "stream": true,
         "stream_options": json_value!({"include_usage": true}),
     });
+    if let Some(max_tokens) = config.max_tokens {
+        payload
+            .as_object_mut()
+            .expect("OpenRouter payload is an object")
+            .insert("max_tokens".to_owned(), json_value!(max_tokens));
+    }
     if let Some(effort) = reasoning_effort(request.thinking_level) {
         payload
             .as_object_mut()

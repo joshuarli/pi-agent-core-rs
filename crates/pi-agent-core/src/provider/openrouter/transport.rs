@@ -13,13 +13,6 @@ use std::time::Duration;
 pub(super) const COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
-const REPETITION_CHECK_MIN_BYTES: usize = 64 * 1024;
-const REPETITION_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-const REPETITION_WINDOW_BYTES: usize = 4 * 1024;
-const REPETITION_MAX_DISTANCE_BYTES: usize = 128 * 1024;
-const TOOLLESS_RESPONSE_CHECK_MIN_BYTES: usize = 256 * 1024;
-const TOOLLESS_RESPONSE_STALL_TIMEOUT: Duration = Duration::from_secs(30);
-
 static TRANSPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -80,7 +73,7 @@ pub(super) fn run_curl(
         let _ = fs::remove_file(&headers_path);
         return Err(error);
     }
-    let (status, cancelled, stalled_bytes, repetitive, tool_less) =
+    let (status, cancelled, stalled_bytes) =
         wait_for_child_or_cancellation(&mut child, cancellation, &stdout_path, stall_timeout)?;
     let output = fs::read(&stdout_path)
         .map_err(|error| format!("could not read OpenRouter response capture: {error}"));
@@ -92,33 +85,6 @@ pub(super) fn run_curl(
     let output = output?;
     if cancelled {
         return Err("OpenRouter HTTP transport cancelled".into());
-    }
-    if repetitive || tool_less {
-        // Both guards have already killed the child, so an SSE body is bounded by the local
-        // capture point. Preserve it as a partial response instead of discarding it as a
-        // transport error: the OpenRouter adapter can parse the completed SSE events that were
-        // captured, recover the generation id, and ask the generation endpoint for exact cost.
-        // Treating a valid response as a hard transport error loses that accounting path and
-        // freezes the factory session in `unknown_cost`. Non-SSE output remains a transport
-        // failure because the response parser cannot extract safe usage or generation metadata.
-        let trimmed = output
-            .iter()
-            .position(|byte| !byte.is_ascii_whitespace())
-            .map(|start| &output[start..])
-            .unwrap_or_default();
-        if trimmed.starts_with(b"data:") || trimmed.starts_with(b":") {
-            return Ok(TransportResponse {
-                body: output,
-                status_code: http_status_code(&header_output),
-                partial: true,
-            });
-        }
-        let reason = if repetitive {
-            "repetitive prose"
-        } else {
-            "unbounded tool-less response"
-        };
-        return Err(format!("OpenRouter HTTP transport stopped after {reason}"));
     }
     if let Some(stalled_bytes) = stalled_bytes {
         if stalled_bytes > 0 && output.iter().any(|byte| !byte.is_ascii_whitespace()) {
@@ -259,17 +225,16 @@ fn wait_for_child_or_cancellation(
     cancellation: &CancellationToken,
     stdout_path: &Path,
     stall_timeout: Duration,
-) -> Result<(ExitStatus, bool, Option<u64>, bool, bool), String> {
+) -> Result<(ExitStatus, bool, Option<u64>), String> {
     let started = std::time::Instant::now();
     let mut last_meaningful_progress = started;
-    let mut last_repetition_check = started;
     let mut observed_bytes = 0_u64;
     loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("OpenRouter transport status could not be read: {error}"))?
         {
-            return Ok((status, false, None, false, false));
+            return Ok((status, false, None));
         }
         if cancellation.is_cancelled() {
             match child.kill() {
@@ -284,48 +249,13 @@ fn wait_for_child_or_cancellation(
             let status = child.wait().map_err(|error| {
                 format!("cancelled OpenRouter transport could not be reaped: {error}")
             })?;
-            return Ok((status, true, None, false, false));
+            return Ok((status, true, None));
         }
         let (new_observed_bytes, meaningful_progress) =
             response_progress(stdout_path, observed_bytes);
         observed_bytes = new_observed_bytes;
         if meaningful_progress {
             last_meaningful_progress = std::time::Instant::now();
-        }
-        if observed_bytes >= REPETITION_CHECK_MIN_BYTES as u64
-            && last_repetition_check.elapsed() >= REPETITION_CHECK_INTERVAL
-        {
-            last_repetition_check = std::time::Instant::now();
-            if response_repetition_stall(stdout_path) {
-                match child.kill() {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-                    Err(error) => {
-                        return Err(format!(
-                            "repetitive OpenRouter transport could not be killed: {error}"
-                        ));
-                    }
-                }
-                let status = child.wait().map_err(|error| {
-                    format!("repetitive OpenRouter transport could not be reaped: {error}")
-                })?;
-                return Ok((status, false, Some(observed_bytes), true, false));
-            }
-            if response_toolless_stall(stdout_path, started.elapsed()) {
-                match child.kill() {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-                    Err(error) => {
-                        return Err(format!(
-                            "tool-less OpenRouter transport could not be killed: {error}"
-                        ));
-                    }
-                }
-                let status = child.wait().map_err(|error| {
-                    format!("tool-less OpenRouter transport could not be reaped: {error}")
-                })?;
-                return Ok((status, false, Some(observed_bytes), false, true));
-            }
         }
         // A finite Chat Completions response may take a short time to begin, but
         // an absent response beyond the stall bound is indistinguishable from a
@@ -346,104 +276,10 @@ fn wait_for_child_or_cancellation(
             let status = child.wait().map_err(|error| {
                 format!("stalled OpenRouter transport could not be reaped: {error}")
             })?;
-            return Ok((status, false, Some(observed_bytes), false, false));
+            return Ok((status, false, Some(observed_bytes)));
         }
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-fn response_repetition_stall(stdout_path: &Path) -> bool {
-    let Ok(bytes) = fs::read(stdout_path) else {
-        return false;
-    };
-    response_bytes_repetition_stall(&bytes)
-}
-
-fn response_toolless_stall(stdout_path: &Path, elapsed: Duration) -> bool {
-    let Ok(bytes) = fs::read(stdout_path) else {
-        return false;
-    };
-    response_bytes_toolless_stall(&bytes, elapsed)
-}
-
-/// Detect an unfinished, tool-less response that has streamed enough varied prose to
-/// consume the request window without reaching a terminal SSE marker.
-///
-/// This is deliberately a generous progress guard rather than a general output cap: finite
-/// prose with a finish marker remains valid, and ordinary analysis below the window is left
-/// untouched. The guard exists for responses that keep emitting content indefinitely while
-/// never producing a tool call or completion marker.
-fn response_bytes_toolless_stall(bytes: &[u8], elapsed: Duration) -> bool {
-    if bytes.len() < TOOLLESS_RESPONSE_CHECK_MIN_BYTES || elapsed < TOOLLESS_RESPONSE_STALL_TIMEOUT
-    {
-        return false;
-    }
-    !bytes
-        .windows(br#""tool_calls""#.len())
-        .any(|window| window == br#""tool_calls""#)
-        && !bytes
-            .windows(br#""finish_reason":"stop""#.len())
-            .any(|window| window == br#""finish_reason":"stop""#)
-        && !bytes
-            .windows(br#""finish_reason":"length""#.len())
-            .any(|window| window == br#""finish_reason":"length""#)
-        && !bytes
-            .windows(br#""finish_reason":"tool_calls""#.len())
-            .any(|window| window == br#""finish_reason":"tool_calls""#)
-        && !bytes
-            .windows(br#""finish_reason":"content_filter""#.len())
-            .any(|window| window == br#""finish_reason":"content_filter""#)
-        && !bytes
-            .windows(br#""finish_reason":"function_call""#.len())
-            .any(|window| window == br#""finish_reason":"function_call""#)
-        && !bytes
-            .windows(b"data: [DONE]".len())
-            .any(|window| window == b"data: [DONE]")
-}
-
-/// Detect a response that repeats the same prose span instead of making progress.
-///
-/// This deliberately does not reject long or tool-less prose. It requires two adjacent
-/// 4 KiB windows to recur at the same distance, and ignores responses that contain a tool
-/// call or terminal finish marker. Those constraints preserve ordinary analysis while
-/// cutting off the model behavior that can stream the same paragraph indefinitely.
-fn response_bytes_repetition_stall(bytes: &[u8]) -> bool {
-    if bytes.len() < REPETITION_CHECK_MIN_BYTES
-        || bytes
-            .windows(b"tool_calls".len())
-            .any(|window| window == b"tool_calls")
-        || bytes
-            .windows(br#"finish_reason":"stop"#.len())
-            .any(|window| window == br#"finish_reason":"stop"#)
-        || bytes
-            .windows(br#"finish_reason":"length"#.len())
-            .any(|window| window == br#"finish_reason":"length"#)
-    {
-        return false;
-    }
-    let tail_start = bytes.len().saturating_sub(REPETITION_WINDOW_BYTES * 2);
-    let search_start = tail_start.saturating_sub(REPETITION_MAX_DISTANCE_BYTES);
-    let tail = &bytes[tail_start..];
-    let prefix = &tail[..16];
-    let suffix = &tail[REPETITION_WINDOW_BYTES - 16..REPETITION_WINDOW_BYTES];
-    for previous_start in search_start..tail_start {
-        let distance = tail_start.saturating_sub(previous_start);
-        if distance < REPETITION_WINDOW_BYTES
-            || previous_start + REPETITION_WINDOW_BYTES * 2 > bytes.len()
-        {
-            continue;
-        }
-        let previous = &bytes[previous_start..previous_start + REPETITION_WINDOW_BYTES * 2];
-        if &previous[..16] != prefix
-            || &previous[REPETITION_WINDOW_BYTES - 16..REPETITION_WINDOW_BYTES] != suffix
-        {
-            continue;
-        }
-        if previous == tail {
-            return true;
-        }
-    }
-    false
 }
 
 fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
@@ -480,8 +316,7 @@ fn response_bytes_meaningful(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        http_status_code, response_bytes_meaningful, response_bytes_repetition_stall,
-        response_bytes_toolless_stall, retryable_transport_error, run_curl,
+        http_status_code, response_bytes_meaningful, retryable_transport_error, run_curl,
     };
     use crate::scheduler::CancellationToken;
     use std::process::Command;
@@ -569,36 +404,19 @@ mod tests {
     }
 
     #[test]
-    fn detects_repeated_prose_without_rejecting_distinct_prose() {
-        let unit =
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"A useful analysis paragraph. \\n";
-        let repeated = unit.repeat(2_000);
-        assert!(response_bytes_repetition_stall(&repeated));
-
-        let distinct = (0..2_000)
-            .map(|index| format!("data: distinct analysis paragraph {index}.\\n"))
-            .collect::<String>();
-        assert!(!response_bytes_repetition_stall(distinct.as_bytes()));
-    }
-
-    #[test]
-    fn detects_unbounded_toolless_response_without_rejecting_finite_prose() {
-        let prose = (0..40_000)
-            .map(|index| format!("data: distinct analysis paragraph {index}.\\n"))
-            .collect::<String>();
-        assert!(response_bytes_toolless_stall(
-            prose.as_bytes(),
-            std::time::Duration::from_secs(31),
-        ));
-        assert!(!response_bytes_toolless_stall(
-            prose.as_bytes(),
-            std::time::Duration::from_secs(1),
-        ));
-        let finished = format!(r#"{prose}data: {{"finish_reason":"stop"}}\n"#);
-        assert!(!response_bytes_toolless_stall(
-            finished.as_bytes(),
-            std::time::Duration::from_secs(31),
-        ));
+    fn permits_large_repetitive_response_without_a_length_guard() {
+        let cancellation = CancellationToken::new();
+        let mut command = Command::new("sh");
+        command.args(["-c", "yes x | head -c 131072"]);
+        let result = run_curl(
+            &mut command,
+            b"{}",
+            &cancellation,
+            std::time::Duration::from_secs(5),
+        )
+        .expect("a finite repetitive response is not a transport failure");
+        assert_eq!(result.body.len(), 131_072);
+        assert!(!result.partial);
     }
 
     #[test]
@@ -609,40 +427,6 @@ mod tests {
         assert!(response_bytes_meaningful(
             b": OPENROUTER PROCESSING\n\ndata: {\"choices\":[]}\n"
         ));
-    }
-
-    #[test]
-    fn cuts_off_a_repetitive_stream_before_request_timeout() {
-        let cancellation = CancellationToken::new();
-        let mut command = Command::new("sh");
-        command.args(["-c", "yes x | head -c 131072; sleep 1"]);
-        let error = run_curl(
-            &mut command,
-            b"{}",
-            &cancellation,
-            std::time::Duration::from_secs(5),
-        )
-        .expect_err("repetitive response should be rejected");
-        assert!(error.contains("repetitive"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn preserves_a_repetitive_sse_stream_for_partial_parsing_and_accounting() {
-        let cancellation = CancellationToken::new();
-        let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "while :; do printf 'data: {\"choices\":[{\"delta\":{\"content\":\"repeat\"}}]}\\n'; done",
-        ]);
-        let result = run_curl(
-            &mut command,
-            b"{}",
-            &cancellation,
-            std::time::Duration::from_secs(5),
-        )
-        .expect("a guarded SSE response should remain parseable");
-        assert!(result.partial);
-        assert!(result.body.starts_with(b"data:"));
     }
 
     #[test]

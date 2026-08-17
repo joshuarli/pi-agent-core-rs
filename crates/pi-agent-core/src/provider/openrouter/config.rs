@@ -48,7 +48,8 @@ impl std::error::Error for OpenRouterConfigError {}
 pub struct OpenRouterConfig {
     pub(super) api_key: String,
     pub(super) model: String,
-    pub(super) max_tokens: u64,
+    /// Optional provider request hint. `None` leaves output length to the provider/model.
+    pub(super) max_tokens: Option<u64>,
     pub(super) request_timeout: Duration,
     pub(super) stall_timeout: Duration,
     pub(super) retry_policy: RetryPolicy,
@@ -60,7 +61,7 @@ impl OpenRouterConfig {
         Self {
             api_key: api_key.into(),
             model: model.into(),
-            max_tokens: 1024,
+            max_tokens: None,
             request_timeout: Duration::from_secs(300),
             stall_timeout: Duration::from_secs(60),
             retry_policy: RetryPolicy::standard(),
@@ -74,7 +75,7 @@ impl OpenRouterConfig {
 
     /// Replace the explicit maximum completion-token cap.
     pub fn with_max_tokens(mut self, max_tokens: u64) -> Self {
-        self.max_tokens = max_tokens;
+        self.max_tokens = Some(max_tokens);
         self
     }
 
@@ -114,7 +115,7 @@ impl OpenRouterConfig {
         if self.model.trim().is_empty() {
             return Err(OpenRouterConfigError::EmptyField("model"));
         }
-        if self.max_tokens == 0 {
+        if self.max_tokens == Some(0) {
             return Err(OpenRouterConfigError::ZeroMaxTokens);
         }
         if self.request_timeout.is_zero() {

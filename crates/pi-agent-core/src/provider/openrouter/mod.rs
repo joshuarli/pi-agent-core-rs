@@ -695,6 +695,21 @@ data: [DONE]
     }
 
     #[test]
+    fn leaves_output_length_to_provider_when_no_cap_is_requested() {
+        let config = OpenRouterConfig::try_new("key", "openai/gpt-5.6-luna").unwrap();
+        let payload = build_payload(
+            &config,
+            &ModelRequest {
+                context: "[]".into(),
+                ..ModelRequest::default()
+            },
+        )
+        .unwrap();
+        let payload = JsonValue::parse(std::str::from_utf8(&payload).unwrap()).unwrap();
+        assert!(payload.get("max_tokens").is_none());
+    }
+
+    #[test]
     fn requires_tool_capable_openrouter_routing_when_tools_are_admitted() {
         let config = OpenRouterConfig::try_new("key", "deepseek/deepseek-v4-flash-0731").unwrap();
         let payload = super::payload::build_payload(
