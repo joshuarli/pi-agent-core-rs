@@ -30,7 +30,9 @@ use response::{
     decimal_add, openrouter_response_retryable, openrouter_status_retryable, parse_generation_cost,
     parse_response, response_body_prefix, unavailable_cost,
 };
-use transport::{run_curl, write_curl_config, COMPLETIONS_URL, GENERATION_URL};
+use transport::{
+    retryable_transport_error, run_curl, write_curl_config, COMPLETIONS_URL, GENERATION_URL,
+};
 
 /// The private source of the most recent OpenRouter failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -325,7 +327,7 @@ impl OpenRouterProvider {
             );
             let _ = fs::remove_file(&config_path);
             let output = output.map_err(|message| {
-                let retryable = !cancellation.is_cancelled();
+                let retryable = !cancellation.is_cancelled() && retryable_transport_error(&message);
                 self.record_error(OpenRouterErrorReport {
                     source: OpenRouterErrorSource::Transport,
                     message: message.clone(),

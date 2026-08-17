@@ -96,6 +96,18 @@ pub(super) fn run_curl(
     }
     if !status.success() {
         let detail = String::from_utf8_lossy(&error_output).trim().to_owned();
+        if !output.is_empty() {
+            if detail.is_empty() {
+                return Err(format!(
+                    "OpenRouter HTTP transport failed after {} response bytes",
+                    output.len()
+                ));
+            }
+            return Err(format!(
+                "OpenRouter HTTP transport failed after {} response bytes: {detail}",
+                output.len()
+            ));
+        }
         if detail.is_empty() {
             return Err("OpenRouter HTTP transport failed before a provider response".into());
         }
@@ -107,6 +119,22 @@ pub(super) fn run_curl(
         body: output,
         status_code: http_status_code(&header_output),
     })
+}
+
+/// Retry only failures that occurred before the provider emitted response bytes.
+///
+/// Once a completion has produced any body bytes, replaying the request can charge the
+/// provider twice and repeats a potentially pathological generation. A zero-byte stall and
+/// connection failure remain safe bounded retry cases.
+pub(super) fn retryable_transport_error(message: &str) -> bool {
+    if message.contains("before a provider response") {
+        return true;
+    }
+    message
+        .strip_prefix("OpenRouter HTTP transport stalled after ")
+        .and_then(|rest| rest.split_once(" response bytes"))
+        .and_then(|(bytes, _)| bytes.parse::<u64>().ok())
+        == Some(0)
 }
 
 pub(super) fn http_status_code(headers: &[u8]) -> Option<u16> {
@@ -267,7 +295,7 @@ fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_status_code, run_curl};
+    use super::{http_status_code, retryable_transport_error, run_curl};
     use crate::scheduler::CancellationToken;
     use std::process::Command;
 
@@ -329,5 +357,21 @@ mod tests {
         )
         .expect("a finite response may have no body bytes before exit");
         assert!(result.body.is_empty());
+    }
+
+    #[test]
+    fn retries_only_transport_failures_before_response_bytes() {
+        assert!(retryable_transport_error(
+            "OpenRouter HTTP transport failed before a provider response"
+        ));
+        assert!(retryable_transport_error(
+            "OpenRouter HTTP transport stalled after 0 response bytes without meaningful progress"
+        ));
+        assert!(!retryable_transport_error(
+            "OpenRouter HTTP transport failed after 32768 response bytes: curl: (28) timeout"
+        ));
+        assert!(!retryable_transport_error(
+            "OpenRouter HTTP transport stalled after 32768 response bytes without meaningful progress"
+        ));
     }
 }
