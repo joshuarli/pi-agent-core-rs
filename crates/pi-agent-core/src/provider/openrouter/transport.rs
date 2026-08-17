@@ -13,11 +13,6 @@ use std::time::Duration;
 pub(super) const COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(super) const GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
 
-const SEMANTIC_STALL_MARKER_CHECK_BYTES: usize = 8 * 1024;
-const SEMANTIC_STALL_NO_TOOL_RESPONSE_BYTES: usize = 128 * 1024;
-const SEMANTIC_STALL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-const SEMANTIC_STALL_MARKER_LIMIT: usize = 24;
-
 static TRANSPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -237,7 +232,6 @@ fn wait_for_child_or_cancellation(
 ) -> Result<(ExitStatus, bool, Option<u64>), String> {
     let started = std::time::Instant::now();
     let mut last_meaningful_progress = started;
-    let mut last_semantic_check = started;
     let mut observed_bytes = 0_u64;
     loop {
         if let Some(status) = child
@@ -267,26 +261,6 @@ fn wait_for_child_or_cancellation(
         if meaningful_progress {
             last_meaningful_progress = std::time::Instant::now();
         }
-        if observed_bytes >= SEMANTIC_STALL_MARKER_CHECK_BYTES as u64
-            && last_semantic_check.elapsed() >= SEMANTIC_STALL_CHECK_INTERVAL
-        {
-            last_semantic_check = std::time::Instant::now();
-            if response_semantic_stall(stdout_path) {
-                match child.kill() {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-                    Err(error) => {
-                        return Err(format!(
-                            "semantic-stall OpenRouter transport could not be killed: {error}"
-                        ));
-                    }
-                }
-                let status = child.wait().map_err(|error| {
-                    format!("semantic-stall OpenRouter transport could not be reaped: {error}")
-                })?;
-                return Ok((status, false, Some(observed_bytes)));
-            }
-        }
         // A finite Chat Completions response may take a short time to begin, but
         // an absent response beyond the stall bound is indistinguishable from a
         // provider connection that has wedged.  Apply the same bounded retryable
@@ -310,40 +284,6 @@ fn wait_for_child_or_cancellation(
         }
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-/// Detect a model that is spending a large response on prose without ever emitting a tool-call
-/// delta. Ordinary prose remains unrestricted below the semantic bound; this is separate from
-/// the provider's full 32,768-token output allowance and only protects the tool-driven actor
-/// from a no-terminal response that cannot advance the assignment.
-fn response_semantic_stall(stdout_path: &Path) -> bool {
-    let Ok(bytes) = fs::read(stdout_path) else {
-        return false;
-    };
-    response_bytes_semantic_stall(&bytes)
-}
-
-fn response_bytes_semantic_stall(bytes: &[u8]) -> bool {
-    if bytes.len() < SEMANTIC_STALL_MARKER_CHECK_BYTES
-        || bytes.windows(b"tool_calls".len()).any(|window| window == b"tool_calls")
-        || bytes
-            .windows(br#"finish_reason":"stop"#.len())
-            .any(|window| window == br#"finish_reason":"stop"#)
-        || bytes
-            .windows(br#"finish_reason":"length"#.len())
-            .any(|window| window == br#"finish_reason":"length"#)
-    {
-        return false;
-    }
-    if bytes.len() >= SEMANTIC_STALL_NO_TOOL_RESPONSE_BYTES {
-        return true;
-    }
-    let text = String::from_utf8_lossy(bytes);
-    let marker_count = ["Let me ", "Actually, let me", "I can see that"]
-        .into_iter()
-        .map(|marker| text.match_indices(marker).count())
-        .sum::<usize>();
-    marker_count >= SEMANTIC_STALL_MARKER_LIMIT
 }
 
 fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
@@ -372,9 +312,7 @@ fn response_progress(stdout_path: &Path, observed_bytes: u64) -> (u64, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        http_status_code, response_bytes_semantic_stall, retryable_transport_error, run_curl,
-    };
+    use super::{http_status_code, retryable_transport_error, run_curl};
     use crate::scheduler::CancellationToken;
     use std::process::Command;
 
@@ -470,31 +408,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn semantic_stall_requires_repeated_no_tool_planning_prose() {
-        let repeated = format!(
-            "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
-            "Let me ".repeat(10_000)
-        );
-        assert!(response_bytes_semantic_stall(repeated.as_bytes()));
-        let short_repeated = format!(
-            "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
-            "Let me reconsider. ".repeat(600)
-        );
-        assert!(response_bytes_semantic_stall(short_repeated.as_bytes()));
-        let ordinary = format!(
-            "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
-            "useful prose ".repeat(8_000)
-        );
-        assert!(!response_bytes_semantic_stall(ordinary.as_bytes()));
-        let long_ordinary = format!(
-            "data: {{\"delta\":{{\"content\":\"{}\"}}}}\n",
-            "useful prose ".repeat(12_000)
-        );
-        assert!(response_bytes_semantic_stall(long_ordinary.as_bytes()));
-        let with_tool = format!("{}tool_calls{}", repeated, "\"workspace_read\"");
-        assert!(!response_bytes_semantic_stall(with_tool.as_bytes()));
-        let completed = format!("{}data: {{\"finish_reason\":\"stop\"}}", long_ordinary);
-        assert!(!response_bytes_semantic_stall(completed.as_bytes()));
-    }
 }
