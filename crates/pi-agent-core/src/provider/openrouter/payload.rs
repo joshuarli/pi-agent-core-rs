@@ -62,10 +62,14 @@ pub(super) fn build_payload(
             .insert("reasoning".to_owned(), json_value!({"effort": effort}));
     }
     if !tools.is_empty() {
-        payload
+        let object = payload
             .as_object_mut()
-            .expect("OpenRouter payload is an object")
-            .insert("tools".to_owned(), JsonValue::Array(tools));
+            .expect("OpenRouter payload is an object");
+        object.insert("tools".to_owned(), JsonValue::Array(tools));
+        // Agent turns are state transitions mediated by admitted tools.  Do not
+        // let a model spend an entire bounded turn on free-form analysis when
+        // it must read, inspect, submit, or complete through a tool call.
+        object.insert("tool_choice".to_owned(), json_value!("required"));
     }
     to_bytes(&payload).map_err(|_| "cannot serialize OpenRouter request".to_owned())
 }

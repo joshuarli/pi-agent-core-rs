@@ -468,6 +468,7 @@ mod tests {
     use super::*;
     use crate::json::JsonValue;
     use crate::state::{AgentToolCall, ModelDescriptor, SerializedJson, ThinkingLevel, ToolCallId};
+    use crate::tool::{ToolDefinition, ToolExecutionMode};
     use std::time::Duration;
 
     #[test]
@@ -641,6 +642,30 @@ data: [DONE]
                 .and_then(|value| value.get("include_usage"))
                 .and_then(JsonValue::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn requires_a_tool_call_when_openrouter_request_admits_tools() {
+        let config = OpenRouterConfig::try_new("key", "deepseek/deepseek-v4-flash-0731").unwrap();
+        let payload = super::payload::build_payload(
+            &config,
+            &ModelRequest {
+                context: "[]".into(),
+                tools: vec![ToolDefinition {
+                    name: "work_complete".into(),
+                    description: "finish the assignment".into(),
+                    schema: JsonValue::Object(std::collections::BTreeMap::new()),
+                    execution_mode: ToolExecutionMode::Sequential,
+                }],
+                ..ModelRequest::default()
+            },
+        )
+        .unwrap();
+        let payload = JsonValue::parse(std::str::from_utf8(&payload).unwrap()).unwrap();
+        assert_eq!(
+            payload.get("tool_choice").and_then(JsonValue::as_str),
+            Some("required")
         );
     }
 
