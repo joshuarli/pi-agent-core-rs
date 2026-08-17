@@ -62,10 +62,18 @@ pub(super) fn build_payload(
             .insert("reasoning".to_owned(), json_value!({"effort": effort}));
     }
     if !tools.is_empty() {
-        payload
+        let object = payload
             .as_object_mut()
-            .expect("OpenRouter payload is an object")
-            .insert("tools".to_owned(), JsonValue::Array(tools));
+            .expect("OpenRouter payload is an object");
+        object.insert("tools".to_owned(), JsonValue::Array(tools));
+        // The Factory's state machine advances only through an admitted tool. Require
+        // OpenRouter to select an endpoint that honors every supplied tool parameter before
+        // asking the model for a call; otherwise an endpoint may silently fall back to prose.
+        object.insert("tool_choice".to_owned(), json_value!("required"));
+        object.insert(
+            "provider".to_owned(),
+            json_value!({"require_parameters": true}),
+        );
     }
     to_bytes(&payload).map_err(|_| "cannot serialize OpenRouter request".to_owned())
 }
