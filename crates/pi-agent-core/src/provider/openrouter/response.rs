@@ -567,8 +567,7 @@ fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedRespons
                     if let Some(name) = function.get("name").and_then(JsonValue::as_str) {
                         entry.name = Some(name.to_owned());
                     }
-                    if let Some(arguments) = function.get("arguments").and_then(JsonValue::as_str)
-                    {
+                    if let Some(arguments) = function.get("arguments").and_then(JsonValue::as_str) {
                         entry.arguments.push_str(arguments);
                     }
                 }

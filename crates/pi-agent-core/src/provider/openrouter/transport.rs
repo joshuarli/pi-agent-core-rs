@@ -80,12 +80,8 @@ pub(super) fn run_curl(
         let _ = fs::remove_file(&headers_path);
         return Err(error);
     }
-    let (status, cancelled, stalled_bytes, repetitive, tool_less) = wait_for_child_or_cancellation(
-        &mut child,
-        cancellation,
-        &stdout_path,
-        stall_timeout,
-    )?;
+    let (status, cancelled, stalled_bytes, repetitive, tool_less) =
+        wait_for_child_or_cancellation(&mut child, cancellation, &stdout_path, stall_timeout)?;
     let output = fs::read(&stdout_path)
         .map_err(|error| format!("could not read OpenRouter response capture: {error}"));
     let error_output = fs::read(&stderr_path).unwrap_or_default();
@@ -122,9 +118,7 @@ pub(super) fn run_curl(
         } else {
             "unbounded tool-less response"
         };
-        return Err(format!(
-            "OpenRouter HTTP transport stopped after {reason}"
-        ));
+        return Err(format!("OpenRouter HTTP transport stopped after {reason}"));
     }
     if let Some(stalled_bytes) = stalled_bytes {
         if stalled_bytes > 0 && output.iter().any(|byte| !byte.is_ascii_whitespace()) {
@@ -380,8 +374,7 @@ fn response_toolless_stall(stdout_path: &Path, elapsed: Duration) -> bool {
 /// untouched. The guard exists for responses that keep emitting content indefinitely while
 /// never producing a tool call or completion marker.
 fn response_bytes_toolless_stall(bytes: &[u8], elapsed: Duration) -> bool {
-    if bytes.len() < TOOLLESS_RESPONSE_CHECK_MIN_BYTES
-        || elapsed < TOOLLESS_RESPONSE_STALL_TIMEOUT
+    if bytes.len() < TOOLLESS_RESPONSE_CHECK_MIN_BYTES || elapsed < TOOLLESS_RESPONSE_STALL_TIMEOUT
     {
         return false;
     }
@@ -416,7 +409,9 @@ fn response_bytes_toolless_stall(bytes: &[u8], elapsed: Duration) -> bool {
 /// cutting off the model behavior that can stream the same paragraph indefinitely.
 fn response_bytes_repetition_stall(bytes: &[u8]) -> bool {
     if bytes.len() < REPETITION_CHECK_MIN_BYTES
-        || bytes.windows(b"tool_calls".len()).any(|window| window == b"tool_calls")
+        || bytes
+            .windows(b"tool_calls".len())
+            .any(|window| window == b"tool_calls")
         || bytes
             .windows(br#"finish_reason":"stop"#.len())
             .any(|window| window == br#"finish_reason":"stop"#)
@@ -517,7 +512,10 @@ mod tests {
         );
         let error = result.expect_err("whitespace-only response should stall");
         assert!(error.contains("stalled"), "unexpected error: {error}");
-        assert!(error.contains("3 response bytes"), "unexpected error: {error}");
+        assert!(
+            error.contains("3 response bytes"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -533,7 +531,10 @@ mod tests {
         )
         .expect_err("a response that never emits bytes should stall");
         assert!(error.contains("stalled"), "unexpected error: {error}");
-        assert!(error.contains("0 response bytes"), "unexpected error: {error}");
+        assert!(
+            error.contains("0 response bytes"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -569,7 +570,8 @@ mod tests {
 
     #[test]
     fn detects_repeated_prose_without_rejecting_distinct_prose() {
-        let unit = b"data: {\"choices\":[{\"delta\":{\"content\":\"A useful analysis paragraph. \\n";
+        let unit =
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"A useful analysis paragraph. \\n";
         let repeated = unit.repeat(2_000);
         assert!(response_bytes_repetition_stall(&repeated));
 
@@ -658,5 +660,4 @@ mod tests {
             "OpenRouter HTTP transport stalled after 32768 response bytes without meaningful progress"
         ));
     }
-
 }

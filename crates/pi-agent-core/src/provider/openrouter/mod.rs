@@ -411,12 +411,7 @@ impl OpenRouterProvider {
                 .arg(&config_path)
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin");
-            let output = run_curl(
-                &mut command,
-                &[],
-                cancellation,
-                self.config.stall_timeout,
-            );
+            let output = run_curl(&mut command, &[], cancellation, self.config.stall_timeout);
             let _ = fs::remove_file(&config_path);
             if let Ok(output) = output {
                 if let Some(cost) = parse_generation_cost(&output.body, usage) {
@@ -572,7 +567,10 @@ data: [DONE]
 "#;
         let parsed = parse_response(bytes).expect("SSE response parses");
         assert_eq!(parsed.generation_id.as_deref(), Some("gen_stream"));
-        assert_eq!(parsed.events[0], ModelStreamEvent::TextDelta("hello".into()));
+        assert_eq!(
+            parsed.events[0],
+            ModelStreamEvent::TextDelta("hello".into())
+        );
         assert_eq!(
             parsed.events[1],
             ModelStreamEvent::Usage(Usage {
@@ -598,7 +596,10 @@ data: [DONE]
 "#;
         assert!(parse_response(bytes).is_err());
         let parsed = parse_partial_response(bytes).expect("partial SSE response parses");
-        assert_eq!(parsed.events[0], ModelStreamEvent::TextDelta("partial".into()));
+        assert_eq!(
+            parsed.events[0],
+            ModelStreamEvent::TextDelta("partial".into())
+        );
         assert_eq!(parsed.events[1], ModelStreamEvent::End(StopReason::Length));
     }
 
@@ -680,7 +681,10 @@ data: [DONE]
                 .and_then(JsonValue::as_str),
             Some("xhigh")
         );
-        assert_eq!(payload.get("stream").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            payload.get("stream").and_then(JsonValue::as_bool),
+            Some(true)
+        );
         assert_eq!(
             payload
                 .get("stream_options")
