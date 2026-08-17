@@ -101,6 +101,19 @@ pub(super) fn run_curl(
         return Err("OpenRouter HTTP transport stopped after repetitive prose".into());
     }
     if tool_less {
+        // The guard has already killed the child, so this body is bounded by the local
+        // capture point. Preserve it as a partial response instead of discarding it as a
+        // transport error: the OpenRouter adapter can parse the completed SSE events that were
+        // captured, recover the generation id, and ask the generation endpoint for exact cost.
+        // Treating this as a hard transport error loses that accounting path and freezes the
+        // factory session in `unknown_cost` even though the provider emitted usable evidence.
+        if output.iter().any(|byte| !byte.is_ascii_whitespace()) {
+            return Ok(TransportResponse {
+                body: output,
+                status_code: http_status_code(&header_output),
+                partial: true,
+            });
+        }
         return Err("OpenRouter HTTP transport stopped after unbounded tool-less response".into());
     }
     if let Some(stalled_bytes) = stalled_bytes {
