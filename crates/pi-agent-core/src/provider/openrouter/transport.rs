@@ -24,6 +24,7 @@ static TRANSPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub(super) struct TransportResponse {
     pub(super) body: Vec<u8>,
     pub(super) status_code: Option<u16>,
+    pub(super) partial: bool,
 }
 
 pub(super) fn run_curl(
@@ -95,13 +96,28 @@ pub(super) fn run_curl(
         return Err("OpenRouter HTTP transport cancelled".into());
     }
     if let Some(stalled_bytes) = stalled_bytes {
+        if stalled_bytes > 0 && output.iter().any(|byte| !byte.is_ascii_whitespace()) {
+            return Ok(TransportResponse {
+                body: output,
+                status_code: http_status_code(&header_output),
+                partial: true,
+            });
+        }
         return Err(format!(
             "OpenRouter HTTP transport stalled after {stalled_bytes} response bytes without meaningful progress"
         ));
     }
     if !status.success() {
         let detail = String::from_utf8_lossy(&error_output).trim().to_owned();
-        if !output.is_empty() {
+        if output.iter().any(|byte| !byte.is_ascii_whitespace()) {
+            let status_code = http_status_code(&header_output);
+            if status_code.is_none() {
+                return Ok(TransportResponse {
+                    body: output,
+                    status_code,
+                    partial: true,
+                });
+            }
             if detail.is_empty() {
                 return Err(format!(
                     "OpenRouter HTTP transport failed after {} response bytes",
@@ -123,6 +139,7 @@ pub(super) fn run_curl(
     Ok(TransportResponse {
         body: output,
         status_code: http_status_code(&header_output),
+        partial: false,
     })
 }
 
@@ -404,6 +421,22 @@ mod tests {
         .expect_err("a response that never emits bytes should stall");
         assert!(error.contains("stalled"), "unexpected error: {error}");
         assert!(error.contains("0 response bytes"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn preserves_meaningful_partial_body_from_failed_curl() {
+        let cancellation = CancellationToken::new();
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'data: partial'; exit 1"]);
+        let result = run_curl(
+            &mut command,
+            b"{}",
+            &cancellation,
+            std::time::Duration::from_millis(200),
+        )
+        .expect("meaningful partial body should be retained");
+        assert!(result.partial);
+        assert_eq!(result.body, b"data: partial");
     }
 
     #[test]

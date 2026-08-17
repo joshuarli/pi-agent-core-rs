@@ -28,7 +28,7 @@ use payload::build_payload;
 use response::exact_number_at_path;
 use response::{
     decimal_add, openrouter_response_retryable, openrouter_status_retryable, parse_generation_cost,
-    parse_response, response_body_prefix, unavailable_cost,
+    parse_partial_response, parse_response, response_body_prefix, unavailable_cost,
 };
 use transport::{
     retryable_transport_error, run_curl, write_curl_config, COMPLETIONS_URL, GENERATION_URL,
@@ -342,7 +342,12 @@ impl OpenRouterProvider {
             })?;
             let retryable = openrouter_status_retryable(output.status_code)
                 || openrouter_response_retryable(&output.body);
-            parse_response(&output.body).map_err(|message| {
+            let parse = if output.partial {
+                parse_partial_response(&output.body)
+            } else {
+                parse_response(&output.body)
+            };
+            parse.map_err(|message| {
                 let message = message.replace(&self.config.api_key, "[redacted]");
                 self.record_error(OpenRouterErrorReport {
                     source: OpenRouterErrorSource::Response,
@@ -584,6 +589,17 @@ data: [DONE]
                 .and_then(|cost| cost.total_usd_exact.as_deref()),
             Some("0.000001")
         );
+    }
+
+    #[test]
+    fn parses_partial_sse_as_output_limit_only_when_explicitly_allowed() {
+        let bytes = br#"data: {"id":"gen_partial","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}
+
+"#;
+        assert!(parse_response(bytes).is_err());
+        let parsed = parse_partial_response(bytes).expect("partial SSE response parses");
+        assert_eq!(parsed.events[0], ModelStreamEvent::TextDelta("partial".into()));
+        assert_eq!(parsed.events[1], ModelStreamEvent::End(StopReason::Length));
     }
 
     #[test]

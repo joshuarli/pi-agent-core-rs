@@ -336,13 +336,21 @@ pub(super) fn unavailable_cost(usage: &Usage, model: &str) -> OpenRouterCostTurn
 }
 
 pub(super) fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
+    parse_response_inner(bytes, false)
+}
+
+pub(super) fn parse_partial_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
+    parse_response_inner(bytes, true)
+}
+
+fn parse_response_inner(bytes: &[u8], allow_partial_sse: bool) -> Result<ParsedResponse, String> {
     let trimmed = bytes
         .iter()
         .position(|byte| !byte.is_ascii_whitespace())
         .map(|start| &bytes[start..])
         .unwrap_or_default();
     if trimmed.starts_with(b"data:") || trimmed.starts_with(b":") {
-        return parse_sse_response(bytes);
+        return parse_sse_response(bytes, allow_partial_sse);
     }
     let response =
         from_bytes(bytes).map_err(|_| "OpenRouter returned a non-JSON response".to_owned())?;
@@ -467,7 +475,7 @@ struct StreamingToolCall {
     arguments: String,
 }
 
-fn parse_sse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
+fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedResponse, String> {
     let mut text = String::new();
     let mut tool_calls: Vec<Option<StreamingToolCall>> = Vec::new();
     let mut finish_reason = None;
@@ -559,8 +567,11 @@ fn parse_sse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
         }
     }
 
-    if !saw_data || (!saw_done && finish_reason.is_none()) {
+    if !saw_data || (!allow_partial && !saw_done && finish_reason.is_none()) {
         return Err("OpenRouter SSE response ended before completion".to_owned());
+    }
+    if allow_partial && !saw_done && finish_reason.is_none() {
+        finish_reason = Some("length".to_owned());
     }
     let mut events = Vec::new();
     if !text.is_empty() {
