@@ -467,7 +467,7 @@ impl ModelProvider for OpenRouterProvider {
 mod tests {
     use super::*;
     use crate::json::JsonValue;
-    use crate::state::{ModelDescriptor, ThinkingLevel};
+    use crate::state::{AgentToolCall, ModelDescriptor, SerializedJson, ThinkingLevel, ToolCallId};
     use std::time::Duration;
 
     #[test]
@@ -552,6 +552,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_openrouter_sse_text_usage_and_terminal_event() {
+        let bytes = br#": OPENROUTER PROCESSING
+
+data: {"id":"gen_stream","model":"deepseek/deepseek-v4-flash-0731","choices":[{"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}
+
+data: {"id":"gen_stream","model":"deepseek/deepseek-v4-flash-0731","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"cost":0.000001}}
+
+data: [DONE]
+
+"#;
+        let parsed = parse_response(bytes).expect("SSE response parses");
+        assert_eq!(parsed.generation_id.as_deref(), Some("gen_stream"));
+        assert_eq!(parsed.events[0], ModelStreamEvent::TextDelta("hello".into()));
+        assert_eq!(
+            parsed.events[1],
+            ModelStreamEvent::Usage(Usage {
+                input_tokens: Some(2),
+                output_tokens: Some(1),
+                ..Usage::default()
+            })
+        );
+        assert_eq!(parsed.events[2], ModelStreamEvent::End(StopReason::Stop));
+        assert_eq!(
+            parsed
+                .inline_cost
+                .as_ref()
+                .and_then(|cost| cost.total_usd_exact.as_deref()),
+            Some("0.000001")
+        );
+    }
+
+    #[test]
+    fn parses_openrouter_sse_tool_call_deltas() {
+        let bytes = br#"data: {"id":"gen_tool","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"gen_tool","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"LANG.md\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#;
+        let parsed = parse_response(bytes).expect("tool-call SSE response parses");
+        assert_eq!(
+            parsed.events[0],
+            ModelStreamEvent::ToolCall(AgentToolCall {
+                id: ToolCallId::new("call_1").unwrap(),
+                name: "workspace_read".into(),
+                arguments: SerializedJson::new("{\"path\":\"LANG.md\"}"),
+            })
+        );
+        assert_eq!(parsed.events[1], ModelStreamEvent::End(StopReason::ToolUse));
+    }
+
+    #[test]
     fn builds_explicit_output_cap_and_openrouter_reasoning_wire() {
         let config = OpenRouterConfig::try_new("key", "openai/gpt-5.6-luna").unwrap();
         let payload = build_payload(
@@ -580,6 +633,14 @@ mod tests {
                 .and_then(|value| value.get("effort"))
                 .and_then(JsonValue::as_str),
             Some("xhigh")
+        );
+        assert_eq!(payload.get("stream").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            payload
+                .get("stream_options")
+                .and_then(|value| value.get("include_usage"))
+                .and_then(JsonValue::as_bool),
+            Some(true)
         );
     }
 

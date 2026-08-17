@@ -336,6 +336,14 @@ pub(super) fn unavailable_cost(usage: &Usage, model: &str) -> OpenRouterCostTurn
 }
 
 pub(super) fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
+    let trimmed = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .map(|start| &bytes[start..])
+        .unwrap_or_default();
+    if trimmed.starts_with(b"data:") || trimmed.starts_with(b":") {
+        return parse_sse_response(bytes);
+    }
     let response =
         from_bytes(bytes).map_err(|_| "OpenRouter returned a non-JSON response".to_owned())?;
     if response.get("error").is_some() {
@@ -397,26 +405,7 @@ pub(super) fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
     };
     events.push(ModelStreamEvent::End(stop_reason));
     let usage = response.get("usage").cloned().unwrap_or(JsonValue::Null);
-    let token = |name: &str| usage.get(name).and_then(JsonValue::as_u64);
-    let reasoning = usage
-        .get("completion_tokens_details")
-        .and_then(JsonValue::as_object)
-        .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(JsonValue::as_u64);
-    let parsed_usage = Usage {
-        input_tokens: token("prompt_tokens"),
-        output_tokens: token("completion_tokens"),
-        reasoning_tokens: reasoning,
-        cache_read_tokens: usage
-            .get("prompt_tokens_details")
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(JsonValue::as_u64),
-        cache_write_tokens: usage
-            .get("prompt_tokens_details")
-            .and_then(|details| details.get("cache_write_tokens"))
-            .and_then(JsonValue::as_u64),
-        cost: None,
-    };
+    let parsed_usage = parse_usage(&usage);
     let total_usd_exact = exact_number_at_path(bytes, &["usage", "cost"]);
     let inline_cost = total_usd_exact.map(|total_usd_exact| OpenRouterCostTurn {
         turn: 0,
@@ -444,6 +433,193 @@ pub(super) fn parse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
             .and_then(JsonValue::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_owned),
+        inline_cost,
+    })
+}
+
+fn parse_usage(usage: &JsonValue) -> Usage {
+    let token = |name: &str| usage.get(name).and_then(JsonValue::as_u64);
+    let reasoning = usage
+        .get("completion_tokens_details")
+        .and_then(JsonValue::as_object)
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(JsonValue::as_u64);
+    Usage {
+        input_tokens: token("prompt_tokens"),
+        output_tokens: token("completion_tokens"),
+        reasoning_tokens: reasoning,
+        cache_read_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(JsonValue::as_u64),
+        cache_write_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cache_write_tokens"))
+            .and_then(JsonValue::as_u64),
+        cost: None,
+    }
+}
+
+#[derive(Default)]
+struct StreamingToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+fn parse_sse_response(bytes: &[u8]) -> Result<ParsedResponse, String> {
+    let mut text = String::new();
+    let mut tool_calls: Vec<Option<StreamingToolCall>> = Vec::new();
+    let mut finish_reason = None;
+    let mut usage = JsonValue::Null;
+    let mut usage_bytes = None;
+    let mut generation_id = None;
+    let mut model = None;
+    let mut saw_data = false;
+    let mut saw_done = false;
+
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let line = std::str::from_utf8(line)
+            .map_err(|_| "OpenRouter returned a non-UTF-8 SSE response".to_owned())?
+            .trim();
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            saw_done = true;
+            continue;
+        }
+        saw_data = true;
+        let chunk = from_bytes(data.as_bytes())
+            .map_err(|_| "OpenRouter returned an invalid SSE event".to_owned())?;
+        if chunk.get("error").is_some() {
+            return Err("OpenRouter rejected the request".into());
+        }
+        if generation_id.is_none() {
+            generation_id = chunk
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+        }
+        if model.is_none() {
+            model = chunk
+                .get("model")
+                .and_then(JsonValue::as_str)
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned);
+        }
+        if let Some(chunk_usage) = chunk.get("usage") {
+            usage = chunk_usage.clone();
+            usage_bytes = Some(data.as_bytes().to_owned());
+        }
+        let Some(choice) = chunk
+            .get("choices")
+            .and_then(JsonValue::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            continue;
+        };
+        if let Some(reason) = choice.get("finish_reason").and_then(JsonValue::as_str) {
+            finish_reason = Some(reason.to_owned());
+        }
+        let Some(delta) = choice.get("delta").and_then(JsonValue::as_object) else {
+            continue;
+        };
+        if let Some(content) = delta.get("content").and_then(JsonValue::as_str) {
+            text.push_str(content);
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(JsonValue::as_array) {
+            for (position, call) in calls.iter().enumerate() {
+                let index = call
+                    .get("index")
+                    .and_then(JsonValue::as_u64)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .unwrap_or(position);
+                while tool_calls.len() <= index {
+                    tool_calls.push(None);
+                }
+                let entry = tool_calls[index].get_or_insert_with(StreamingToolCall::default);
+                if let Some(id) = call.get("id").and_then(JsonValue::as_str) {
+                    entry.id = Some(id.to_owned());
+                }
+                if let Some(function) = call.get("function").and_then(JsonValue::as_object) {
+                    if let Some(name) = function.get("name").and_then(JsonValue::as_str) {
+                        entry.name = Some(name.to_owned());
+                    }
+                    if let Some(arguments) = function.get("arguments").and_then(JsonValue::as_str)
+                    {
+                        entry.arguments.push_str(arguments);
+                    }
+                }
+            }
+        }
+    }
+
+    if !saw_data || (!saw_done && finish_reason.is_none()) {
+        return Err("OpenRouter SSE response ended before completion".to_owned());
+    }
+    let mut events = Vec::new();
+    if !text.is_empty() {
+        events.push(ModelStreamEvent::TextDelta(text));
+    }
+    let mut has_tool_calls = false;
+    for (index, call) in tool_calls.into_iter().flatten().enumerate() {
+        let id = call
+            .id
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| format!("openrouter-call-{index}"));
+        let name = call
+            .name
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "OpenRouter tool call did not contain a name".to_owned())?;
+        events.push(ModelStreamEvent::ToolCall(AgentToolCall {
+            id: ToolCallId::new(id)
+                .map_err(|_| "OpenRouter tool call omitted its identifier".to_owned())?,
+            name,
+            arguments: SerializedJson::new(&call.arguments),
+        }));
+        has_tool_calls = true;
+    }
+    let parsed_usage = parse_usage(&usage);
+    if parsed_usage.input_tokens.is_some()
+        || parsed_usage.output_tokens.is_some()
+        || parsed_usage.reasoning_tokens.is_some()
+    {
+        events.push(ModelStreamEvent::Usage(parsed_usage.clone()));
+    }
+    let stop_reason = match finish_reason.as_deref() {
+        Some("length") => StopReason::Length,
+        Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
+        _ if has_tool_calls => StopReason::ToolUse,
+        _ => StopReason::Stop,
+    };
+    events.push(ModelStreamEvent::End(stop_reason));
+    let inline_cost = usage_bytes.as_deref().and_then(|usage_bytes| {
+        let total_usd_exact = exact_number_at_path(usage_bytes, &["usage", "cost"])?;
+        Some(OpenRouterCostTurn {
+            turn: 0,
+            source: OpenRouterCostSource::ChatUsage,
+            total_usd: number(&usage, "cost"),
+            total_usd_exact: Some(total_usd_exact),
+            upstream_inference_usd: None,
+            upstream_inference_usd_exact: None,
+            model: model.clone(),
+            provider: None,
+            input_tokens: parsed_usage.input_tokens,
+            output_tokens: parsed_usage.output_tokens,
+            cache_read_tokens: parsed_usage.cache_read_tokens,
+            cache_write_tokens: parsed_usage.cache_write_tokens,
+            reasoning_tokens: parsed_usage.reasoning_tokens,
+        })
+    });
+    Ok(ParsedResponse {
+        events,
+        usage: parsed_usage,
+        generation_id,
         inline_cost,
     })
 }

@@ -52,7 +52,8 @@ pub(super) fn build_payload(
         "messages": chat_messages,
         "temperature": 0,
         "max_tokens": config.max_tokens,
-        "stream": false,
+        "stream": true,
+        "stream_options": json_value!({"include_usage": true}),
     });
     if let Some(effort) = reasoning_effort(request.thinking_level) {
         payload
