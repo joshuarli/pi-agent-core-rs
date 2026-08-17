@@ -97,24 +97,34 @@ pub(super) fn run_curl(
     if cancelled {
         return Err("OpenRouter HTTP transport cancelled".into());
     }
-    if repetitive {
-        return Err("OpenRouter HTTP transport stopped after repetitive prose".into());
-    }
-    if tool_less {
-        // The guard has already killed the child, so this body is bounded by the local
+    if repetitive || tool_less {
+        // Both guards have already killed the child, so an SSE body is bounded by the local
         // capture point. Preserve it as a partial response instead of discarding it as a
         // transport error: the OpenRouter adapter can parse the completed SSE events that were
         // captured, recover the generation id, and ask the generation endpoint for exact cost.
-        // Treating this as a hard transport error loses that accounting path and freezes the
-        // factory session in `unknown_cost` even though the provider emitted usable evidence.
-        if output.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        // Treating a valid response as a hard transport error loses that accounting path and
+        // freezes the factory session in `unknown_cost`. Non-SSE output remains a transport
+        // failure because the response parser cannot extract safe usage or generation metadata.
+        let trimmed = output
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .map(|start| &output[start..])
+            .unwrap_or_default();
+        if trimmed.starts_with(b"data:") || trimmed.starts_with(b":") {
             return Ok(TransportResponse {
                 body: output,
                 status_code: http_status_code(&header_output),
                 partial: true,
             });
         }
-        return Err("OpenRouter HTTP transport stopped after unbounded tool-less response".into());
+        let reason = if repetitive {
+            "repetitive prose"
+        } else {
+            "unbounded tool-less response"
+        };
+        return Err(format!(
+            "OpenRouter HTTP transport stopped after {reason}"
+        ));
     }
     if let Some(stalled_bytes) = stalled_bytes {
         if stalled_bytes > 0 && output.iter().any(|byte| !byte.is_ascii_whitespace()) {
@@ -612,6 +622,25 @@ mod tests {
         )
         .expect_err("repetitive response should be rejected");
         assert!(error.contains("repetitive"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn preserves_a_repetitive_sse_stream_for_partial_parsing_and_accounting() {
+        let cancellation = CancellationToken::new();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while :; do printf 'data: {\"choices\":[{\"delta\":{\"content\":\"repeat\"}}]}\\n'; done",
+        ]);
+        let result = run_curl(
+            &mut command,
+            b"{}",
+            &cancellation,
+            std::time::Duration::from_secs(5),
+        )
+        .expect("a guarded SSE response should remain parseable");
+        assert!(result.partial);
+        assert!(result.body.starts_with(b"data:"));
     }
 
     #[test]
