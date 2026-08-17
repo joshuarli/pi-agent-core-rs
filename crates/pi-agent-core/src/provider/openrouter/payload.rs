@@ -66,10 +66,8 @@ pub(super) fn build_payload(
             .as_object_mut()
             .expect("OpenRouter payload is an object");
         object.insert("tools".to_owned(), JsonValue::Array(tools));
-        // The Factory's state machine advances only through an admitted tool. Require
-        // OpenRouter to select an endpoint that honors every supplied tool parameter before
-        // asking the model for a call; otherwise an endpoint may silently fall back to prose.
-        object.insert("tool_choice".to_owned(), json_value!("required"));
+        // Require OpenRouter to select an endpoint that honors every supplied tool parameter;
+        // otherwise an endpoint may silently ignore the tool schema and fall back to prose.
         object.insert(
             "provider".to_owned(),
             json_value!({"require_parameters": true}),

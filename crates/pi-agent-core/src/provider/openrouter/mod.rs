@@ -664,10 +664,6 @@ data: [DONE]
         .unwrap();
         let payload = JsonValue::parse(std::str::from_utf8(&payload).unwrap()).unwrap();
         assert_eq!(
-            payload.get("tool_choice").and_then(JsonValue::as_str),
-            Some("required")
-        );
-        assert_eq!(
             payload
                 .get("provider")
                 .and_then(|value| value.get("require_parameters"))
