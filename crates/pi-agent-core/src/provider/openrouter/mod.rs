@@ -10,17 +10,20 @@ mod payload;
 mod response;
 mod transport;
 
-use super::http::Request;
+use super::http::{stream, HttpStream, Request, StreamEvent};
 use super::retry::{retry_with_backoff, RetryableError};
 use crate::scheduler::{
-    CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    CancellationToken, ModelEventFuture, ModelEventStream, ModelFuture, ModelProvider,
+    ModelRequest, ModelStream, ModelStreamEvent,
 };
 use crate::state::{StopReason, Usage};
 use accounting::{add_usage, Accounting};
 pub use accounting::{OpenRouterCostReport, OpenRouterCostSource, OpenRouterCostTurn};
 pub use config::{OpenRouterConfig, OpenRouterConfigError};
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use payload::build_payload;
 #[cfg(test)]
@@ -28,6 +31,7 @@ use response::exact_number_at_path;
 use response::{
     decimal_add, openrouter_response_retryable, openrouter_status_retryable, parse_generation_cost,
     parse_partial_response, parse_response, response_body_prefix, unavailable_cost,
+    StreamingSseDecoder,
 };
 use transport::{retryable_transport_error, run_ureq, COMPLETIONS_URL, GENERATION_URL};
 
@@ -104,10 +108,222 @@ impl fmt::Display for OpenRouterErrorReport {
 }
 
 /// OpenRouter implementation of the generic [`ModelProvider`] port.
+#[derive(Clone)]
 pub struct OpenRouterProvider {
     config: OpenRouterConfig,
     accounting: Arc<Mutex<Accounting>>,
     last_error: Arc<Mutex<Option<OpenRouterErrorReport>>>,
+}
+
+/// One live OpenRouter SSE response. The HTTP worker owns blocking body reads while this source
+/// remains caller-polled through the core's provider-neutral stream boundary.
+struct OpenRouterEventStream {
+    provider: OpenRouterProvider,
+    response: Option<HttpStream>,
+    decoder: Option<StreamingSseDecoder>,
+    pending: VecDeque<ModelStreamEvent>,
+    status_code: Option<u16>,
+    error_body: Vec<u8>,
+    payload_bytes: usize,
+}
+
+impl OpenRouterEventStream {
+    fn start(
+        provider: OpenRouterProvider,
+        request: ModelRequest,
+        cancellation: CancellationToken,
+    ) -> Self {
+        provider.clear_error();
+        let mut event_stream = Self {
+            provider,
+            response: None,
+            decoder: None,
+            pending: VecDeque::new(),
+            status_code: None,
+            error_body: Vec::new(),
+            payload_bytes: 0,
+        };
+        if cancellation.is_cancelled() {
+            event_stream
+                .pending
+                .push_back(ModelStreamEvent::End(StopReason::Cancelled));
+            return event_stream;
+        }
+        if let Err(message) = event_stream.provider.validate_model(&request) {
+            event_stream.adapter_failure(message);
+            return event_stream;
+        }
+        let payload = match build_payload(&event_stream.provider.config, &request) {
+            Ok(payload) => payload,
+            Err(message) => {
+                event_stream.adapter_failure(message);
+                return event_stream;
+            }
+        };
+        event_stream.payload_bytes = payload.len();
+        event_stream.response = Some(stream(
+            Request::post(
+                COMPLETIONS_URL,
+                payload,
+                event_stream.provider.config.request_timeout,
+            )
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", event_stream.provider.config.api_key),
+                )
+                .header("Content-Type", "application/json")
+                .with_stall_timeout(event_stream.provider.config.stall_timeout),
+            &cancellation,
+        ));
+        event_stream.decoder = Some(StreamingSseDecoder::new());
+        event_stream
+    }
+
+    fn adapter_failure(&mut self, message: String) {
+        self.provider.record_error(OpenRouterErrorReport {
+            source: OpenRouterErrorSource::Adapter,
+            message: message.clone(),
+            status_code: None,
+            retryable: false,
+            attempt: 0,
+            response_bytes: None,
+            request_bytes: None,
+            response_prefix: None,
+        });
+        self.pending.push_back(ModelStreamEvent::Error { message });
+    }
+
+    fn transport_failure(&mut self, message: String, status_code: Option<u16>) {
+        self.response = None;
+        self.decoder = None;
+        self.provider.record_error(OpenRouterErrorReport {
+            source: OpenRouterErrorSource::Transport,
+            message: message.clone(),
+            status_code,
+            retryable: false,
+            attempt: 1,
+            response_bytes: (!self.error_body.is_empty()).then_some(self.error_body.len()),
+            request_bytes: Some(self.payload_bytes),
+            response_prefix: (!self.error_body.is_empty()).then(|| {
+                response_body_prefix(&self.error_body, Some(&self.provider.config.api_key))
+            }),
+        });
+        self.pending.push_back(ModelStreamEvent::Error { message });
+    }
+
+    fn response_failure(&mut self, message: String) {
+        self.response = None;
+        self.decoder = None;
+        self.provider.record_error(OpenRouterErrorReport {
+            source: OpenRouterErrorSource::Response,
+            message: message.clone(),
+            status_code: self.status_code,
+            retryable: false,
+            attempt: 1,
+            response_bytes: Some(self.error_body.len()),
+            request_bytes: Some(self.payload_bytes),
+            response_prefix: Some(response_body_prefix(
+                &self.error_body,
+                Some(&self.provider.config.api_key),
+            )),
+        });
+        self.pending.push_back(ModelStreamEvent::Error { message });
+    }
+
+    fn finish_sse(&mut self) {
+        self.response = None;
+        let Some(decoder) = self.decoder.take() else {
+            self.response_failure("OpenRouter response stream was not initialized".into());
+            return;
+        };
+        match decoder.finish(false) {
+            Ok(completion) => {
+                let cost = completion.inline_cost.unwrap_or_else(|| {
+                    unavailable_cost(&completion.usage, &self.provider.config.model)
+                });
+                if completion.usage.is_reported() {
+                    self.provider.record(completion.usage.clone(), cost);
+                }
+                self.pending.extend(completion.events);
+            }
+            Err(message) => self.response_failure(message),
+        }
+    }
+
+    fn poll_next_event(
+        &mut self,
+        context: &mut Context<'_>,
+        cancellation: CancellationToken,
+    ) -> Poll<Result<Option<ModelStreamEvent>, crate::error::SchedulerError>> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Poll::Ready(Ok(Some(event)));
+            }
+            if cancellation.is_cancelled() {
+                self.response = None;
+                self.decoder = None;
+                return Poll::Ready(Ok(Some(ModelStreamEvent::End(StopReason::Cancelled))));
+            }
+            let Some(response) = self.response.as_mut() else {
+                return Poll::Ready(Ok(None));
+            };
+            match response.poll_next(context) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(StreamEvent::Response { status_code }) => {
+                    self.status_code = Some(status_code);
+                }
+                Poll::Ready(StreamEvent::Chunk(bytes)) => {
+                    if self.status_code.is_some_and(|status| !(200..300).contains(&status)) {
+                        self.error_body.extend_from_slice(&bytes);
+                        continue;
+                    }
+                    let Some(decoder) = self.decoder.as_mut() else {
+                        self.response_failure("OpenRouter response stream was not initialized".into());
+                        continue;
+                    };
+                    match decoder.push(&bytes) {
+                        Ok(events) => self.pending.extend(events),
+                        Err(message) => self.response_failure(message),
+                    }
+                }
+                Poll::Ready(StreamEvent::End) => {
+                    if self.status_code.is_some_and(|status| !(200..300).contains(&status)) {
+                        self.response_failure("OpenRouter rejected the request".into());
+                    } else {
+                        self.finish_sse();
+                    }
+                }
+                Poll::Ready(StreamEvent::Failure(failure)) => {
+                    if cancellation.is_cancelled() || failure.message == "HTTP request cancelled" {
+                        self.response = None;
+                        self.decoder = None;
+                        self.pending
+                            .push_back(ModelStreamEvent::End(StopReason::Cancelled));
+                    } else {
+                        self.transport_failure(
+                            format!(
+                                "OpenRouter HTTP transport failed{}: {}",
+                                failure
+                                    .status_code
+                                    .map(|status| format!(" with status {status}"))
+                                    .unwrap_or_default(),
+                                failure.message
+                            ),
+                            failure.status_code,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ModelEventStream for OpenRouterEventStream {
+    fn next_event<'a>(&'a mut self, cancellation: CancellationToken) -> ModelEventFuture<'a> {
+        Box::pin(std::future::poll_fn(move |context| {
+            self.poll_next_event(context, cancellation.clone())
+        }))
+    }
 }
 
 impl OpenRouterProvider {
@@ -422,7 +638,7 @@ impl ModelProvider for OpenRouterProvider {
         request: ModelRequest,
         cancellation: CancellationToken,
     ) -> ModelFuture<'a> {
-        let stream = self.response_stream(request, cancellation);
+        let stream = OpenRouterEventStream::start(self.clone(), request, cancellation);
         Box::pin(std::future::ready(Ok(Box::new(stream) as _)))
     }
 }

@@ -8,7 +8,10 @@
 #![allow(dead_code)] // provider features consume different request methods and response fields
 
 use super::super::scheduler::CancellationToken;
+use std::collections::VecDeque;
 use std::io::Read;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,6 +88,196 @@ pub(crate) struct Failure {
     pub(crate) status_code: Option<u16>,
     pub(crate) body: Vec<u8>,
     pub(crate) timeout: Option<ureq::Timeout>,
+}
+
+/// Incremental items delivered by the native HTTP body worker.
+#[derive(Debug)]
+pub(crate) enum StreamEvent {
+    /// Response headers arrived and establish the status for following body chunks.
+    Response { status_code: u16 },
+    /// A non-empty body chunk became available before the response settled.
+    Chunk(Vec<u8>),
+    /// The body reached EOF without a transport failure.
+    End,
+    /// The response could not be opened or read further.
+    Failure(Failure),
+}
+
+#[derive(Debug, Default)]
+struct StreamState {
+    events: VecDeque<StreamEvent>,
+    waker: Option<Waker>,
+}
+
+/// Caller-polled response body backed by one provider-owned native I/O worker.
+///
+/// `ureq` deliberately remains synchronous. Moving its blocking body reads to this narrowly
+/// scoped worker lets the executor that drives the core keep reducing already-delivered chunks
+/// and processing cancellation without making HTTP a core runtime dependency.
+#[derive(Debug)]
+pub(crate) struct HttpStream {
+    state: Arc<Mutex<StreamState>>,
+}
+
+impl HttpStream {
+    /// Poll the next native response item.
+    pub(crate) fn poll_next(&mut self, context: &mut Context<'_>) -> Poll<StreamEvent> {
+        let mut state = self.state.lock().expect("HTTP stream state mutex poisoned");
+        if let Some(event) = state.events.pop_front() {
+            return Poll::Ready(event);
+        }
+        match &mut state.waker {
+            Some(waker) if waker.will_wake(context.waker()) => {}
+            slot => *slot = Some(context.waker().clone()),
+        }
+        Poll::Pending
+    }
+}
+
+/// Begin a response-body stream without waiting for its first body chunk.
+///
+/// The returned value is deliberately private to adapters. It preserves explicit request
+/// timeouts and cancellation checks while preventing a synchronous HTTP body read from
+/// monopolizing an embedding's executor.
+pub(crate) fn stream(request: Request, cancellation: &CancellationToken) -> HttpStream {
+    let state = Arc::new(Mutex::new(StreamState::default()));
+    let worker_state = Arc::clone(&state);
+    let worker_cancellation = cancellation.clone();
+    let worker = std::thread::Builder::new()
+        .name("pi-agent-http-stream".into())
+        .spawn(move || stream_worker(request, worker_cancellation, worker_state));
+    if let Err(error) = worker {
+        push_stream_event(
+            &state,
+            StreamEvent::Failure(Failure {
+                message: format!("cannot start HTTP streaming worker: {error}"),
+                status_code: None,
+                body: Vec::new(),
+                timeout: None,
+            }),
+        );
+    }
+    HttpStream { state }
+}
+
+fn push_stream_event(state: &Arc<Mutex<StreamState>>, event: StreamEvent) {
+    let waker = {
+        let mut state = state.lock().expect("HTTP stream state mutex poisoned");
+        state.events.push_back(event);
+        state.waker.take()
+    };
+    if let Some(waker) = waker {
+        waker.wake();
+    }
+}
+
+fn stream_worker(request: Request, cancellation: CancellationToken, state: Arc<Mutex<StreamState>>) {
+    if cancellation.is_cancelled() {
+        push_stream_event(
+            &state,
+            StreamEvent::Failure(cancelled_failure(None, Vec::new())),
+        );
+        return;
+    }
+    let timeout = request.timeout;
+    let stall_timeout = request.stall_timeout;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .timeout_resolve(Some(Duration::from_secs(10)))
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .build()
+        .into();
+    let response = match request.method {
+        Method::Get => {
+            let mut builder = agent.get(&request.url);
+            for (key, value) in &request.query {
+                builder = builder.query(key, value);
+            }
+            for (key, value) in &request.headers {
+                builder = builder.header(key, value);
+            }
+            let mut config = builder.config().http_status_as_error(false);
+            if let Some(stall_timeout) = stall_timeout {
+                config = config
+                    .timeout_recv_response(Some(stall_timeout))
+                    .timeout_recv_body(Some(stall_timeout));
+            }
+            config.build().call()
+        }
+        Method::Post => {
+            let mut builder = agent.post(&request.url);
+            for (key, value) in &request.query {
+                builder = builder.query(key, value);
+            }
+            for (key, value) in &request.headers {
+                builder = builder.header(key, value);
+            }
+            let mut config = builder.config().http_status_as_error(false);
+            if let Some(stall_timeout) = stall_timeout {
+                config = config
+                    .timeout_recv_response(Some(stall_timeout))
+                    .timeout_recv_body(Some(stall_timeout));
+            }
+            config.build().send(&request.body)
+        }
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            push_stream_event(
+                &state,
+                StreamEvent::Failure(Failure {
+                    message: format!("HTTP request failed: {error}"),
+                    status_code: None,
+                    body: Vec::new(),
+                    timeout: timeout_kind(&error),
+                }),
+            );
+            return;
+        }
+    };
+    let status_code = response.status().as_u16();
+    push_stream_event(&state, StreamEvent::Response { status_code });
+    let mut reader = response.into_body().into_reader();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        if cancellation.is_cancelled() {
+            push_stream_event(
+                &state,
+                StreamEvent::Failure(cancelled_failure(Some(status_code), Vec::new())),
+            );
+            return;
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                push_stream_event(&state, StreamEvent::End);
+                return;
+            }
+            Ok(read) => push_stream_event(&state, StreamEvent::Chunk(buffer[..read].to_vec())),
+            Err(error) => {
+                push_stream_event(
+                    &state,
+                    StreamEvent::Failure(Failure {
+                        message: format!("HTTP response body read failed: {error}"),
+                        status_code: Some(status_code),
+                        body: Vec::new(),
+                        timeout: timeout_kind_from_io(&error),
+                    }),
+                );
+                return;
+            }
+        }
+    }
+}
+
+fn cancelled_failure(status_code: Option<u16>, body: Vec<u8>) -> Failure {
+    Failure {
+        message: "HTTP request cancelled".into(),
+        status_code,
+        body,
+        timeout: None,
+    }
 }
 
 impl Failure {
@@ -227,11 +420,63 @@ fn timeout_kind_from_io(error: &std::io::Error) -> Option<ureq::Timeout> {
 
 #[cfg(test)]
 mod tests {
-    use super::{send, Request};
+    use super::{send, stream, Request, StreamEvent};
     use crate::scheduler::CancellationToken;
     use std::io::Write;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn streaming_transport_yields_a_body_chunk_before_the_response_settles() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock HTTP server should bind");
+        let address = listener.local_addr().expect("mock HTTP server address");
+        let (first_chunk_sent, first_chunk_received) = mpsc::channel();
+        let (finish_response, wait_for_finish) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("native client should connect");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nfirst ",
+                )
+                .expect("mock response prefix should write");
+            first_chunk_sent
+                .send(())
+                .expect("test receiver remains open");
+            wait_for_finish
+                .recv()
+                .expect("test releases response settlement");
+            socket
+                .write_all(b"second")
+                .expect("mock response suffix should write");
+        });
+
+        let cancellation = CancellationToken::new();
+        let mut response = stream(
+            Request::get(format!("http://{address}/stream"), Duration::from_secs(2)),
+            &cancellation,
+        );
+        first_chunk_received
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server sends the first response chunk");
+        assert!(matches!(
+            smol::block_on(std::future::poll_fn(|context| response.poll_next(context))),
+            StreamEvent::Response { status_code: 200 }
+        ));
+        assert!(matches!(
+            smol::block_on(std::future::poll_fn(|context| response.poll_next(context))),
+            StreamEvent::Chunk(bytes) if bytes == b"first "
+        ));
+
+        finish_response
+            .send(())
+            .expect("server remains ready to finish");
+        while !matches!(
+            smol::block_on(std::future::poll_fn(|context| response.poll_next(context))),
+            StreamEvent::End
+        ) {}
+        server.join().expect("mock server should finish");
+    }
 
     #[test]
     fn preserves_non_success_status_and_response_body_for_provider_parsers() {

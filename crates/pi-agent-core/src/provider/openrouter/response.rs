@@ -4,6 +4,7 @@ use super::accounting::{OpenRouterCostSource, OpenRouterCostTurn};
 use crate::json::{from_bytes, JsonValue};
 use crate::scheduler::ModelStreamEvent;
 use crate::state::{AgentToolCall, SerializedJson, StopReason, ToolCallId, Usage};
+use std::collections::VecDeque;
 
 pub(super) struct ParsedResponse {
     pub(super) events: Vec<ModelStreamEvent>,
@@ -476,78 +477,199 @@ struct StreamingToolCall {
 }
 
 fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedResponse, String> {
-    let mut text = String::new();
-    let mut tool_calls: Vec<Option<StreamingToolCall>> = Vec::new();
-    let mut finish_reason = None;
-    let mut usage = JsonValue::Null;
-    let mut usage_bytes = None;
-    let mut generation_id = None;
-    let mut model = None;
-    let mut saw_data = false;
-    let mut saw_done = false;
+    let mut decoder = StreamingSseDecoder::new();
+    let mut events = decoder.push(bytes)?;
+    let complete = decoder.finish(allow_partial)?;
+    events.extend(complete.events);
+    Ok(ParsedResponse {
+        events,
+        usage: complete.usage,
+        generation_id: complete.generation_id,
+        inline_cost: complete.inline_cost,
+    })
+}
 
-    let mut lines = bytes.split(|byte| *byte == b'\n').peekable();
-    while let Some(line) = lines.next() {
+/// Stateful OpenRouter SSE parser shared by recorded responses and the native body stream.
+///
+/// Text deltas are emitted as their SSE records arrive. Tool-call fragments remain internal
+/// until their terminal record so the core sees one complete typed call in provider order.
+pub(super) struct StreamingSseDecoder {
+    buffered: Vec<u8>,
+    tool_calls: Vec<Option<StreamingToolCall>>,
+    finish_reason: Option<String>,
+    usage: JsonValue,
+    usage_bytes: Option<Vec<u8>>,
+    generation_id: Option<String>,
+    model: Option<String>,
+    saw_data: bool,
+    saw_done: bool,
+}
+
+pub(super) struct StreamingSseComplete {
+    pub(super) events: Vec<ModelStreamEvent>,
+    pub(super) usage: Usage,
+    pub(super) generation_id: Option<String>,
+    pub(super) inline_cost: Option<OpenRouterCostTurn>,
+}
+
+impl StreamingSseDecoder {
+    pub(super) fn new() -> Self {
+        Self {
+            buffered: Vec::new(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            usage: JsonValue::Null,
+            usage_bytes: None,
+            generation_id: None,
+            model: None,
+            saw_data: false,
+            saw_done: false,
+        }
+    }
+
+    /// Reduce complete SSE records from one arbitrary HTTP body chunk.
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, String> {
+        self.buffered.extend_from_slice(bytes);
+        let mut events = VecDeque::new();
+        while let Some(newline) = self.buffered.iter().position(|byte| *byte == b'\n') {
+            let mut line = self.buffered.drain(..=newline).collect::<Vec<_>>();
+            line.pop();
+            self.process_line(&line, &mut events)?;
+        }
+        Ok(events.into())
+    }
+
+    /// Finish a closed body. Partial capture is accepted only for the existing stall boundary.
+    pub(super) fn finish(mut self, allow_partial: bool) -> Result<StreamingSseComplete, String> {
+        let mut events = VecDeque::new();
+        if !self.buffered.is_empty() {
+            let line = std::mem::take(&mut self.buffered);
+            if let Err(error) = self.process_line(&line, &mut events) {
+                if !allow_partial {
+                    return Err(error);
+                }
+            }
+        }
+        if !self.saw_data || (!allow_partial && !self.saw_done && self.finish_reason.is_none()) {
+            return Err("OpenRouter SSE response ended before completion".to_owned());
+        }
+        if allow_partial && !self.saw_done && self.finish_reason.is_none() {
+            self.finish_reason = Some("length".to_owned());
+        }
+        let mut has_tool_calls = false;
+        for (index, call) in self.tool_calls.into_iter().flatten().enumerate() {
+            let id = call
+                .id
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| format!("openrouter-call-{index}"));
+            let name = call
+                .name
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| "OpenRouter tool call did not contain a name".to_owned())?;
+            events.push_back(ModelStreamEvent::ToolCall(AgentToolCall {
+                id: ToolCallId::new(id)
+                    .map_err(|_| "OpenRouter tool call omitted its identifier".to_owned())?,
+                name,
+                arguments: SerializedJson::new(&call.arguments),
+            }));
+            has_tool_calls = true;
+        }
+        let usage = parse_usage(&self.usage);
+        if usage.is_reported() {
+            events.push_back(ModelStreamEvent::Usage(usage.clone()));
+        }
+        let stop_reason = match self.finish_reason.as_deref() {
+            Some("length") => StopReason::Length,
+            Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
+            _ if has_tool_calls => StopReason::ToolUse,
+            _ => StopReason::Stop,
+        };
+        events.push_back(ModelStreamEvent::End(stop_reason));
+        let inline_cost = self.usage_bytes.as_deref().and_then(|usage_bytes| {
+            let total_usd_exact = exact_number_at_path(usage_bytes, &["usage", "cost"])?;
+            Some(OpenRouterCostTurn {
+                turn: 0,
+                source: OpenRouterCostSource::ChatUsage,
+                total_usd: number(&self.usage, "cost"),
+                total_usd_exact: Some(total_usd_exact),
+                upstream_inference_usd: None,
+                upstream_inference_usd_exact: None,
+                model: self.model,
+                provider: None,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_write_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+            })
+        });
+        Ok(StreamingSseComplete {
+            events: events.into(),
+            usage,
+            generation_id: self.generation_id,
+            inline_cost,
+        })
+    }
+
+    fn process_line(
+        &mut self,
+        line: &[u8],
+        events: &mut VecDeque<ModelStreamEvent>,
+    ) -> Result<(), String> {
         let line = std::str::from_utf8(line)
             .map_err(|_| "OpenRouter returned a non-UTF-8 SSE response".to_owned())?
             .trim();
         if line.is_empty() || line.starts_with(':') {
-            continue;
+            return Ok(());
         }
         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
-            continue;
+            return Ok(());
         };
         if data == "[DONE]" {
-            saw_done = true;
-            continue;
+            self.saw_done = true;
+            return Ok(());
         }
-        saw_data = true;
-        let chunk = match from_bytes(data.as_bytes()) {
-            Ok(chunk) => chunk,
-            Err(_) if allow_partial && lines.peek().is_none() => {
-                // A semantic stall can cut the native response capture in the middle of the final SSE JSON
-                // line. Preserve every complete event already observed, but never hide a
-                // malformed event that has a following line behind it.
-                break;
-            }
-            Err(_) => return Err("OpenRouter returned an invalid SSE event".to_owned()),
-        };
+        self.saw_data = true;
+        let chunk = from_bytes(data.as_bytes())
+            .map_err(|_| "OpenRouter returned an invalid SSE event".to_owned())?;
         if chunk.get("error").is_some() {
             return Err("OpenRouter rejected the request".into());
         }
-        if generation_id.is_none() {
-            generation_id = chunk
+        if self.generation_id.is_none() {
+            self.generation_id = chunk
                 .get("id")
                 .and_then(JsonValue::as_str)
                 .filter(|id| !id.is_empty())
                 .map(str::to_owned);
         }
-        if model.is_none() {
-            model = chunk
+        if self.model.is_none() {
+            self.model = chunk
                 .get("model")
                 .and_then(JsonValue::as_str)
                 .filter(|model| !model.is_empty())
                 .map(str::to_owned);
         }
-        if let Some(chunk_usage) = chunk.get("usage") {
-            usage = chunk_usage.clone();
-            usage_bytes = Some(data.as_bytes().to_owned());
+        if let Some(usage) = chunk.get("usage") {
+            self.usage = usage.clone();
+            self.usage_bytes = Some(data.as_bytes().to_owned());
         }
         let Some(choice) = chunk
             .get("choices")
             .and_then(JsonValue::as_array)
             .and_then(|choices| choices.first())
         else {
-            continue;
+            return Ok(());
         };
         if let Some(reason) = choice.get("finish_reason").and_then(JsonValue::as_str) {
-            finish_reason = Some(reason.to_owned());
+            self.finish_reason = Some(reason.to_owned());
         }
         let Some(delta) = choice.get("delta").and_then(JsonValue::as_object) else {
-            continue;
+            return Ok(());
         };
         if let Some(content) = delta.get("content").and_then(JsonValue::as_str) {
-            text.push_str(content);
+            if !content.is_empty() {
+                events.push_back(ModelStreamEvent::TextDelta(content.to_owned()));
+            }
         }
         if let Some(calls) = delta.get("tool_calls").and_then(JsonValue::as_array) {
             for (position, call) in calls.iter().enumerate() {
@@ -556,10 +678,10 @@ fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedRespons
                     .and_then(JsonValue::as_u64)
                     .and_then(|index| usize::try_from(index).ok())
                     .unwrap_or(position);
-                while tool_calls.len() <= index {
-                    tool_calls.push(None);
+                while self.tool_calls.len() <= index {
+                    self.tool_calls.push(None);
                 }
-                let entry = tool_calls[index].get_or_insert_with(StreamingToolCall::default);
+                let entry = self.tool_calls[index].get_or_insert_with(StreamingToolCall::default);
                 if let Some(id) = call.get("id").and_then(JsonValue::as_str) {
                     entry.id = Some(id.to_owned());
                 }
@@ -573,74 +695,8 @@ fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedRespons
                 }
             }
         }
+        Ok(())
     }
-
-    if !saw_data || (!allow_partial && !saw_done && finish_reason.is_none()) {
-        return Err("OpenRouter SSE response ended before completion".to_owned());
-    }
-    if allow_partial && !saw_done && finish_reason.is_none() {
-        finish_reason = Some("length".to_owned());
-    }
-    let mut events = Vec::new();
-    if !text.is_empty() {
-        events.push(ModelStreamEvent::TextDelta(text));
-    }
-    let mut has_tool_calls = false;
-    for (index, call) in tool_calls.into_iter().flatten().enumerate() {
-        let id = call
-            .id
-            .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| format!("openrouter-call-{index}"));
-        let name = call
-            .name
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "OpenRouter tool call did not contain a name".to_owned())?;
-        events.push(ModelStreamEvent::ToolCall(AgentToolCall {
-            id: ToolCallId::new(id)
-                .map_err(|_| "OpenRouter tool call omitted its identifier".to_owned())?,
-            name,
-            arguments: SerializedJson::new(&call.arguments),
-        }));
-        has_tool_calls = true;
-    }
-    let parsed_usage = parse_usage(&usage);
-    if parsed_usage.input_tokens.is_some()
-        || parsed_usage.output_tokens.is_some()
-        || parsed_usage.reasoning_tokens.is_some()
-    {
-        events.push(ModelStreamEvent::Usage(parsed_usage.clone()));
-    }
-    let stop_reason = match finish_reason.as_deref() {
-        Some("length") => StopReason::Length,
-        Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
-        _ if has_tool_calls => StopReason::ToolUse,
-        _ => StopReason::Stop,
-    };
-    events.push(ModelStreamEvent::End(stop_reason));
-    let inline_cost = usage_bytes.as_deref().and_then(|usage_bytes| {
-        let total_usd_exact = exact_number_at_path(usage_bytes, &["usage", "cost"])?;
-        Some(OpenRouterCostTurn {
-            turn: 0,
-            source: OpenRouterCostSource::ChatUsage,
-            total_usd: number(&usage, "cost"),
-            total_usd_exact: Some(total_usd_exact),
-            upstream_inference_usd: None,
-            upstream_inference_usd_exact: None,
-            model: model.clone(),
-            provider: None,
-            input_tokens: parsed_usage.input_tokens,
-            output_tokens: parsed_usage.output_tokens,
-            cache_read_tokens: parsed_usage.cache_read_tokens,
-            cache_write_tokens: parsed_usage.cache_write_tokens,
-            reasoning_tokens: parsed_usage.reasoning_tokens,
-        })
-    });
-    Ok(ParsedResponse {
-        events,
-        usage: parsed_usage,
-        generation_id,
-        inline_cost,
-    })
 }
 
 /// Classify an OpenRouter JSON error without exposing its remote diagnostic to the agent.
