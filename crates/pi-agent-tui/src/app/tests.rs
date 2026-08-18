@@ -128,6 +128,41 @@ fn event_projection_groups_a_tool_lifecycle_in_one_readable_row() {
 }
 
 #[test]
+fn event_projection_makes_provider_failure_and_abort_explicit() {
+    let mut state = AppState::new();
+    state.apply_event(&pi_agent_core::AgentEvent {
+        run_id: pi_agent_core::RunId(1),
+        sequence: pi_agent_core::EventSequence(1),
+        kind: pi_agent_core::AgentEventKind::MessageEnd {
+            message: Message::Assistant {
+                id: MessageId(2),
+                content: String::new(),
+                tool_calls: Vec::new(),
+                stop_reason: Some(pi_agent_core::state::StopReason::Error),
+                error_message: Some("provider rejected the request".into()),
+            },
+        },
+    });
+    state.apply_event(&pi_agent_core::AgentEvent {
+        run_id: pi_agent_core::RunId(1),
+        sequence: pi_agent_core::EventSequence(2),
+        kind: pi_agent_core::AgentEventKind::TurnEnd {
+            turn_id: pi_agent_core::TurnId(1),
+            reason: pi_agent_core::state::StopReason::Aborted,
+        },
+    });
+
+    assert_eq!(
+        state
+            .transcript()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        ["assistant error: provider rejected the request", "turn aborted"]
+    );
+}
+
+#[test]
 fn accounting_does_not_render_unknown_as_zero() {
     assert_eq!(
         format_usage(&Usage::default()),

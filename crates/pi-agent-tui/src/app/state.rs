@@ -264,8 +264,20 @@ impl AppState {
                     if *terminal { "; ending run" } else { "" }
                 ),
             ),
+            AgentEventKind::TurnEnd { reason, .. } => match reason {
+                pi_agent_core::state::StopReason::Error => {
+                    self.push(sequence, "turn failed; prompt remains available to retry".into())
+                }
+                pi_agent_core::state::StopReason::Aborted => {
+                    self.push(sequence, "turn aborted".into())
+                }
+                pi_agent_core::state::StopReason::Cancelled => {
+                    self.push(sequence, "turn cancelled".into())
+                }
+                _ => {}
+            },
             AgentEventKind::AgentEnd { .. } => self.status = UiStatus::Idle,
-            AgentEventKind::TurnStart { .. } | AgentEventKind::TurnEnd { .. } => {}
+            AgentEventKind::TurnStart { .. } => {}
         }
     }
 
