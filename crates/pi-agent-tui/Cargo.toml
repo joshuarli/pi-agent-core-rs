@@ -26,8 +26,7 @@ pi-agent-core = { path = "../pi-agent-core", features = ["provider-commandcode",
 smol = { workspace = true }
 
 [dev-dependencies]
-portable-pty = "=0.9.0"
-vt100 = "=0.16.2"
+ptytest = { path = "../../../ptytest" }
 
 [[test]]
 name = "pty_streaming"

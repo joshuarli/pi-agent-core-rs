@@ -1,151 +1,12 @@
-use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
-use std::io::{Read, Write};
+use ptytest::{CommandSpec, ExitStatus, Key, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
+use std::io::Write;
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const ROWS: u16 = 24;
 const COLUMNS: u16 = 100;
-
-struct PtyApp {
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
-    parser: vt100::Parser,
-    output: Receiver<Vec<u8>>,
-    _reader: thread::JoinHandle<()>,
-}
-
-impl PtyApp {
-    fn launch(openrouter_url: &str) -> Self {
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: ROWS,
-                cols: COLUMNS,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("test PTY should open");
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pi-agent"));
-        command.args([
-            "--provider",
-            "openrouter",
-            "--model",
-            "openai/gpt-5.6-luna",
-        ]);
-        command.env_clear();
-        command.env("TERM", "xterm-256color");
-        command.env("OPENROUTER_API_KEY", "offline-test-key");
-        command.env("PI_AGENT_TUI_TEST_OPENROUTER_URL", openrouter_url);
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("real pi-agent binary should start in the PTY");
-        drop(pair.slave);
-
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .expect("test PTY should clone output reader");
-        let writer = pair
-            .master
-            .take_writer()
-            .expect("test PTY should own input writer");
-        let (sender, output) = mpsc::channel();
-        let reader = thread::spawn(move || {
-            let mut buffer = [0_u8; 4_096];
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
-                    Ok(count) if sender.send(buffer[..count].to_vec()).is_err() => break,
-                    Ok(_) => {}
-                }
-            }
-        });
-        Self {
-            writer,
-            child,
-            parser: vt100::Parser::new(ROWS, COLUMNS, 0),
-            output,
-            _reader: reader,
-        }
-    }
-
-    fn send(&mut self, input: &[u8]) {
-        self.writer
-            .write_all(input)
-            .expect("PTY should accept test input");
-        self.writer.flush().expect("PTY input should flush");
-    }
-
-    fn wait_for_text(&mut self, expected: &str) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            self.drain_output();
-            let screen = self.screen_text();
-            if screen.contains(expected) {
-                return;
-            }
-            if Instant::now() >= deadline {
-                panic!("terminal never displayed {expected:?}; screen was:\n{screen}");
-            }
-            if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(20)) {
-                self.parser.process(&bytes);
-            }
-        }
-    }
-
-    fn screen_text(&mut self) -> String {
-        self.drain_output();
-        let screen = self.parser.screen();
-        (0..ROWS)
-            .map(|row| {
-                (0..COLUMNS)
-                    .map(|column| {
-                        screen
-                            .cell(row, column)
-                            .and_then(|cell| cell.contents().chars().next())
-                            .unwrap_or(' ')
-                    })
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn wait_for_exit(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if let Some(status) = self
-                .child
-                .try_wait()
-                .expect("real pi-agent process state should be readable")
-            {
-                assert!(status.success(), "pi-agent exited unsuccessfully: {status}");
-                return;
-            }
-            if Instant::now() >= deadline {
-                panic!("real pi-agent binary did not exit");
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn drain_output(&mut self) {
-        while let Ok(bytes) = self.output.try_recv() {
-            self.parser.process(&bytes);
-        }
-    }
-}
-
-impl Drop for PtyApp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
 
 struct OpenRouterFixture {
     first_delta: Receiver<()>,
@@ -223,20 +84,79 @@ data: [DONE]
 #[test]
 fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
     let fixture = OpenRouterFixture::start();
-    let mut app = PtyApp::launch(&fixture.url);
-    app.wait_for_text("openrouter/openai/gpt-5.6-luna");
+    let scenario = Scenario::new("OpenRouter streaming")
+        .expect("valid scenario label")
+        .command(
+            CommandSpec::new(env!("CARGO_BIN_EXE_pi-agent"))
+                .args([
+                    "--provider",
+                    "openrouter",
+                    "--model",
+                    "openai/gpt-5.6-luna",
+                ])
+                .secret_env("OPENROUTER_API_KEY", "offline-test-key")
+                .env("PI_AGENT_TUI_TEST_OPENROUTER_URL", &fixture.url),
+        )
+        .size(Size::new(COLUMNS, ROWS).expect("constant terminal size"))
+        .environment(TestEnv::hermetic().expect("create hermetic test environment"))
+        .protocol_profile(ProtocolProfile::xterm_minimal_v1());
+    let mut terminal = PtyTest::spawn(scenario).expect("real pi-agent binary should start in a PTY");
+    let baseline = terminal.terminal_baseline();
 
-    app.send(b"stream offline response\r");
+    terminal
+        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "model readiness", |screen| {
+            screen.contains("openrouter/openai/gpt-5.6-luna")
+        })
+        .expect("model selection should render");
+    let active = terminal.terminal_state();
+    assert!(active.modes.alternate_screen, "TerminalGuard enters the alternate screen");
+    assert!(active.modes.bracketed_paste, "TerminalGuard enables bracketed paste");
+    assert!(active.modes.cursor_visible, "the local composer owns a visible cursor");
+    terminal
+        .resize(Size::new(40, 10).expect("constant narrow terminal size"))
+        .expect("resize through the kernel PTY");
+    terminal
+        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "narrow redraw", |screen| {
+            screen.size() == Size::new(40, 10).expect("constant narrow terminal size")
+                && screen.contains("openrouter/openai/gpt-5.6-luna")
+        })
+        .expect("application remains rendered after terminal resize");
+
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "stream offline response\r")
+        .expect("send streaming command");
     fixture.wait_for_first_delta();
-    app.wait_for_text("assistant: first");
+    terminal
+        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "first released streaming token", |screen| {
+            screen.contains("assistant: first")
+        })
+        .expect("first token should render before fixture settlement");
+    terminal.drain(terminal.deadline(Duration::from_secs(3))).expect("drain available output");
     assert!(
-        !app.screen_text().contains("second"),
+        !terminal.screen().contains("second"),
         "terminal displayed unreleased response content"
     );
 
     fixture.release();
-    app.wait_for_text("assistant: first second");
-    app.wait_for_text("openrouter/openai/gpt-5.6-luna | idle");
-    app.send(b"\x03");
-    app.wait_for_exit();
+    terminal
+        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "stream completion", |screen| {
+            screen.contains("assistant: first second")
+        })
+        .expect("complete response should render");
+    terminal
+        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "idle after completion", |screen| {
+            screen.contains("openrouter/openai/gpt-5.6-luna | idle")
+        })
+        .expect("application should become idle");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
+        .expect("send clean interrupt");
+    assert_eq!(
+        terminal.wait_for_exit(terminal.deadline(Duration::from_secs(3))).expect("wait for pi-agent exit"),
+        ExitStatus::Code(0)
+    );
+    terminal
+        .assert_terminal_restored(&baseline)
+        .expect("normal exit restores applicable terminal modes");
+    terminal.finish(terminal.deadline(Duration::from_secs(3))).expect("reap pi-agent");
 }
