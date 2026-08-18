@@ -2,7 +2,14 @@
 
 use crate::app::AppState;
 use crate::grid::{Cell, Grid, Rect, Style};
+use crossterm::style::Color;
 use pi_agent_core::provider::ProviderRegistry;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RenderLine {
+    text: String,
+    style: Style,
+}
 
 /// Fixed regions of the initial screen.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -62,8 +69,8 @@ pub fn render(state: &AppState, registry: &ProviderRegistry, width: u16, height:
             regions.transcript.x,
             regions.transcript.y + row as u16,
             regions.transcript.width,
-            line,
-            Style::default(),
+            &line.text,
+            line.style,
         );
     }
 
@@ -147,17 +154,107 @@ fn put_text(grid: &mut Grid, x: u16, y: u16, width: u16, text: &str, style: Styl
     }
 }
 
-fn wrapped_transcript(state: &AppState, width: u16) -> Vec<String> {
+fn wrapped_transcript(state: &AppState, width: u16) -> Vec<RenderLine> {
     state
         .transcript()
         .iter()
-        .flat_map(|line| wrap_raw_text(&line.text, width))
+        .flat_map(|line| block_lines(&line.text))
+        .flat_map(|line| wrap_render_line(line, width))
         .chain(
             state
                 .queued_lines()
                 .into_iter()
-                .flat_map(|line| wrap_raw_text(&line, width)),
+                .map(|text| RenderLine {
+                    text,
+                    style: Style::default(),
+                })
+                .flat_map(|line| wrap_render_line(line, width)),
         )
+        .collect()
+}
+
+/// Apply the small, stable block vocabulary the v0 renderer owns locally.
+fn block_lines(text: &str) -> Vec<RenderLine> {
+    let mut in_code = false;
+    let mut lines = Vec::new();
+    for raw in text.split('\n') {
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with("```") {
+            let label = trimmed.trim_start_matches('`').trim();
+            if in_code {
+                lines.push(RenderLine {
+                    text: "└".into(),
+                    style: Style {
+                        foreground: Some(Color::Cyan),
+                        ..Style::default()
+                    },
+                });
+                in_code = false;
+            } else {
+                lines.push(RenderLine {
+                    text: if label.is_empty() {
+                        "┌ code".into()
+                    } else {
+                        format!("┌ code: {label}")
+                    },
+                    style: Style {
+                        foreground: Some(Color::Cyan),
+                        bold: true,
+                        ..Style::default()
+                    },
+                });
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            lines.push(RenderLine {
+                text: format!("  {raw}"),
+                style: Style {
+                    foreground: Some(Color::Cyan),
+                    ..Style::default()
+                },
+            });
+            continue;
+        }
+        if let Some(heading) = trimmed.strip_prefix('#') {
+            lines.push(RenderLine {
+                text: heading.trim_start_matches('#').trim_start().to_owned(),
+                style: Style {
+                    bold: true,
+                    ..Style::default()
+                },
+            });
+            continue;
+        }
+        if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            lines.push(RenderLine {
+                text: format!("• {item}"),
+                style: Style::default(),
+            });
+            continue;
+        }
+        let error = trimmed.starts_with("assistant error:")
+            || trimmed.contains(" — failed:")
+            || trimmed.starts_with("turn failed");
+        lines.push(RenderLine {
+            text: raw.to_owned(),
+            style: Style {
+                foreground: error.then_some(Color::Red),
+                ..Style::default()
+            },
+        });
+    }
+    lines
+}
+
+fn wrap_render_line(line: RenderLine, width: u16) -> Vec<RenderLine> {
+    wrap_raw_text(&line.text, width)
+        .into_iter()
+        .map(|text| RenderLine {
+            text,
+            style: line.style,
+        })
         .collect()
 }
 
@@ -197,5 +294,17 @@ mod tests {
     fn raw_text_wraps_without_a_text_layout_dependency() {
         assert_eq!(wrap_raw_text("abcdef", 3), ["abc", "def"]);
         assert_eq!(wrap_raw_text("a\nb", 3), ["a", "b"]);
+    }
+
+    #[test]
+    fn bounded_blocks_keep_markdown_code_and_errors_legible() {
+        let lines = block_lines("# title\n- item\n```rust\nlet ok = true;\n```\nassistant error: bad");
+        assert_eq!(lines[0].text, "title");
+        assert!(lines[0].style.bold);
+        assert_eq!(lines[1].text, "• item");
+        assert_eq!(lines[2].text, "┌ code: rust");
+        assert_eq!(lines[3].text, "  let ok = true;");
+        assert_eq!(lines[4].text, "└");
+        assert_eq!(lines[5].style.foreground, Some(Color::Red));
     }
 }
