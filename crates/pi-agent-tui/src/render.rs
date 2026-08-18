@@ -152,6 +152,12 @@ fn wrapped_transcript(state: &AppState, width: u16) -> Vec<String> {
         .transcript()
         .iter()
         .flat_map(|line| wrap_raw_text(&line.text, width))
+        .chain(
+            state
+                .queued_lines()
+                .into_iter()
+                .flat_map(|line| wrap_raw_text(&line, width)),
+        )
         .collect()
 }
 

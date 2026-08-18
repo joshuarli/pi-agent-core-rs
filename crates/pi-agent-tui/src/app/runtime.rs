@@ -71,6 +71,7 @@ impl App {
     /// Attach an explicitly configured agent for non-terminal integration tests.
     pub fn attach_agent(&mut self, agent: Agent) {
         self.state.set_snapshot(agent.snapshot());
+        self.state.set_queue_snapshot(&agent);
         self.subscription = Some(agent.subscribe_lossless());
         self.core = Some(agent);
     }
@@ -141,6 +142,7 @@ impl App {
         }
         if let Some(agent) = &self.core {
             self.state.set_snapshot(agent.snapshot());
+            self.state.set_queue_snapshot(agent);
         }
     }
 

@@ -253,6 +253,20 @@ fn queue_modes_can_change_without_reconstructing_the_agent() {
 }
 
 #[test]
+fn queue_snapshot_exposes_core_owned_prompt_order_without_mutation() {
+    let agent = Agent::builder().build();
+    agent.enqueue_steering("current turn").expect("steering queues");
+    agent.enqueue_follow_up("next turn")
+        .expect("follow-up queues");
+
+    let snapshot = agent.queue_snapshot();
+    assert_eq!(snapshot.steering.snapshot()[0].content, "current turn");
+    assert_eq!(snapshot.follow_up.snapshot()[0].content, "next turn");
+    snapshot.steering.clone().clear();
+    assert!(agent.has_queued_messages());
+}
+
+#[test]
 fn queue_mode_preserves_insertion_order() {
     let mut queue = crate::queue::SteeringQueue::default();
     assert_eq!(queue.push("a"), 1);

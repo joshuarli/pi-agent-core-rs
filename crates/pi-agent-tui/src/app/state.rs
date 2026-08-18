@@ -4,7 +4,7 @@ use pi_agent_core::event::{
 };
 use pi_agent_core::provider::ProviderRegistry;
 use pi_agent_core::state::{AgentSnapshot, ToolCallId};
-use pi_agent_core::{AgentEvent, ModelDescriptor};
+use pi_agent_core::{Agent, AgentEvent, ModelDescriptor};
 use std::collections::BTreeMap;
 
 use super::host::{missing_credential, model_candidates, overlay_lines, provider_candidates};
@@ -67,6 +67,8 @@ pub struct AppState {
     /// The most recent core-emitted context estimate. `None` means the core has not supplied
     /// capacity-policy evidence for this projection; it is never inferred from rendered text.
     pub(super) context_estimate: Option<ContextEstimate>,
+    /// Read-only projection of the two queues the core owns and drains.
+    pub(super) queued_prompts: Vec<QueuedPrompt>,
 }
 
 /// Context-policy information carried by the core event stream for footer projection.
@@ -74,6 +76,22 @@ pub struct AppState {
 pub(super) struct ContextEstimate {
     pub(super) tokens: Option<u64>,
     pub(super) message_count: usize,
+}
+
+/// A prompt awaiting a named core queue boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct QueuedPrompt {
+    pub(super) sequence: u64,
+    pub(super) content: String,
+    pub(super) delivery: QueueDelivery,
+    pub(super) mode: pi_agent_core::queue::QueueMode,
+}
+
+/// The core queue whose boundary will place the prompt in the transcript.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QueueDelivery {
+    Steering,
+    FollowUp,
 }
 
 impl AppState {
@@ -294,6 +312,36 @@ impl AppState {
         self.last_snapshot = Some(snapshot);
     }
 
+    /// Refresh the visible queue projection from the agent's owned inspection boundary.
+    pub(super) fn set_queue_snapshot(&mut self, agent: &Agent) {
+        let queues = agent.queue_snapshot();
+        let steering_mode = agent.steering_mode();
+        let follow_up_mode = agent.follow_up_mode();
+        self.queued_prompts = queues
+            .steering
+            .snapshot()
+            .into_iter()
+            .map(|entry| QueuedPrompt {
+                sequence: entry.sequence,
+                content: entry.content,
+                delivery: QueueDelivery::Steering,
+                mode: steering_mode,
+            })
+            .chain(
+                queues
+                    .follow_up
+                    .snapshot()
+                    .into_iter()
+                    .map(|entry| QueuedPrompt {
+                        sequence: entry.sequence,
+                        content: entry.content,
+                        delivery: QueueDelivery::FollowUp,
+                        mode: follow_up_mode,
+                    }),
+            )
+            .collect();
+    }
+
     /// Borrow the event-derived transcript.
     pub fn transcript(&self) -> &[TranscriptLine] {
         &self.transcript
@@ -370,6 +418,26 @@ impl AppState {
             ),
         };
         [format!("{model} | {run_state} | {usage}"), context]
+    }
+
+    pub(crate) fn queued_lines(&self) -> Vec<String> {
+        self.queued_prompts
+            .iter()
+            .map(|prompt| {
+                let (delivery, boundary) = match prompt.delivery {
+                    QueueDelivery::Steering => ("steering", "next active turn"),
+                    QueueDelivery::FollowUp => ("follow-up", "next idle boundary"),
+                };
+                let mode = match prompt.mode {
+                    pi_agent_core::queue::QueueMode::OneAtATime => "one at a time",
+                    pi_agent_core::queue::QueueMode::All => "all queued prompts",
+                };
+                format!(
+                    "queued {delivery} #{} ({boundary}; {mode}): {}",
+                    prompt.sequence, prompt.content
+                )
+            })
+            .collect()
     }
 
     /// Return v0 picker lines for the renderer, if an overlay is active.

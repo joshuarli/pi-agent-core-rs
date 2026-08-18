@@ -239,3 +239,33 @@ fn clear_refuses_an_active_core_agent_without_cancelling_it() {
     ));
     active.abort().expect("fixture cleanup");
 }
+
+#[test]
+fn queue_commands_project_core_owned_steering_and_follow_up_prompts() {
+    let agent = pi_agent_core::Agent::builder().build();
+    let mut app = App::new(CliOptions::default());
+    app.attach_agent(agent.clone());
+
+    app.dispatch_command("/steer inspect the error")
+        .expect("steering command is handled");
+    app.dispatch_command("/followup summarize the result")
+        .expect("follow-up command is handled");
+
+    assert_eq!(
+        app.state()
+            .queued_lines()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "queued steering #1 (next active turn; one at a time): inspect the error",
+            "queued follow-up #1 (next idle boundary; one at a time): summarize the result",
+        ]
+    );
+    let queues = agent.queue_snapshot();
+    assert_eq!(queues.steering.snapshot()[0].content, "inspect the error");
+    assert_eq!(
+        queues.follow_up.snapshot()[0].content,
+        "summarize the result"
+    );
+}

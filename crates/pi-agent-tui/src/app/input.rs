@@ -6,6 +6,7 @@ use pi_agent_core::CoreError;
 
 use super::error::AppError;
 use super::runtime::App;
+use super::state::QueueDelivery;
 use super::support::format_usage;
 
 impl App {
@@ -91,7 +92,7 @@ impl App {
         if input.starts_with('/') {
             self.dispatch_command(&input)
         } else {
-            let agent = self.agent_or_setup()?;
+            let agent = self.agent_or_setup()?.clone();
             match agent.snapshot().phase {
                 AgentPhase::Idle if !agent.has_model_provider() => {
                     self.state.notice("select a provider and model first");
@@ -100,6 +101,7 @@ impl App {
                 AgentPhase::Idle => self.spawn_run(agent.start_prompt(input)?),
                 AgentPhase::Running(_) | AgentPhase::Cancelling(_) => {
                     agent.enqueue_steering(input)?;
+                    self.state.set_queue_snapshot(&agent);
                     self.state.notice("steering queued");
                 }
             }
@@ -112,7 +114,7 @@ impl App {
         match words.next().unwrap_or_default() {
             "/help" => {
                 self.state.local_line(
-                    "keys: Enter submit, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, PgUp/PgDn/End scroll; commands: /provider /model /cost /compact /clear /quit",
+                    "keys: Enter submit, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, PgUp/PgDn/End scroll; commands: /provider /model /cost /compact /steer <prompt> /followup <prompt> /clear /quit",
                 );
             }
             "/provider" => self.open_provider_picker(),
@@ -126,6 +128,14 @@ impl App {
                 }
             }
             "/cost" => self.show_cost(),
+            "/steer" => self.enqueue_command_prompt(
+                input.strip_prefix("/steer").unwrap_or_default(),
+                QueueDelivery::Steering,
+            )?,
+            "/followup" => self.enqueue_command_prompt(
+                input.strip_prefix("/followup").unwrap_or_default(),
+                QueueDelivery::FollowUp,
+            )?,
             "/compact" => {
                 let agent = self.agent_or_setup()?;
                 match agent.start_compaction() {
@@ -159,6 +169,32 @@ impl App {
             }
             command => self.state.notice(format!("unknown command {command}")),
         }
+        Ok(())
+    }
+
+    fn enqueue_command_prompt(
+        &mut self,
+        content: &str,
+        delivery: QueueDelivery,
+    ) -> Result<(), AppError> {
+        let content = content.trim();
+        if content.is_empty() {
+            self.state.notice(match delivery {
+                QueueDelivery::Steering => "usage: /steer <prompt>",
+                QueueDelivery::FollowUp => "usage: /followup <prompt>",
+            });
+            return Ok(());
+        }
+        let agent = self.agent_or_setup()?.clone();
+        match delivery {
+            QueueDelivery::Steering => agent.enqueue_steering(content)?,
+            QueueDelivery::FollowUp => agent.enqueue_follow_up(content)?,
+        };
+        self.state.set_queue_snapshot(&agent);
+        self.state.notice(match delivery {
+            QueueDelivery::Steering => "steering queued",
+            QueueDelivery::FollowUp => "follow-up queued",
+        });
         Ok(())
     }
 

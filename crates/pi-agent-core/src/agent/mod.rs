@@ -611,6 +611,19 @@ impl Agent {
         !queues.steering.is_empty() || !queues.follow_up.is_empty()
     }
 
+    /// Return an owned inspection view of the two core-owned prompt queues.
+    ///
+    /// The snapshot is presentation-safe: mutating it never changes the agent. Hosts use this
+    /// rather than maintaining a shadow queue so displayed prompts disappear only when the run
+    /// loop drains the corresponding core queue.
+    pub fn queue_snapshot(&self) -> AgentQueues {
+        self.inner
+            .queues
+            .lock()
+            .expect("agent queue mutex poisoned")
+            .clone()
+    }
+
     /// Change the steering drain mode for subsequent eligible turn boundaries.
     pub fn set_steering_mode(&self, mode: QueueMode) {
         *self
