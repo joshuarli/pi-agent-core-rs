@@ -5,18 +5,18 @@ The default `pi-agent-core` build contains only the `ModelProvider` and
 or discover credentials. Optional adapters are an embedding convenience, not
 a change to that core boundary.
 
-The built-in finite-response adapters retry replay-safe failures with a bounded
+The finite-response adapters retry replay-safe failures with a bounded
 exponential backoff. The standard policy makes the initial attempt plus three
 retries at 250 ms, 500 ms, and 1 s, capped at 8 s. Transport failures are
-retryable for both adapters; provider response errors are retried only when the
-adapter can classify them as transient (for example, 429 or 5xx). Hosts can
-replace the policy with `RetryPolicy` through each adapter config's
+retryable for finite adapters; provider response errors are retried only when
+the adapter can classify them as transient (for example, 429 or 5xx). Hosts can
+replace the policy with `RetryPolicy` through each finite adapter config's
 `with_retry_policy` method. The generic `ModelProvider` port does not retry
 opaque caller providers or replay a stream after it has exposed events.
 
 | Feature | Module | Wire protocol | Intended use |
 | --- | --- | --- | --- |
-| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
+| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions SSE plus inline usage/accounting | Opt-in incremental rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
 | `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in native HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
 | `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions endpoint | Opt-in finite-response native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
 
@@ -42,7 +42,7 @@ mismatched descriptor is a terminal adapter error and never results in a
 network request.
 
 The configured `max_tokens` is sent as the OpenRouter `max_tokens` output cap.
-The adapter defaults each finite HTTP request to a 300-second timeout and
+The adapter defaults each HTTP request to a 300-second timeout and
 detects a response that has started but then produced no non-whitespace bytes
 for 60 seconds. A streaming request may legitimately have no body bytes while
 the provider is generating it, so the request timeout bounds
@@ -61,9 +61,12 @@ The provider sends the API key as an in-memory Authorization header. It never
 puts the key in argv, a child environment, or a temporary file. The native
 transport has no ambient proxy or credential-file discovery. It checks the
 run's `CancellationToken` before, between received body chunks, and after the
-synchronous, timeout-bounded request; cancellation settles as
-`StopReason::Cancelled` once that operation settles. Response output is
-collected in memory before the finite core stream is returned.
+synchronous, timeout-bounded response body. A provider-owned native worker
+performs those blocking reads while the caller-polled `ModelEventStream`
+reduces each complete SSE record in order. Cancellation settles as
+`StopReason::Cancelled` at the next bounded body-read boundary; the core and
+host are not blocked from processing already-delivered deltas while the
+provider continues generating.
 
 Provider accounting is available through `usage_snapshot` and `cost_report`.
 Token counters retain unknown-vs-zero semantics. Each cost turn and the
@@ -179,17 +182,19 @@ fallback. The current gateway may emit a `provider-metadata` envelope after
 `finish`; it is accepted as non-content metadata rather than misclassified as a
 second terminal event.
 
-The first adapters collect their timeout-bounded native HTTP response before returning a
-finite core stream. They preserve event grammar and terminal validation, but
-they do not yet expose network-time incremental deltas. Hosts needing live
-transport streaming should implement `ModelProvider` directly while preserving
-the same request and event contracts.
+OpenRouter exposes network-time assistant deltas through the core stream while
+preserving final usage before its terminal event. Command Code and Local still
+collect their timeout-bounded native responses before returning their finite
+core streams. Hosts that need live transport streaming from those adapters
+should implement `ModelProvider` directly while preserving the same request
+and event contracts.
 
-All in-tree native adapters own their synchronous request boundary. On the run
-cancellation token, Local, OpenRouter, and Command Code check cancellation
-before, between body chunks, and after the timeout-bounded request; cancellation does not become a
-retryable transport error. Immediate mid-read interruption is intentionally
-reserved for a future cancellation-aware streaming adapter.
+All in-tree native adapters own their native request boundary. On the run
+cancellation token, Local and Command Code check cancellation before, between
+body chunks, and after the timeout-bounded request. OpenRouter's body worker
+does the same while yielding completed chunks to the caller-polled stream.
+Cancellation does not become a retryable transport error. Immediate mid-read
+interruption remains bounded by the native receive timeout.
 
 ## Local oMLX and Laguna
 
