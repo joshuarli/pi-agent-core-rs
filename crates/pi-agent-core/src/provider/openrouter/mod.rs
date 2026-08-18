@@ -1,8 +1,9 @@
 //! OpenRouter Chat Completions provider adapter.
 //!
 //! This opt-in adapter sends a caller-provided OpenRouter API key through the native
-//! rustls-backed HTTP boundary. It is a finite-response transport for the evaluation host: the
-//! core remains independent of HTTP, credentials, and provider price formats.
+//! rustls-backed HTTP boundary. It yields network-time SSE records through the caller-polled
+//! model stream while the core remains independent of HTTP, credentials, and provider price
+//! formats.
 
 mod accounting;
 mod config;
@@ -163,7 +164,7 @@ impl OpenRouterEventStream {
         event_stream.payload_bytes = payload.len();
         event_stream.response = Some(stream(
             Request::post(
-                COMPLETIONS_URL,
+                event_stream.provider.config.completion_url(),
                 payload,
                 event_stream.provider.config.request_timeout,
             )
@@ -823,6 +824,104 @@ data: [DONE]
                 ModelStreamEvent::End(StopReason::Stop),
             ]
         );
+    }
+
+    #[test]
+    fn live_event_stream_yields_a_delta_before_the_mock_http_body_settles() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock HTTP server should bind");
+        let address = listener.local_addr().expect("mock HTTP server address");
+        let (first_delta_sent, first_delta_received) = mpsc::channel();
+        let (settle_response, wait_for_settlement) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("provider should connect");
+            let first = br#"data: {"id":"streamed","choices":[{"delta":{"content":"first "},"finish_reason":null}]}
+
+"#;
+            let second = br#"data: {"id":"streamed","choices":[{"delta":{"content":"second"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2}}
+
+data: [DONE]
+
+"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        first.len() + second.len()
+                    )
+                    .as_bytes(),
+                )
+                .expect("response headers should write");
+            socket
+                .write_all(first)
+                .expect("first SSE record should write");
+            socket.flush().expect("first SSE record should flush");
+            first_delta_sent
+                .send(())
+                .expect("test waits for the first SSE record");
+            wait_for_settlement
+                .recv()
+                .expect("test releases the response body");
+            socket
+                .write_all(second)
+                .expect("terminal SSE records should write");
+        });
+
+        let provider = OpenRouterProvider::new(
+            OpenRouterConfig::try_new("test-key", "test-model")
+                .expect("explicit test configuration")
+                .with_test_completion_url(format!("http://{address}/")),
+        );
+        let cancellation = CancellationToken::new();
+        let mut source = smol::block_on(provider.stream(
+            ModelRequest {
+                context: "[]".into(),
+                model: Some(crate::state::ModelDescriptor {
+                    provider: "openrouter".into(),
+                    model: "test-model".into(),
+                    revision: None,
+                }),
+                ..ModelRequest::default()
+            },
+            cancellation.clone(),
+        ))
+        .expect("OpenRouter should start an event source");
+
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation.clone()))
+                .expect("first event should arrive"),
+            Some(ModelStreamEvent::TextDelta("first ".into()))
+        );
+        first_delta_received
+            .recv_timeout(Duration::from_secs(1))
+            .expect("mock server should send the first SSE record");
+
+        settle_response
+            .send(())
+            .expect("mock server should receive body release");
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation.clone()))
+                .expect("second event should arrive"),
+            Some(ModelStreamEvent::TextDelta("second".into()))
+        );
+        assert!(matches!(
+            smol::block_on(source.next_event(cancellation.clone())),
+            Ok(Some(ModelStreamEvent::Usage(Usage {
+                input_tokens: Some(2),
+                output_tokens: Some(2),
+                ..
+            })))
+        ));
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation))
+                .expect("terminal event should arrive"),
+            Some(ModelStreamEvent::End(StopReason::Stop))
+        );
+        server.join().expect("mock HTTP server should finish");
     }
 
     #[test]

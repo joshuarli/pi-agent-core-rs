@@ -13,6 +13,9 @@ default = []
 parity-runner = ["dep:smol"]
 provider-commandcode = ["dep:ureq"]
 provider-openrouter = ["dep:ureq"]
+# Test-only endpoint injection for an offline HTTP/1.1 OpenRouter fixture. This feature is never
+# enabled by the production TUI build.
+provider-openrouter-test-support = ["provider-openrouter"]
 provider-local = ["dep:ureq"]
 eval-runner = ["dep:smol", "provider-commandcode", "provider-openrouter"]
 trace = ["dep:pi-agent-trace"]

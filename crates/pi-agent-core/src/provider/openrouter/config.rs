@@ -1,6 +1,7 @@
 //! Explicit OpenRouter configuration contracts.
 
 use super::super::retry::RetryPolicy;
+use super::transport::COMPLETIONS_URL;
 use std::{fmt, time::Duration};
 
 /// Error raised when explicit OpenRouter configuration violates an adapter invariant.
@@ -48,6 +49,9 @@ impl std::error::Error for OpenRouterConfigError {}
 pub struct OpenRouterConfig {
     pub(super) api_key: String,
     pub(super) model: String,
+    // This stays unset for every production configuration. The narrowly scoped test-support
+    // feature can replace it with a loopback HTTP/1.1 fixture endpoint for real-binary tests.
+    pub(super) test_completion_url: Option<String>,
     /// Optional provider request hint. `None` leaves output length to the provider/model.
     pub(super) max_tokens: Option<u64>,
     pub(super) request_timeout: Duration,
@@ -61,6 +65,7 @@ impl OpenRouterConfig {
         Self {
             api_key: api_key.into(),
             model: model.into(),
+            test_completion_url: None,
             max_tokens: None,
             request_timeout: Duration::from_secs(300),
             stall_timeout: Duration::from_secs(60),
@@ -105,6 +110,23 @@ impl OpenRouterConfig {
     pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
         self.retry_policy = retry_policy;
         self
+    }
+
+    /// Replace the OpenRouter completion URL for an offline test fixture.
+    ///
+    /// This test-support-only method is not compiled into normal adapter builds. It exists so a
+    /// real `pi-agent` binary can be verified against a local, deterministic HTTP/1.1 server
+    /// without supplying credentials to or contacting an external provider.
+    #[cfg(any(test, feature = "provider-openrouter-test-support"))]
+    pub fn with_test_completion_url(mut self, url: impl Into<String>) -> Self {
+        self.test_completion_url = Some(url.into());
+        self
+    }
+
+    pub(super) fn completion_url(&self) -> &str {
+        self.test_completion_url
+            .as_deref()
+            .unwrap_or(COMPLETIONS_URL)
     }
 
     /// Validate configuration before a host admits it for provider use.

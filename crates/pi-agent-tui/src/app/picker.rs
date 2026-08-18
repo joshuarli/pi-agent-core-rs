@@ -182,10 +182,13 @@ impl App {
                 let key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
                     AppError::Setup("OPENROUTER_API_KEY is required for OpenRouter".into())
                 })?;
-                ProviderConfiguration::OpenRouter(
-                    pi_agent_core::provider::openrouter::OpenRouterConfig::try_new(key, model)
-                        .map_err(|error| AppError::Setup(error.to_string()))?,
+                let config = pi_agent_core::provider::openrouter::OpenRouterConfig::try_new(
+                    key, model,
                 )
+                .map_err(|error| AppError::Setup(error.to_string()))?;
+                #[cfg(feature = "pty-harness")]
+                let config = test_openrouter_config(config)?;
+                ProviderConfiguration::OpenRouter(config)
             }
             "command-code" => {
                 let key = std::env::var("COMMANDCODE_API_KEY").map_err(|_| {
@@ -223,4 +226,17 @@ impl App {
             .as_ref()
             .map(|model| model.provider.clone())
     }
+}
+
+#[cfg(feature = "pty-harness")]
+fn test_openrouter_config(
+    config: pi_agent_core::provider::openrouter::OpenRouterConfig,
+) -> Result<pi_agent_core::provider::openrouter::OpenRouterConfig, AppError> {
+    let Some(url) = std::env::var_os("PI_AGENT_TUI_TEST_OPENROUTER_URL") else {
+        return Ok(config);
+    };
+    let url = url.to_str().ok_or_else(|| {
+        AppError::Setup("PI_AGENT_TUI_TEST_OPENROUTER_URL must be valid UTF-8".into())
+    })?;
+    Ok(config.with_test_completion_url(url))
 }

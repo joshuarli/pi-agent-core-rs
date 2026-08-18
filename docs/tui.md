@@ -111,6 +111,13 @@ failed flush must invalidate the previous frame so the next draw repaints it.
 Unicode width support is admitted only after a focused rendering/cursor test
 demonstrates that scalar-count placement is insufficient.
 
+The mandatory streaming regression runs the compiled `pi-agent` binary inside
+a native PTY against a loopback HTTP/1.1 OpenRouter fixture. It submits input
+through the PTY, holds the response body after its first SSE text record, and
+uses a virtual VT100 screen to assert that first text is already visible. The
+test-only `pty-harness` feature exposes the fixture endpoint; normal builds
+retain the fixed OpenRouter endpoint and never read that test input.
+
 ## Interaction and terminal lifecycle
 
 The native composer supports insertion, left/right, Home/End, backspace/delete,
@@ -189,9 +196,6 @@ New dependencies begin rejected. Prefer a small local implementation when its
 contract is clear and bounded. Before proposing an exception, establish that it
 is needed for ordinary interactive use, cannot be clearly implemented locally,
 adds less surface than it removes, and improves rather than weakens auditability.
-Review `cargo tree` and `cargo tree -e features` before and after an accepted
-dependency change. The current direct dependency evidence lives in
-[`crates/pi-agent-tui/DEPENDENCY-REVIEW.md`](../crates/pi-agent-tui/DEPENDENCY-REVIEW.md).
 
 Do not add an application state framework, command framework, terminal widget
 system, configuration/session format, fuzzy matcher, clipboard layer, or
@@ -225,5 +229,7 @@ Use the pinned nightly toolchain. Core contract changes need focused tests and
 the usual core documentation updates. TUI changes should cover deterministic
 grid/diff behavior, raw event projection, composer/editor boundaries, picker
 availability, active `/clear` refusal, accounting unknown-versus-zero handling,
-and terminal restoration where a focused PTY test is necessary. Do not run
-pre-commit hooks or push from this repository.
+terminal restoration, and real-binary streaming through the focused PTY
+harness. The harness uses only a local HTTP/1.1 fixture and a fake credential;
+it never contacts or bills a provider. Do not run pre-commit hooks or push from
+this repository.
