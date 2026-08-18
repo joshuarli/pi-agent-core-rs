@@ -172,9 +172,15 @@ impl AppState {
             }
             AgentEventKind::ToolExecutionEnd {
                 tool_call_id,
-                tool_name, result, ..
+                tool_name,
+                result,
+                ..
             } => {
-                let label = if result.is_error { "failed" } else { "completed" };
+                let label = if result.is_error {
+                    "failed"
+                } else {
+                    "completed"
+                };
                 self.update_tool_line(
                     tool_call_id,
                     sequence,
@@ -290,9 +296,10 @@ impl AppState {
                 ),
             ),
             AgentEventKind::TurnEnd { reason, .. } => match reason {
-                pi_agent_core::state::StopReason::Error => {
-                    self.push(sequence, "turn failed; prompt remains available to retry".into())
-                }
+                pi_agent_core::state::StopReason::Error => self.push(
+                    sequence,
+                    "turn failed; prompt remains available to retry".into(),
+                ),
                 pi_agent_core::state::StopReason::Aborted => {
                     self.push(sequence, "turn aborted".into())
                 }
@@ -398,11 +405,9 @@ impl AppState {
         let capacity = selected
             .and_then(|model| registry.provider(&model.provider)?.model(&model.model))
             .and_then(|model| model.context_window);
-        let compaction = selected
+        let compaction = if selected
             .and_then(|model| registry.provider(&model.provider))
-            .is_some_and(|provider| provider.capabilities.supports_compaction())
-            .then_some("automatic compaction available")
-            .unwrap_or("automatic compaction unavailable");
+            .is_some_and(|provider| provider.capabilities.supports_compaction()) { "automatic compaction available" } else { "automatic compaction unavailable" };
         let context = match &self.context_estimate {
             Some(estimate) => format!(
                 "context {}/{} ({} messages); {compaction}",
@@ -480,12 +485,7 @@ impl AppState {
         self.transcript.push(TranscriptLine { sequence, text });
     }
 
-    fn update_tool_line(
-        &mut self,
-        tool_call_id: &ToolCallId,
-        sequence: Option<u64>,
-        text: String,
-    ) {
+    fn update_tool_line(&mut self, tool_call_id: &ToolCallId, sequence: Option<u64>, text: String) {
         if let Some(index) = self.active_tool_lines.get(tool_call_id).copied() {
             if let Some(line) = self.transcript.get_mut(index) {
                 line.sequence = sequence;

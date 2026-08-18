@@ -255,8 +255,11 @@ fn queue_modes_can_change_without_reconstructing_the_agent() {
 #[test]
 fn queue_snapshot_exposes_core_owned_prompt_order_without_mutation() {
     let agent = Agent::builder().build();
-    agent.enqueue_steering("current turn").expect("steering queues");
-    agent.enqueue_follow_up("next turn")
+    agent
+        .enqueue_steering("current turn")
+        .expect("steering queues");
+    agent
+        .enqueue_follow_up("next turn")
         .expect("follow-up queues");
 
     let snapshot = agent.queue_snapshot();

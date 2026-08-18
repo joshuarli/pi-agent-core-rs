@@ -77,8 +77,7 @@ fn cli_parses_one_shot_prompt_and_thinking_level() {
         ]
         .map(OsString::from),
     )
-    .expect("one-shot options parse")
-    else {
+    .expect("one-shot options parse") else {
         panic!("one-shot options unexpectedly parsed as help");
     };
     assert_eq!(options.provider(), Some(std::ffi::OsStr::new("openrouter")));
@@ -212,7 +211,10 @@ fn event_projection_makes_provider_failure_and_abort_explicit() {
             .iter()
             .map(|line| line.text.as_str())
             .collect::<Vec<_>>(),
-        ["assistant error: provider rejected the request", "turn aborted"]
+        [
+            "assistant error: provider rejected the request",
+            "turn aborted"
+        ]
     );
 }
 

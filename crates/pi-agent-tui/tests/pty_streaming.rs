@@ -25,7 +25,9 @@ impl OpenRouterFixture {
         let (first_delta_sent, first_delta) = mpsc::channel();
         let (release_response, wait_for_release) = mpsc::channel();
         let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("OpenRouter request should connect");
+            let (mut socket, _) = listener
+                .accept()
+                .expect("OpenRouter request should connect");
             let first = br#"data: {"id":"offline","choices":[{"delta":{"content":"first "},"finish_reason":null}]}
 
 "#;
@@ -88,50 +90,68 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
         .expect("valid scenario label")
         .command(
             CommandSpec::new(env!("CARGO_BIN_EXE_pi-agent"))
-                .args([
-                    "--provider",
-                    "openrouter",
-                    "--model",
-                    "openai/gpt-5.6-luna",
-                ])
+                .args(["--provider", "openrouter", "--model", "openai/gpt-5.6-luna"])
                 .secret_env("OPENROUTER_API_KEY", "offline-test-key")
                 .env("PI_AGENT_TUI_TEST_OPENROUTER_URL", &fixture.url),
         )
         .size(Size::new(COLUMNS, ROWS).expect("constant terminal size"))
         .environment(TestEnv::hermetic().expect("create hermetic test environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
-    let mut terminal = PtyTest::spawn(scenario).expect("real pi-agent binary should start in a PTY");
+    let mut terminal =
+        PtyTest::spawn(scenario).expect("real pi-agent binary should start in a PTY");
     let baseline = terminal.terminal_baseline();
 
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "model readiness", |screen| {
-            screen.contains("openrouter/openai/gpt-5.6-luna")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "model readiness",
+            |screen| screen.contains("openrouter/openai/gpt-5.6-luna"),
+        )
         .expect("model selection should render");
     let active = terminal.terminal_state();
-    assert!(active.modes.alternate_screen, "TerminalGuard enters the alternate screen");
-    assert!(active.modes.bracketed_paste, "TerminalGuard enables bracketed paste");
-    assert!(active.modes.cursor_visible, "the local composer owns a visible cursor");
+    assert!(
+        active.modes.alternate_screen,
+        "TerminalGuard enters the alternate screen"
+    );
+    assert!(
+        active.modes.bracketed_paste,
+        "TerminalGuard enables bracketed paste"
+    );
+    assert!(
+        active.modes.cursor_visible,
+        "the local composer owns a visible cursor"
+    );
     terminal
         .resize(Size::new(40, 10).expect("constant narrow terminal size"))
         .expect("resize through the kernel PTY");
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "narrow redraw", |screen| {
-            screen.size() == Size::new(40, 10).expect("constant narrow terminal size")
-                && screen.contains("openrouter/openai/gpt-5.6-luna")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "narrow redraw",
+            |screen| {
+                screen.size() == Size::new(40, 10).expect("constant narrow terminal size")
+                    && screen.contains("openrouter/openai/gpt-5.6-luna")
+            },
+        )
         .expect("application remains rendered after terminal resize");
 
     terminal
-        .send_text(terminal.deadline(Duration::from_secs(3)), "stream offline response\r")
+        .send_text(
+            terminal.deadline(Duration::from_secs(3)),
+            "stream offline response\r",
+        )
         .expect("send streaming command");
     fixture.wait_for_first_delta();
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "first released streaming token", |screen| {
-            screen.contains("assistant: first")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "first released streaming token",
+            |screen| screen.contains("assistant: first"),
+        )
         .expect("first token should render before fixture settlement");
-    terminal.drain(terminal.deadline(Duration::from_secs(3))).expect("drain available output");
+    terminal
+        .drain(terminal.deadline(Duration::from_secs(3)))
+        .expect("drain available output");
     assert!(
         !terminal.screen().contains("second"),
         "terminal displayed unreleased response content"
@@ -139,24 +159,32 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
 
     fixture.release();
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "stream completion", |screen| {
-            screen.contains("assistant: first second")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "stream completion",
+            |screen| screen.contains("assistant: first second"),
+        )
         .expect("complete response should render");
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "idle after completion", |screen| {
-            screen.contains("openrouter/openai/gpt-5.6-luna | idle")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "idle after completion",
+            |screen| screen.contains("openrouter/openai/gpt-5.6-luna | idle"),
+        )
         .expect("application should become idle");
     terminal
         .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
         .expect("send clean interrupt");
     assert_eq!(
-        terminal.wait_for_exit(terminal.deadline(Duration::from_secs(3))).expect("wait for pi-agent exit"),
+        terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .expect("wait for pi-agent exit"),
         ExitStatus::Code(0)
     );
     terminal
         .assert_terminal_restored(&baseline)
         .expect("normal exit restores applicable terminal modes");
-    terminal.finish(terminal.deadline(Duration::from_secs(3))).expect("reap pi-agent");
+    terminal
+        .finish(terminal.deadline(Duration::from_secs(3)))
+        .expect("reap pi-agent");
 }

@@ -5,11 +5,9 @@ use pi_agent_core::compaction::CompactionHandle;
 use pi_agent_core::event::AgentEventKind;
 use pi_agent_core::provider::ProviderRegistry;
 use pi_agent_core::state::AgentPhase;
-use pi_agent_core::{
-    Agent, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle,
-};
-use std::io::{self, Write};
+use pi_agent_core::{Agent, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle};
 use std::ffi::OsStr;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::time::Duration;
@@ -65,9 +63,7 @@ impl App {
     /// text to stdout before exiting.
     pub fn run_prompt(&mut self, prompt: String) -> Result<(), AppError> {
         if prompt.trim().is_empty() {
-            return Err(AppError::Setup(
-                "-p/--prompt must not be empty".into(),
-            ));
+            return Err(AppError::Setup("-p/--prompt must not be empty".into()));
         }
         if self.options.provider().is_none() || self.options.model().is_none() {
             return Err(AppError::Setup(

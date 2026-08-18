@@ -168,12 +168,12 @@ impl OpenRouterEventStream {
                 payload,
                 event_stream.provider.config.request_timeout,
             )
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", event_stream.provider.config.api_key),
-                )
-                .header("Content-Type", "application/json")
-                .with_stall_timeout(event_stream.provider.config.stall_timeout),
+            .header(
+                "Authorization",
+                format!("Bearer {}", event_stream.provider.config.api_key),
+            )
+            .header("Content-Type", "application/json")
+            .with_stall_timeout(event_stream.provider.config.stall_timeout),
             &cancellation,
         ));
         event_stream.decoder = Some(StreamingSseDecoder::new());
@@ -240,9 +240,9 @@ impl OpenRouterEventStream {
         match decoder.finish(false) {
             Ok(completion) => {
                 let mut usage = completion.usage;
-                let cost = completion.inline_cost.unwrap_or_else(|| {
-                    unavailable_cost(&usage, &self.provider.config.model)
-                });
+                let cost = completion
+                    .inline_cost
+                    .unwrap_or_else(|| unavailable_cost(&usage, &self.provider.config.model));
                 usage.cache_read_tokens = usage.cache_read_tokens.or(cost.cache_read_tokens);
                 usage.cache_write_tokens = usage.cache_write_tokens.or(cost.cache_write_tokens);
                 usage.cost = cost.total_usd_exact.clone();
@@ -284,12 +284,17 @@ impl OpenRouterEventStream {
                     self.status_code = Some(status_code);
                 }
                 Poll::Ready(StreamEvent::Chunk(bytes)) => {
-                    if self.status_code.is_some_and(|status| !(200..300).contains(&status)) {
+                    if self
+                        .status_code
+                        .is_some_and(|status| !(200..300).contains(&status))
+                    {
                         self.error_body.extend_from_slice(&bytes);
                         continue;
                     }
                     let Some(decoder) = self.decoder.as_mut() else {
-                        self.response_failure("OpenRouter response stream was not initialized".into());
+                        self.response_failure(
+                            "OpenRouter response stream was not initialized".into(),
+                        );
                         continue;
                     };
                     match decoder.push(&bytes) {
@@ -298,7 +303,10 @@ impl OpenRouterEventStream {
                     }
                 }
                 Poll::Ready(StreamEvent::End) => {
-                    if self.status_code.is_some_and(|status| !(200..300).contains(&status)) {
+                    if self
+                        .status_code
+                        .is_some_and(|status| !(200..300).contains(&status))
+                    {
                         self.response_failure("OpenRouter rejected the request".into());
                     } else {
                         self.finish_sse();
@@ -917,8 +925,7 @@ data: [DONE]
             })))
         ));
         assert_eq!(
-            smol::block_on(source.next_event(cancellation))
-                .expect("terminal event should arrive"),
+            smol::block_on(source.next_event(cancellation)).expect("terminal event should arrive"),
             Some(ModelStreamEvent::End(StopReason::Stop))
         );
         server.join().expect("mock HTTP server should finish");

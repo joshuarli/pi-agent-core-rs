@@ -171,7 +171,11 @@ fn push_stream_event(state: &Arc<Mutex<StreamState>>, event: StreamEvent) {
     }
 }
 
-fn stream_worker(request: Request, cancellation: CancellationToken, state: Arc<Mutex<StreamState>>) {
+fn stream_worker(
+    request: Request,
+    cancellation: CancellationToken,
+    state: Arc<Mutex<StreamState>>,
+) {
     if cancellation.is_cancelled() {
         push_stream_event(
             &state,

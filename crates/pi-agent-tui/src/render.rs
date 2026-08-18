@@ -25,7 +25,11 @@ pub struct Layout {
 /// Compute the fixed transcript/composer/status regions.
 pub fn layout(width: u16, height: u16) -> Layout {
     let composer_height = u16::from(height >= 2);
-    let status_height = if height >= 3 { 2 } else { u16::from(height >= 1) };
+    let status_height = if height >= 3 {
+        2
+    } else {
+        u16::from(height >= 1)
+    };
     let transcript_height = height.saturating_sub(composer_height + status_height);
     Layout {
         transcript: Rect {
@@ -227,7 +231,10 @@ fn block_lines(text: &str) -> Vec<RenderLine> {
             });
             continue;
         }
-        if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
             lines.push(RenderLine {
                 text: format!("• {item}"),
                 style: Style::default(),
@@ -298,7 +305,8 @@ mod tests {
 
     #[test]
     fn bounded_blocks_keep_markdown_code_and_errors_legible() {
-        let lines = block_lines("# title\n- item\n```rust\nlet ok = true;\n```\nassistant error: bad");
+        let lines =
+            block_lines("# title\n- item\n```rust\nlet ok = true;\n```\nassistant error: bad");
         assert_eq!(lines[0].text, "title");
         assert!(lines[0].style.bold);
         assert_eq!(lines[1].text, "• item");

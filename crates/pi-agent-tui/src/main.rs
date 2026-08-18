@@ -22,9 +22,9 @@ fn run() -> Result<(), AppError> {
             let mut app = App::new(options);
             match prompt {
                 Some(prompt) => {
-                    let prompt = prompt.to_str().ok_or_else(|| {
-                        AppError::Setup("-p/--prompt must be valid UTF-8".into())
-                    })?;
+                    let prompt = prompt
+                        .to_str()
+                        .ok_or_else(|| AppError::Setup("-p/--prompt must be valid UTF-8".into()))?;
                     app.run_prompt(prompt.to_owned())
                 }
                 None => app.run(),

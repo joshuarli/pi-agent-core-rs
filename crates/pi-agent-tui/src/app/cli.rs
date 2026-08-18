@@ -1,7 +1,7 @@
+use pi_agent_core::ThinkingLevel;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
-use pi_agent_core::ThinkingLevel;
 
 /// Explicit command-line inputs accepted by the v0 terminal host.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

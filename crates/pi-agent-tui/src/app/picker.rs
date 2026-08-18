@@ -182,10 +182,9 @@ impl App {
                 let key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
                     AppError::Setup("OPENROUTER_API_KEY is required for OpenRouter".into())
                 })?;
-                let config = pi_agent_core::provider::openrouter::OpenRouterConfig::try_new(
-                    key, model,
-                )
-                .map_err(|error| AppError::Setup(error.to_string()))?;
+                let config =
+                    pi_agent_core::provider::openrouter::OpenRouterConfig::try_new(key, model)
+                        .map_err(|error| AppError::Setup(error.to_string()))?;
                 #[cfg(feature = "pty-harness")]
                 let config = test_openrouter_config(config)?;
                 ProviderConfiguration::OpenRouter(config)
