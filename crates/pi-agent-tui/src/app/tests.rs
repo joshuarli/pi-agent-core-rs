@@ -1,4 +1,9 @@
 use super::*;
+use super::compaction::ProviderCompactor;
+use super::state::ContextEstimate;
+use pi_agent_core::compaction::{
+    AutomaticCompactionReason, AutomaticCompactionRequest, CompactionContext, Compactor,
+};
 use pi_agent_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
@@ -11,6 +16,24 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 struct ContextCheckingProvider;
+
+#[derive(Debug)]
+struct SummaryProvider;
+
+impl ModelProvider for SummaryProvider {
+    fn stream<'a>(
+        &'a self,
+        _request: ModelRequest,
+        _cancellation: CancellationToken,
+    ) -> ModelFuture<'a> {
+        Box::pin(std::future::ready(Ok(Box::new(ModelStream {
+            events: vec![
+                ModelStreamEvent::TextDelta("summary text".into()),
+                ModelStreamEvent::End(pi_agent_core::state::StopReason::EndTurn),
+            ],
+        }) as _)))
+    }
+}
 
 impl ModelProvider for ContextCheckingProvider {
     fn stream<'a>(
@@ -252,8 +275,98 @@ fn footer_reports_unknown_context_and_unavailable_compaction_without_guessing() 
     let registry = pi_agent_core::provider::ProviderRegistry::new();
     assert_eq!(
         state.footer_lines(&registry)[1],
-        "context unknown/unknown; automatic compaction unavailable"
+        "context unknown% used (unknown/unknown); automatic compaction unavailable"
     );
+}
+
+#[test]
+fn footer_reports_catalog_context_capacity_for_selected_model() {
+    let mut state = AppState::new();
+    state.selected_model = Some(ModelDescriptor {
+        provider: "openrouter".into(),
+        model: "poolside/laguna-xs-2.1:free".into(),
+        revision: None,
+    });
+    let registry = pi_agent_core::provider::ProviderRegistry::new();
+    assert_eq!(
+        state.footer_lines(&registry)[1],
+        "context unknown% used (unknown/262144); automatic compaction unavailable"
+    );
+}
+
+#[test]
+fn footer_reports_context_percentage_and_enabled_compaction() {
+    let mut state = AppState::new();
+    state.selected_model = Some(ModelDescriptor {
+        provider: "openrouter".into(),
+        model: "poolside/laguna-xs-2.1:free".into(),
+        revision: None,
+    });
+    state.automatic_compaction_enabled = true;
+    state.context_estimate = Some(ContextEstimate {
+        tokens: Some(131_072),
+        message_count: 4,
+    });
+    let registry = pi_agent_core::provider::ProviderRegistry::new();
+    assert_eq!(
+        state.footer_lines(&registry)[1],
+        "context 50% used (131072/262144; 4 messages); automatic compaction available"
+    );
+}
+
+#[test]
+fn openrouter_compactor_summarizes_and_preserves_the_core_retained_suffix() {
+    smol::block_on(async {
+        let model = ModelDescriptor {
+            provider: "openrouter".into(),
+            model: "poolside/laguna-xs-2.1:free".into(),
+            revision: None,
+        };
+        let compactor = ProviderCompactor::default();
+        compactor.configure(model.clone(), Arc::new(SummaryProvider));
+        let prefix = Message::User {
+            id: MessageId(1),
+            content: "old work".into(),
+        };
+        let retained = Message::Assistant {
+            id: MessageId(2),
+            content: "recent work".into(),
+            tool_calls: Vec::new(),
+            stop_reason: Some(pi_agent_core::state::StopReason::EndTurn),
+            error_message: None,
+        };
+        let request = AutomaticCompactionRequest {
+            reason: AutomaticCompactionReason::Threshold,
+            estimated_tokens_before: Some(300_000),
+            context_budget_tokens: 262_144,
+            reserved_tokens: 8_192,
+            recent_tokens: 20_000,
+            prefix_messages: vec![prefix.clone()],
+            retained_messages: vec![retained.clone()],
+            split_turn_prefix: Vec::new(),
+            retry_provider_request: false,
+        };
+        let result = compactor
+            .compact_automatic(
+                CompactionContext {
+                    version: pi_agent_core::COMPACTION_CONTEXT_VERSION,
+                    system_prompt: String::new(),
+                    model: Some(model),
+                    messages: vec![prefix, retained.clone()],
+                    host_messages: Vec::new(),
+                },
+                request,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("provider-backed compaction succeeds");
+        assert_eq!(result.messages.len(), 2);
+        assert!(matches!(
+            &result.messages[0],
+            Message::User { content, .. } if content.contains("summary text")
+        ));
+        assert_eq!(result.messages[1], retained);
+    });
 }
 
 #[test]

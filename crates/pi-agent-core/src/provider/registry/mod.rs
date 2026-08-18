@@ -55,7 +55,13 @@ mod tests {
         );
         assert!(!provider.capabilities.provider_reported_cost);
         assert!(!provider.capabilities.concrete_compactor);
-        assert!(provider.model("deepseek/deepseek-v4-flash").is_some());
+        assert_eq!(
+            provider
+                .model("deepseek/deepseek-v4-flash")
+                .expect("checked-in model")
+                .context_window,
+            Some(1_000_000)
+        );
         #[cfg(not(feature = "provider-openrouter"))]
         assert!(registry.provider("openrouter").is_none());
     }
@@ -72,7 +78,34 @@ mod tests {
         );
         assert!(provider.capabilities.supports_provider_reported_cost());
         assert!(!provider.capabilities.supports_compaction());
-        assert!(provider.model("poolside/laguna-xs-2.1:free").is_some());
+        assert_eq!(
+            provider
+                .model("deepseek/deepseek-v4-flash-0731")
+                .expect("checked-in model")
+                .context_window,
+            Some(1_048_576)
+        );
+        assert_eq!(
+            provider
+                .model("inclusionai/ling-3.0-tiny:free")
+                .expect("checked-in model")
+                .context_window,
+            Some(262_144)
+        );
+        assert_eq!(
+            provider
+                .model("openai/gpt-5.6-luna")
+                .expect("checked-in model")
+                .context_window,
+            Some(1_050_000)
+        );
+        assert_eq!(
+            provider
+                .model("poolside/laguna-xs-2.1:free")
+                .expect("checked-in model")
+                .context_window,
+            Some(262_144)
+        );
         #[cfg(not(feature = "provider-commandcode"))]
         assert!(registry.provider("command-code").is_none());
     }

@@ -211,7 +211,7 @@ impl AgentBuilder {
                 follow_up_mode: Mutex::new(self.follow_up_mode),
                 provider: RwLock::new(self.provider),
                 compactor: RwLock::new(self.compactor),
-                automatic_compaction: self.automatic_compaction,
+                automatic_compaction: RwLock::new(self.automatic_compaction),
                 tool_result_projection: self.tool_result_projection,
                 tool_failure_circuit_breaker: self.tool_failure_circuit_breaker,
                 hooks: self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),

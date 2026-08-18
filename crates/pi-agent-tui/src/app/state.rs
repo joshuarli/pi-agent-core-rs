@@ -60,6 +60,9 @@ pub struct AppState {
     pub(super) transcript_rows: usize,
     pub(super) last_snapshot: Option<AgentSnapshot>,
     pub(super) selected_model: Option<ModelDescriptor>,
+    /// Presentation projection of the selected model's installed compactor/policy; core remains
+    /// the source of compaction truth.
+    pub(super) automatic_compaction_enabled: bool,
     pub(super) picker: Option<Picker>,
     pub(super) streaming_line: Option<usize>,
     /// Active generic tool rows keyed by the core-owned call identity.
@@ -405,12 +408,15 @@ impl AppState {
         let capacity = selected
             .and_then(|model| registry.provider(&model.provider)?.model(&model.model))
             .and_then(|model| model.context_window);
-        let compaction = if selected
-            .and_then(|model| registry.provider(&model.provider))
-            .is_some_and(|provider| provider.capabilities.supports_compaction()) { "automatic compaction available" } else { "automatic compaction unavailable" };
+        let compaction = if self.automatic_compaction_enabled {
+            "automatic compaction available"
+        } else {
+            "automatic compaction unavailable"
+        };
         let context = match &self.context_estimate {
             Some(estimate) => format!(
-                "context {}/{} ({} messages); {compaction}",
+                "context {}% used ({}/{}; {} messages); {compaction}",
+                format_context_percent(estimate.tokens, capacity),
                 estimate
                     .tokens
                     .map(|tokens| tokens.to_string())
@@ -421,7 +427,7 @@ impl AppState {
                 estimate.message_count
             ),
             None => format!(
-                "context unknown/{}; {compaction}",
+                "context unknown% used (unknown/{}); {compaction}",
                 capacity
                     .map(|tokens| tokens.to_string())
                     .unwrap_or_else(|| "unknown".into())
@@ -548,5 +554,15 @@ impl AppState {
     ) {
         self.visible_transcript_lines = visible_transcript_lines;
         self.transcript_rows = transcript_rows;
+    }
+}
+
+fn format_context_percent(tokens: Option<u64>, capacity: Option<u64>) -> String {
+    match (tokens, capacity.filter(|capacity| *capacity != 0)) {
+        (Some(tokens), Some(capacity)) => {
+            let percent = u128::from(tokens).saturating_mul(100) / u128::from(capacity);
+            percent.to_string()
+        }
+        _ => "unknown".into(),
     }
 }

@@ -18,7 +18,7 @@ coding loop that makes the core's actual state visible.
 | Priority | Keep in the near-term plan | Why |
 | --- | --- | --- |
 | **P0 — core/critical** | End-to-end response streaming; live assistant/tool lifecycle; cancellation and error visibility; persistent provider-reported usage/cache/cost; minimal Markdown/code/error rendering; steering/follow-up queue semantics; terminal correctness | Without these, a run looks stalled, accounting is hidden, prompts can be lost, or the terminal can be left unusable. |
-| **P0/P1 — critical for long sessions** | Context indication and overflow guardrails are P0; automatic compaction and retry are P1 until a concrete caller-owned compactor is installed | A short demo can work without this; a coding session cannot safely grow without it. |
+| **P0/P1 — critical for long sessions** | Context indication and overflow guardrails are P0; the TUI's provider-backed automatic compaction and retry are enabled for OpenRouter catalog models with source-backed capacity | A short demo can work without this; a coding session cannot safely grow without it. |
 | **P1 — valuable after the loop** | Rich Markdown/tool rendering, persistent linear sessions/resume, prompt history, search/copy, native editor improvements, richer selectors, retry/recovery affordances, approved local estimates | These improve continuity and throughput but do not fix the basic live-run contract. |
 | **P2 — defer** | Advanced terminal polish, image paste, fork/clone/tree, export/import/share, hotkeys beyond `Ctrl+G`, broad provider coverage and dynamic catalogs | They are substantial surfaces with separate contracts and are not required to make the current host useful. |
 
@@ -246,11 +246,11 @@ Remove the interaction traps that interrupt a real edit/run/review cycle.
 3. Make active/idle command behavior explicit: no accidental `/clear`, model
    replacement, or quit during a running operation; explain why an operation is
    unavailable.
-4. **P0:** Add context status and an overflow guardrail. If the host has no
-   concrete caller-owned compactor, report compaction as unavailable and fail
-   clearly before an unsafe overflow rather than inventing a summary. **P1
-   follow-on:** with a compactor installed, add threshold/overflow recovery and
-   a retry path that preserves the atomic core transaction.
+4. **P0:** Add context status and an overflow guardrail. The host installs a
+   provider-backed compactor for OpenRouter catalog models with source-backed
+   capacity; core performs threshold compaction and preserves the atomic
+   transaction. Models without capacity remain explicitly unavailable rather
+   than receiving an invented summary budget.
 5. Cover the common error path: preserve the prompt when an editor or provider
    fails, restore input after cancellation, and make retry/re-submit behavior
    explicit.
@@ -261,8 +261,8 @@ Remove the interaction traps that interrupt a real edit/run/review cycle.
   it is never silently dropped.
 - A long context cannot fail mysteriously: the user sees capacity status and an
   explicit compaction/unavailable decision before overflow.
-- Automatic compaction and retry remain optional follow-on work; they are not
-  required for the minimum pleasant release.
+- Automatic compaction is available for documented OpenRouter catalog models;
+  custom models without capacity remain manual-only.
 - The core remains the source of queue and compaction truth.
 
 ## Tranche 4 — Continuity and bounded productivity (P1 / deferred)

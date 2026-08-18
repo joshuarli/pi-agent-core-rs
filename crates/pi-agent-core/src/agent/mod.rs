@@ -39,7 +39,8 @@ pub(crate) struct AgentInner {
     /// Optional caller-supplied compactor, driven externally.
     pub(crate) compactor: RwLock<Option<Arc<dyn crate::compaction::Compactor>>>,
     /// Opt-in automatic-compaction policy; mutable counters stay on each run.
-    pub(crate) automatic_compaction: crate::compaction::AutomaticCompactionPolicy,
+    pub(crate) automatic_compaction:
+        RwLock<crate::compaction::AutomaticCompactionPolicy>,
     /// Bounded model-facing presentation for canonical tool results.
     pub(crate) tool_result_projection: crate::tool::ToolResultProjectionPolicy,
     /// Immutable circuit-breaker policy; streak state is allocated per run.
@@ -312,6 +313,41 @@ impl Agent {
                 Err(CoreError::ActiveRun { run_id })
             }
         }
+    }
+
+    /// Replace the automatic-compaction policy while the agent is idle.
+    ///
+    /// Hosts that select a model after constructing an agent can install the
+    /// model's explicit context capacity without rebuilding the conversation.
+    /// The policy still requires a caller-owned compactor when enabled.
+    pub fn replace_automatic_compaction(
+        &self,
+        policy: crate::compaction::AutomaticCompactionPolicy,
+    ) -> Result<(), CoreError> {
+        policy.validate().map_err(|message| {
+            CoreError::InvalidAutomaticCompactionPolicy {
+                message: message.into(),
+            }
+        })?;
+        let state = self.inner.state.lock().expect("agent state mutex poisoned");
+        if let AgentPhase::Running(run_id) | AgentPhase::Cancelling(run_id) = state.phase {
+            return Err(CoreError::ActiveRun { run_id });
+        }
+        *self
+            .inner
+            .automatic_compaction
+            .write()
+            .expect("automatic compaction policy lock poisoned") = policy;
+        Ok(())
+    }
+
+    /// Return the currently installed automatic-compaction policy.
+    pub fn automatic_compaction(&self) -> crate::compaction::AutomaticCompactionPolicy {
+        self.inner
+            .automatic_compaction
+            .read()
+            .expect("automatic compaction policy lock poisoned")
+            .clone()
     }
 
     /// Clone the host policy handle used at the run-loop boundary.

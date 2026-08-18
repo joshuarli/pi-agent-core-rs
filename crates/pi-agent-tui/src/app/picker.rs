@@ -1,5 +1,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use pi_agent_core::compaction::{
+    AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery,
+};
 use pi_agent_core::provider::{ConfiguredProvider, ProviderConfiguration};
+use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use super::error::AppError;
 use super::host::{missing_credential, model_candidates, provider_candidates};
@@ -159,9 +164,30 @@ impl App {
         }
         let configured = self.configured_provider(&provider, &model)?;
         let descriptor = configured.descriptor.clone();
+        let configured_provider = configured.provider;
         self.agent_or_setup()?
-            .replace_model_provider(descriptor.clone(), configured.provider)?;
+            .replace_model_provider(descriptor.clone(), Arc::clone(&configured_provider))?;
+        if let Some(compactor) = &self.compactor {
+            compactor.configure(descriptor.clone(), Arc::clone(&configured_provider));
+        }
+        let policy = if self.compactor.is_some() {
+            self.registry
+                .provider(&provider)
+                .and_then(|entry| entry.model(&model))
+                .and_then(|model| model.context_window)
+                .and_then(NonZeroU64::new)
+                .map(automatic_compaction_policy)
+                .unwrap_or_else(AutomaticCompactionPolicy::disabled)
+        } else {
+            AutomaticCompactionPolicy::disabled()
+        };
+        self.agent_or_setup()?.replace_automatic_compaction(policy)?;
+        self.state.automatic_compaction_enabled = self
+            .agent_or_setup()?
+            .automatic_compaction()
+            .enabled;
         self.state.selected_model = Some(descriptor);
+        self.state.context_estimate = None;
         self.state.picker = None;
         self.state.set_snapshot(self.agent_or_setup()?.snapshot());
         self.state.notice(format!("selected {provider}/{model}"));
@@ -224,6 +250,21 @@ impl App {
             .selected_model
             .as_ref()
             .map(|model| model.provider.clone())
+    }
+}
+
+fn automatic_compaction_policy(context_window: NonZeroU64) -> AutomaticCompactionPolicy {
+    let capacity = context_window.get();
+    // Reserve room for the summary request and keep a bounded intact suffix. Large
+    // OpenRouter windows use fixed practical bounds; smaller windows retain proportional room.
+    AutomaticCompactionPolicy {
+        enabled: true,
+        context_budget: ContextBudgetSource::ContextWindow(context_window),
+        reserved_tokens: (capacity / 4).min(16_384),
+        recent_tokens: (capacity / 2).min(20_000),
+        overflow_recovery: OverflowRecovery::CompactAndRetry,
+        max_compactions_per_run: 4,
+        max_overflow_retries_per_run: 1,
     }
 }
 

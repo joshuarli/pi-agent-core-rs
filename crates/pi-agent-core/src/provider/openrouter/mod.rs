@@ -30,9 +30,9 @@ use payload::build_payload;
 #[cfg(test)]
 use response::exact_number_at_path;
 use response::{
-    decimal_add, openrouter_response_retryable, openrouter_status_retryable, parse_generation_cost,
-    parse_partial_response, parse_response, response_body_prefix, unavailable_cost,
-    StreamingSseDecoder,
+    decimal_add, openrouter_context_overflow, openrouter_response_retryable,
+    openrouter_status_retryable, parse_generation_cost, parse_partial_response, parse_response,
+    response_body_prefix, unavailable_cost, StreamingSseDecoder,
 };
 use transport::{retryable_transport_error, run_ureq, COMPLETIONS_URL, GENERATION_URL};
 
@@ -215,6 +215,8 @@ impl OpenRouterEventStream {
     fn response_failure(&mut self, message: String) {
         self.response = None;
         self.decoder = None;
+        let context_overflow = openrouter_context_overflow(&self.error_body)
+            || message == "OpenRouter context capacity exceeded";
         self.provider.record_error(OpenRouterErrorReport {
             source: OpenRouterErrorSource::Response,
             message: message.clone(),
@@ -228,7 +230,11 @@ impl OpenRouterEventStream {
                 Some(&self.provider.config.api_key),
             )),
         });
-        self.pending.push_back(ModelStreamEvent::Error { message });
+        self.pending.push_back(if context_overflow {
+            ModelStreamEvent::ContextOverflow { message }
+        } else {
+            ModelStreamEvent::Error { message }
+        });
     }
 
     fn finish_sse(&mut self) {
@@ -1124,6 +1130,52 @@ data: [DONE]
         ));
         assert!(openrouter_status_retryable(Some(502)));
         assert!(!openrouter_status_retryable(Some(400)));
+    }
+
+    #[test]
+    fn classifies_context_capacity_errors_for_automatic_recovery() {
+        assert!(openrouter_context_overflow(
+            br#"{"error":{"code":400,"message":"This model's maximum context length is 131072 tokens"}}"#
+        ));
+        assert!(openrouter_context_overflow(
+            br#"{"error":{"message":"prompt is too long"}}"#
+        ));
+        assert!(!openrouter_context_overflow(
+            br#"{"error":{"code":400,"message":"invalid tool arguments"}}"#
+        ));
+        assert!(!openrouter_context_overflow(
+            br#"{"error":{"code":400,"message":"context window is unavailable"}}"#
+        ));
+    }
+
+    #[test]
+    fn response_stream_marks_context_capacity_errors_as_typed_overflow() {
+        let provider = OpenRouterProvider::new(OpenRouterConfig::new("key", "model"));
+        let mut stream = OpenRouterEventStream {
+            provider,
+            response: None,
+            decoder: None,
+            pending: VecDeque::new(),
+            status_code: Some(400),
+            error_body: br#"{"error":{"message":"maximum context length exceeded"}}"#.to_vec(),
+            payload_bytes: 0,
+        };
+        stream.response_failure("OpenRouter rejected the request".into());
+        assert!(matches!(
+            stream.pending.front(),
+            Some(ModelStreamEvent::ContextOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn streaming_sse_context_errors_keep_the_typed_overflow_marker() {
+        let mut decoder = StreamingSseDecoder::new();
+        let error = decoder
+            .push(br#"data: {"error":{"message":"maximum context length exceeded"}}
+
+"#)
+            .expect_err("context error should stop the stream");
+        assert_eq!(error, "OpenRouter context capacity exceeded");
     }
 
     #[test]

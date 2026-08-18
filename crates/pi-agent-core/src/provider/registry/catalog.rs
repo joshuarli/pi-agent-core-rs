@@ -13,14 +13,16 @@ use super::contracts::{ModelDescriptor, ProviderCapabilities, ProviderConfigurat
     feature = "provider-local"
 ))]
 use super::MODEL_CATALOG_VERSION;
-// Source/update evidence for these lists is intentionally local and reviewable: identifiers are
-// copied from adapter tests/configuration and recorded OpenRouter fixtures in this repository.
-// No context capacity is claimed because those sources do not provide one.
+// Source/update evidence for these lists is intentionally local and reviewable. Model identifiers
+// and context capacities are synchronized from the pinned Pi model registry in
+// `~/d/pi/packages/ai/dist/models.generated.js` and
+// `~/d/pi/packages/ai/dist/providers/command-code.catalog.js`. OpenRouter values use Pi's
+// provider-specific `contextWindow`, rather than a guessed value from the model name.
 #[cfg(feature = "provider-commandcode")]
 static COMMAND_CODE_MODELS: &[ModelDescriptor] = &[ModelDescriptor {
     id: "deepseek/deepseek-v4-flash",
     display_name: "DeepSeek V4 Flash",
-    context_window: None,
+    context_window: Some(1_000_000),
 }];
 
 #[cfg(feature = "provider-openrouter")]
@@ -28,27 +30,27 @@ static OPENROUTER_MODELS: &[ModelDescriptor] = &[
     ModelDescriptor {
         id: "deepseek/deepseek-v4-flash-0731",
         display_name: "DeepSeek V4 Flash 0731",
-        context_window: None,
+        context_window: Some(1_048_576),
     },
     ModelDescriptor {
         id: "inclusionai/ling-3.0-tiny:free",
         display_name: "InclusionAI Ling 3.0 Tiny (Free)",
-        context_window: None,
+        context_window: Some(262_144),
     },
     ModelDescriptor {
         id: "openai/gpt-5.6-luna",
         display_name: "OpenAI GPT 5.6 Luna",
-        context_window: None,
+        context_window: Some(1_050_000),
     },
     ModelDescriptor {
         id: "poolside/laguna-xs-2.1",
         display_name: "Poolside Laguna XS 2.1",
-        context_window: None,
+        context_window: Some(262_144),
     },
     ModelDescriptor {
         id: "poolside/laguna-xs-2.1:free",
         display_name: "Poolside Laguna XS 2.1 (Free)",
-        context_window: None,
+        context_window: Some(262_144),
     },
 ];
 

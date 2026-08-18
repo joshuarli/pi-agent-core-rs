@@ -227,6 +227,16 @@ fn tool_call(id: &str) -> AgentToolCall {
 }
 
 #[test]
+fn idle_agent_can_replace_automatic_policy_without_rebuilding_history() {
+    let agent = Agent::builder().build();
+    let configured = policy(262_144, 20_000, OverflowRecovery::CompactAndRetry);
+    agent
+        .replace_automatic_compaction(configured.clone())
+        .expect("idle policy replacement succeeds");
+    assert_eq!(agent.automatic_compaction(), configured);
+}
+
+#[test]
 fn threshold_compacts_once_before_the_next_provider_request() {
     smol::block_on(async {
         let order = Arc::new(Mutex::new(Vec::new()));

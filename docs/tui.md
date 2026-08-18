@@ -77,7 +77,9 @@ The registry is checked-in, feature-selected Rust data. It exposes stable
 provider/model identifiers, optional source-backed context capacity, explicit
 custom-model resolution, configuration family, and provider capabilities. It
 does not read the environment, a credential file, a workspace, or a remote
-catalog. Remote discovery is a future host capability, not a core fallback.
+catalog. Built-in capacity values are synchronized from Pi's generated model
+registry; custom-model selections remain capacity-unknown. Remote discovery is
+a future host capability, not a core fallback.
 
 Provider/model replacement uses `Agent::replace_model_provider` only while the
 agent is idle. It preserves the existing prompt, tools, queues, and retained
@@ -110,8 +112,10 @@ required for this boundary.
 The fixed footer keeps provider/model, run state, provider-reported token and
 cache counters, exact cost, and context status visible. Every unavailable
 field is rendered as `unknown`; the host never substitutes a price, cache hit,
-or context capacity. The second footer row explicitly says when automatic
-compaction is unavailable, rather than inventing a summary policy.
+or context capacity. When a catalog model has a source-backed capacity, the
+footer also reports `context N% used` and whether automatic compaction is
+available. Custom models without capacity remain explicitly unknown and do
+not opt into automatic compaction.
 
 The local terminal substrate is deliberately small: `Cell`, `Style`, `Rect`,
 `Grid`, previous/current frame comparison, and direct Crossterm flushing. A
@@ -186,11 +190,13 @@ tool-call relationships, commits atomically on success, emits typed
 `compaction_start`/`compaction_result`/`compaction_end` events, and leaves the
 old conversation intact on failure, invalid output, or cancellation.
 
-Manual compaction is idle-only. The TUI currently exposes that direct operation;
-an embedding may additionally opt into core `AutomaticCompactionPolicy` with a
-documented host capacity and the same caller-owned compactor. A provider with
-no documented concrete compaction policy is reported unavailable; the TUI must
-not invent a summary prompt or context budget.
+Manual compaction is idle-only. The TUI installs a provider-backed `Compactor`
+for the selected model and configures core `AutomaticCompactionPolicy` from the
+registry's source-backed capacity. Its summary request reuses the selected
+OpenRouter model through the OpenAI-compatible context hook, while core owns
+the split, validation, atomic commit, threshold trigger, and event lifecycle.
+Models without a documented capacity remain manual-only and report automatic
+compaction unavailable; the TUI does not guess a context budget.
 
 ## Dependency and architecture discipline
 

@@ -638,7 +638,11 @@ impl StreamingSseDecoder {
         let chunk = from_bytes(data.as_bytes())
             .map_err(|_| "OpenRouter returned an invalid SSE event".to_owned())?;
         if chunk.get("error").is_some() {
-            return Err("OpenRouter rejected the request".into());
+            return Err(if openrouter_context_overflow(data.as_bytes()) {
+                "OpenRouter context capacity exceeded".into()
+            } else {
+                "OpenRouter rejected the request".into()
+            });
         }
         if self.generation_id.is_none() {
             self.generation_id = chunk
@@ -720,6 +724,35 @@ pub(super) fn openrouter_response_retryable(bytes: &[u8]) -> bool {
         .and_then(JsonValue::as_u64)
         .or_else(|| error.get("status").and_then(JsonValue::as_u64));
     matches!(status, Some(429) | Some(500..=599))
+}
+
+/// Identify the context-capacity failures OpenRouter returns in its JSON error envelope.
+///
+/// This classification belongs to the provider adapter: the generic core only reacts to the
+/// typed `ContextOverflow` event and never guesses from a remote diagnostic string.
+pub(super) fn openrouter_context_overflow(bytes: &[u8]) -> bool {
+    let Some(message) = from_bytes(bytes)
+        .ok()
+        .and_then(|response| response.get("error").cloned())
+        .and_then(|error| error.get("message").and_then(JsonValue::as_str).map(str::to_owned))
+    else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    let overflow = message.contains("maximum")
+        || message.contains("exceed")
+        || message.contains("too long")
+        || message.contains("over limit")
+        || message.contains("limit reached");
+    (overflow
+        && message.contains("context")
+        && (message.contains("length")
+            || message.contains("limit")
+            || message.contains("window")
+            || message.contains("token")
+            || message.contains("capacity")))
+        || message.contains("too many tokens")
+        || message.contains("prompt is too long")
 }
 
 pub(super) fn openrouter_status_retryable(status: Option<u16>) -> bool {

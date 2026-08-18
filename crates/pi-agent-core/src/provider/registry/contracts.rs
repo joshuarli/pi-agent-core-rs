@@ -28,8 +28,9 @@ pub struct ProviderCapabilities {
     pub provider_reported_cost: bool,
     /// Whether this adapter currently has a concrete provider-backed compactor.
     ///
-    /// Both built-in adapters are `false` until the core compactor port and a documented provider
-    /// compaction policy exist. This flag is metadata only; it never creates an implicit fallback.
+    /// Built-in adapters remain `false` until a host installs a documented provider-backed
+    /// compactor policy for that adapter. This flag is metadata only; it never creates an implicit
+    /// fallback merely because the core exposes the generic compactor port.
     pub concrete_compactor: bool,
 }
 

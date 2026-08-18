@@ -452,7 +452,12 @@ impl RunHandle {
                     thinking_override,
                 )
                 .await?;
-            if agent.automatic_compaction.enabled {
+            let automatic_compaction = agent
+                .automatic_compaction
+                .read()
+                .expect("automatic compaction policy lock poisoned")
+                .clone();
+            if automatic_compaction.enabled {
                 self.emit_context_estimate(&agent, &request, context_estimator.estimate(&agent))
                     .await?;
             }
@@ -483,15 +488,15 @@ impl RunHandle {
             }
 
             if provider_context_overflow
-                && agent.automatic_compaction.enabled
-                && agent.automatic_compaction.overflow_recovery
+                && automatic_compaction.enabled
+                && automatic_compaction.overflow_recovery
                     == crate::compaction::OverflowRecovery::CompactAndRetry
             {
                 let retry_allowed = {
                     let mut policy = self.policy.lock().expect("run policy mutex poisoned");
                     if policy.overflow_retried_this_continuation
                         || policy.overflow_retries
-                            >= agent.automatic_compaction.max_overflow_retries_per_run
+                            >= automatic_compaction.max_overflow_retries_per_run
                     {
                         false
                     } else {
@@ -728,7 +733,11 @@ impl RunHandle {
         reason: crate::compaction::AutomaticCompactionReason,
         retry_provider_request: bool,
     ) -> Result<bool, CoreError> {
-        let policy = &agent.automatic_compaction;
+        let policy = agent
+            .automatic_compaction
+            .read()
+            .expect("automatic compaction policy lock poisoned")
+            .clone();
         if !policy.enabled {
             return Ok(false);
         }

@@ -13,10 +13,12 @@ use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::time::Duration;
 
 use super::cli::CliOptions;
+use super::compaction::ProviderCompactor;
 use super::error::AppError;
 use super::host::build_host_agent_with_thinking;
 use super::state::{AppState, UiStatus};
 use super::support::composer_cursor;
+use std::sync::Arc;
 
 /// Assembled v0 terminal application.
 #[derive(Debug)]
@@ -24,6 +26,7 @@ pub struct App {
     pub(super) options: CliOptions,
     pub(super) state: AppState,
     pub(super) core: Option<Agent>,
+    pub(super) compactor: Option<Arc<ProviderCompactor>>,
     pub(super) registry: ProviderRegistry,
     pub(super) workspace: Option<PathBuf>,
     pub(super) subscription: Option<LosslessEventSubscription>,
@@ -42,6 +45,7 @@ impl App {
             options,
             state: AppState::new(),
             core: None,
+            compactor: None,
             registry: ProviderRegistry::new(),
             workspace: None,
             subscription: None,
@@ -119,6 +123,10 @@ impl App {
             .map_err(|error| AppError::Setup(format!("invalid --cwd: {error}")))?;
         self.workspace = Some(tools.workspace().as_path().to_path_buf());
         let builder = build_host_agent_with_thinking(tools, self.options.thinking_level())?;
+        let compactor = Arc::new(ProviderCompactor::default());
+        let compactor_capability: Arc<dyn pi_agent_core::compaction::Compactor> = compactor.clone();
+        let builder = builder.compactor(compactor_capability);
+        self.compactor = Some(compactor);
         self.attach_agent(builder.build());
 
         match (self.options.provider(), self.options.model()) {

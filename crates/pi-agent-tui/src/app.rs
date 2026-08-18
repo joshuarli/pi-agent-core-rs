@@ -6,6 +6,7 @@
 //! helpers.
 
 mod cli;
+mod compaction;
 mod error;
 mod host;
 mod input;
