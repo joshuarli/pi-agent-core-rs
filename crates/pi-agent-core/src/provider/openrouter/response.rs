@@ -575,16 +575,6 @@ impl StreamingSseDecoder {
             has_tool_calls = true;
         }
         let usage = parse_usage(&self.usage);
-        if usage.is_reported() {
-            events.push_back(ModelStreamEvent::Usage(usage.clone()));
-        }
-        let stop_reason = match self.finish_reason.as_deref() {
-            Some("length") => StopReason::Length,
-            Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
-            _ if has_tool_calls => StopReason::ToolUse,
-            _ => StopReason::Stop,
-        };
-        events.push_back(ModelStreamEvent::End(stop_reason));
         let inline_cost = self.usage_bytes.as_deref().and_then(|usage_bytes| {
             let total_usd_exact = exact_number_at_path(usage_bytes, &["usage", "cost"])?;
             Some(OpenRouterCostTurn {
@@ -603,6 +593,16 @@ impl StreamingSseDecoder {
                 reasoning_tokens: usage.reasoning_tokens,
             })
         });
+        if usage.is_reported() || inline_cost.is_some() {
+            events.push_back(ModelStreamEvent::Usage(usage.clone()));
+        }
+        let stop_reason = match self.finish_reason.as_deref() {
+            Some("length") => StopReason::Length,
+            Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
+            _ if has_tool_calls => StopReason::ToolUse,
+            _ => StopReason::Stop,
+        };
+        events.push_back(ModelStreamEvent::End(stop_reason));
         Ok(StreamingSseComplete {
             events: events.into(),
             usage,

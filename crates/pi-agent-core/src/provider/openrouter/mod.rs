@@ -238,13 +238,23 @@ impl OpenRouterEventStream {
         };
         match decoder.finish(false) {
             Ok(completion) => {
+                let mut usage = completion.usage;
                 let cost = completion.inline_cost.unwrap_or_else(|| {
-                    unavailable_cost(&completion.usage, &self.provider.config.model)
+                    unavailable_cost(&usage, &self.provider.config.model)
                 });
-                if completion.usage.is_reported() {
-                    self.provider.record(completion.usage.clone(), cost);
+                usage.cache_read_tokens = usage.cache_read_tokens.or(cost.cache_read_tokens);
+                usage.cache_write_tokens = usage.cache_write_tokens.or(cost.cache_write_tokens);
+                usage.cost = cost.total_usd_exact.clone();
+                let mut events = completion.events;
+                for event in &mut events {
+                    if let ModelStreamEvent::Usage(event_usage) = event {
+                        *event_usage = usage.clone();
+                    }
                 }
-                self.pending.extend(completion.events);
+                if usage.is_reported() {
+                    self.provider.record(usage, cost);
+                }
+                self.pending.extend(events);
             }
             Err(message) => self.response_failure(message),
         }
