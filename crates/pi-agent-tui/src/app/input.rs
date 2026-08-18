@@ -98,7 +98,16 @@ impl App {
                     self.state.notice("select a provider and model first");
                     self.open_provider_picker();
                 }
-                AgentPhase::Idle => self.spawn_run(agent.start_prompt(input)?),
+                AgentPhase::Idle => match agent.start_prompt(input.clone()) {
+                    Ok(run) => {
+                        self.submitted_prompt = Some(input);
+                        self.spawn_run(run);
+                    }
+                    Err(error) => {
+                        self.state.composer_mut().replace_from_editor(input);
+                        self.state.notice(error.to_string());
+                    }
+                },
                 AgentPhase::Running(_) | AgentPhase::Cancelling(_) => {
                     agent.enqueue_steering(input)?;
                     self.state.set_queue_snapshot(&agent);

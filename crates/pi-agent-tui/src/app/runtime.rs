@@ -26,6 +26,9 @@ pub struct App {
     pub(super) workspace: Option<PathBuf>,
     pub(super) subscription: Option<LosslessEventSubscription>,
     pub(super) active_task: Option<Receiver<Result<(), CoreError>>>,
+    /// The idle prompt handed to the current run, retained only to restore local input after a
+    /// failed or cancelled operation. The core remains the transcript source of truth.
+    pub(super) submitted_prompt: Option<String>,
     pub(super) previous_grid: Option<Grid>,
     pub(super) quitting: bool,
 }
@@ -41,6 +44,7 @@ impl App {
             workspace: None,
             subscription: None,
             active_task: None,
+            submitted_prompt: None,
             previous_grid: None,
             quitting: false,
         }
@@ -146,22 +150,25 @@ impl App {
         }
     }
 
-    fn reap_task(&mut self) {
+    pub(super) fn reap_task(&mut self) {
         let Some(receiver) = self.active_task.as_ref() else {
             return;
         };
         match receiver.try_recv() {
             Ok(Ok(())) => {
                 self.active_task = None;
+                self.submitted_prompt = None;
                 self.state.status = UiStatus::Idle;
             }
             Ok(Err(CoreError::Cancelled)) => {
                 self.active_task = None;
-                self.state.notice("cancelled");
+                self.restore_submitted_prompt("cancelled; prompt restored for explicit re-submit");
             }
             Ok(Err(error)) => {
                 self.active_task = None;
-                self.state.notice(error.to_string());
+                self.restore_submitted_prompt(format!(
+                    "{error}; prompt restored for explicit re-submit"
+                ));
             }
             Err(TryRecvError::Disconnected) => {
                 self.active_task = None;
@@ -169,6 +176,15 @@ impl App {
             }
             Err(TryRecvError::Empty) => {}
         }
+    }
+
+    fn restore_submitted_prompt(&mut self, notice: impl Into<String>) {
+        if self.state.composer().text().is_empty() {
+            if let Some(prompt) = self.submitted_prompt.take() {
+                self.state.composer_mut().replace_from_editor(prompt);
+            }
+        }
+        self.state.notice(notice);
     }
 
     fn redraw(&mut self, terminal: &mut TerminalGuard) -> Result<(), AppError> {

@@ -6,6 +6,7 @@ use pi_agent_core::state::{Message, MessageId, SerializedJson, ToolCallId};
 use pi_agent_core::tool::ToolUpdate;
 use pi_agent_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, Usage};
 use std::ffi::OsString;
+use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -289,4 +290,25 @@ fn queue_commands_project_core_owned_steering_and_follow_up_prompts() {
         queues.follow_up.snapshot()[0].content,
         "summarize the result"
     );
+}
+
+#[test]
+fn provider_failure_restores_the_submitted_prompt_for_an_explicit_resubmit() {
+    let mut app = App::new(CliOptions::default());
+    app.submitted_prompt = Some("inspect the failing test".into());
+    let (sender, receiver) = sync_channel(1);
+    sender
+        .send(Err(pi_agent_core::CoreError::ModelError {
+            message: "rate limited".into(),
+        }))
+        .expect("test receiver remains open");
+    app.active_task = Some(receiver);
+
+    app.reap_task();
+
+    assert_eq!(app.state().composer().text(), "inspect the failing test");
+    assert!(matches!(
+        app.state().status(),
+        UiStatus::Notice(notice) if notice.contains("prompt restored for explicit re-submit")
+    ));
 }
