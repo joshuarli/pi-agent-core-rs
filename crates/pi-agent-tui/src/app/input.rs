@@ -111,7 +111,15 @@ impl App {
 
     pub(super) fn dispatch_command(&mut self, input: &str) -> Result<(), AppError> {
         let mut words = input.split_whitespace();
-        match words.next().unwrap_or_default() {
+        let command = words.next().unwrap_or_default();
+        if self.agent_is_active()
+            && matches!(command, "/provider" | "/model" | "/compact" | "/clear")
+        {
+            self.state
+                .notice(format!("{command} is unavailable while a run is active"));
+            return Ok(());
+        }
+        match command {
             "/help" => {
                 self.state.local_line(
                     "keys: Enter submit, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, PgUp/PgDn/End scroll; commands: /provider /model /cost /compact /steer <prompt> /followup <prompt> /clear /quit",
@@ -164,7 +172,10 @@ impl App {
             "/quit" => {
                 self.quitting = true;
                 if let Some(agent) = self.core.as_ref() {
-                    agent.abort();
+                    if !matches!(agent.snapshot().phase, AgentPhase::Idle) {
+                        agent.abort();
+                        self.state.notice("cancelling before exit");
+                    }
                 }
             }
             command => self.state.notice(format!("unknown command {command}")),

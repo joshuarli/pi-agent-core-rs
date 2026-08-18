@@ -241,6 +241,27 @@ fn clear_refuses_an_active_core_agent_without_cancelling_it() {
 }
 
 #[test]
+fn active_commands_refuse_without_replacing_or_compacting_the_agent() {
+    let agent = pi_agent_core::Agent::builder().build();
+    let active = agent.start_prompt("active").expect("run starts");
+    let mut app = App::new(CliOptions::default());
+    app.attach_agent(agent.clone());
+
+    for command in ["/provider", "/model", "/compact", "/clear"] {
+        app.dispatch_command(command).expect("command is handled");
+        assert!(matches!(
+            app.state().status(),
+            UiStatus::Notice(notice) if notice == &format!("{command} is unavailable while a run is active")
+        ));
+        assert!(matches!(
+            agent.snapshot().phase,
+            pi_agent_core::state::AgentPhase::Running(_)
+        ));
+    }
+    active.abort().expect("fixture cleanup");
+}
+
+#[test]
 fn queue_commands_project_core_owned_steering_and_follow_up_prompts() {
     let agent = pi_agent_core::Agent::builder().build();
     let mut app = App::new(CliOptions::default());
