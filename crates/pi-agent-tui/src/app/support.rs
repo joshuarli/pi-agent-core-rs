@@ -32,6 +32,38 @@ pub fn format_usage(usage: &Usage) -> String {
     }
 }
 
+/// Format every persistent-footer accounting field without ever substituting zero for unknown.
+pub(super) fn format_footer_usage(usage: &Usage) -> String {
+    format!(
+        "in {} out {} reasoning {} cache-read {} cache-write {} cost {}",
+        usage
+            .input_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        usage
+            .output_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        usage
+            .reasoning_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        usage
+            .cache_read_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        usage
+            .cache_write_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        usage.cost.as_deref().unwrap_or("unknown"),
+    )
+}
+
+pub(super) const fn format_unknown_footer_usage() -> &'static str {
+    "in unknown out unknown reasoning unknown cache-read unknown cache-write unknown cost unknown"
+}
+
 pub(super) fn composer_cursor(state: &AppState, width: u16, height: u16) -> Option<(u16, u16)> {
     let layout = render::layout(width, height);
     if layout.composer.height == 0 || state.picker.is_some() || state.composer().is_multiline() {

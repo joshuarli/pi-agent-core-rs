@@ -1,6 +1,6 @@
 //! Pure projection from [`crate::app::AppState`] to the local cell grid.
 
-use crate::app::{AppState, UiStatus};
+use crate::app::AppState;
 use crate::grid::{Cell, Grid, Rect, Style};
 use pi_agent_core::provider::ProviderRegistry;
 
@@ -18,7 +18,7 @@ pub struct Layout {
 /// Compute the fixed transcript/composer/status regions.
 pub fn layout(width: u16, height: u16) -> Layout {
     let composer_height = u16::from(height >= 2);
-    let status_height = u16::from(height >= 1);
+    let status_height = if height >= 3 { 2 } else { u16::from(height >= 1) };
     let transcript_height = height.saturating_sub(composer_height + status_height);
     Layout {
         transcript: Rect {
@@ -78,19 +78,19 @@ pub fn render(state: &AppState, registry: &ProviderRegistry, width: u16, height:
         );
     }
     if regions.status.height != 0 {
-        let status = match state.status() {
-            UiStatus::Idle => "idle".to_owned(),
-            UiStatus::Active => "active".to_owned(),
-            UiStatus::Notice(notice) => notice.clone(),
-        };
-        put_text(
-            &mut grid,
-            regions.status.x,
-            regions.status.y,
-            regions.status.width,
-            &status,
-            Style::default(),
-        );
+        for (row, status) in state.footer_lines(registry).into_iter().enumerate() {
+            if row >= regions.status.height as usize {
+                break;
+            }
+            put_text(
+                &mut grid,
+                regions.status.x,
+                regions.status.y + row as u16,
+                regions.status.width,
+                &status,
+                Style::default(),
+            );
+        }
     }
     if let Some(lines) = state.picker_lines(registry) {
         for (row, line) in lines.into_iter().enumerate() {

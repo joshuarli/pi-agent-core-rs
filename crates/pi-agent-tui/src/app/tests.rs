@@ -175,6 +175,19 @@ fn accounting_does_not_render_unknown_as_zero() {
         }),
         "out 0"
     );
+    assert_eq!(
+        support::format_footer_usage(&Usage::default()),
+        "in unknown out unknown reasoning unknown cache-read unknown cache-write unknown cost unknown"
+    );
+    assert_eq!(
+        support::format_footer_usage(&Usage {
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(7),
+            cost: Some("0.000001".into()),
+            ..Usage::default()
+        }),
+        "in unknown out unknown reasoning unknown cache-read 0 cache-write 7 cost 0.000001"
+    );
 }
 
 #[test]

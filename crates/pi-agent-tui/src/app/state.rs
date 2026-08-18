@@ -64,6 +64,16 @@ pub struct AppState {
     pub(super) streaming_line: Option<usize>,
     /// Active generic tool rows keyed by the core-owned call identity.
     pub(super) active_tool_lines: BTreeMap<ToolCallId, usize>,
+    /// The most recent core-emitted context estimate. `None` means the core has not supplied
+    /// capacity-policy evidence for this projection; it is never inferred from rendered text.
+    pub(super) context_estimate: Option<ContextEstimate>,
+}
+
+/// Context-policy information carried by the core event stream for footer projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ContextEstimate {
+    pub(super) tokens: Option<u64>,
+    pub(super) message_count: usize,
 }
 
 impl AppState {
@@ -232,15 +242,12 @@ impl AppState {
                 estimated_context_tokens,
                 message_count,
                 ..
-            } => self.push(
-                sequence,
-                format!(
-                    "context estimate: {} tokens across {message_count} messages",
-                    estimated_context_tokens
-                        .map(|tokens| tokens.to_string())
-                        .unwrap_or_else(|| "unknown".into())
-                ),
-            ),
+            } => {
+                self.context_estimate = Some(ContextEstimate {
+                    tokens: *estimated_context_tokens,
+                    message_count: *message_count,
+                });
+            }
             AgentEventKind::ProviderRequestSkipped { reason } => self.push(
                 sequence,
                 match reason {
@@ -320,6 +327,49 @@ impl AppState {
     /// Return the latest core snapshot, if one has been attached.
     pub fn snapshot(&self) -> Option<&AgentSnapshot> {
         self.last_snapshot.as_ref()
+    }
+
+    /// Return the compact, event-derived telemetry lines for the fixed footer.
+    pub(crate) fn footer_lines(&self, registry: &ProviderRegistry) -> [String; 2] {
+        let selected = self.selected_model.as_ref();
+        let model = selected
+            .map(|model| format!("{}/{}", model.provider, model.model))
+            .unwrap_or_else(|| "provider/model unknown".into());
+        let run_state = match &self.status {
+            UiStatus::Idle => "idle".to_owned(),
+            UiStatus::Active => "working".to_owned(),
+            UiStatus::Notice(ref notice) => format!("notice: {notice}"),
+        };
+        let usage = self
+            .last_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.accounting.aggregate);
+        let usage = usage
+            .map(super::support::format_footer_usage)
+            .unwrap_or_else(|| super::support::format_unknown_footer_usage().into());
+        let capacity = selected
+            .and_then(|model| registry.provider(&model.provider)?.model(&model.model))
+            .and_then(|model| model.context_window);
+        let context = match &self.context_estimate {
+            Some(estimate) => format!(
+                "context {}/{} ({} messages)",
+                estimate
+                    .tokens
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                capacity
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                estimate.message_count
+            ),
+            None => format!(
+                "context unknown/{}",
+                capacity
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            ),
+        };
+        [format!("{model} | {run_state} | {usage}"), context]
     }
 
     /// Return v0 picker lines for the renderer, if an overlay is active.
