@@ -1,4 +1,9 @@
 //! OpenRouter response parsing and exact decimal accounting.
+//!
+//! The finite parser below is retained for recorded-response regression fixtures while the
+//! production adapter uses `StreamingSseDecoder` directly.
+
+#![allow(dead_code)]
 
 use super::accounting::{OpenRouterCostSource, OpenRouterCostTurn};
 use crate::json::{from_bytes, JsonValue};

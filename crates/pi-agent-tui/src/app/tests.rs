@@ -242,7 +242,7 @@ fn clear_refuses_an_active_core_agent_without_cancelling_it() {
 
     assert!(matches!(
         app.state().status(),
-        UiStatus::Notice(notice) if notice == "cannot clear while the agent is active"
+        UiStatus::Notice(notice) if notice == "/clear is unavailable while a run is active"
     ));
     assert!(matches!(
         agent.snapshot().phase,

@@ -1,4 +1,9 @@
 //! OpenRouter native HTTPS transport and response-boundary classification.
+//!
+//! The finite transport helpers remain regression-fixture coverage for the retired buffering
+//! path; the live adapter consumes the incremental shared HTTP stream.
+
+#![allow(dead_code)]
 
 use super::super::http::{send, Request};
 use crate::scheduler::CancellationToken;

@@ -406,6 +406,7 @@ impl OpenRouterProvider {
         }
     }
 
+    #[allow(dead_code)]
     fn response_stream(
         &self,
         request: ModelRequest,
@@ -486,6 +487,7 @@ impl OpenRouterProvider {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn complete(
         &self,
         request: ModelRequest,
@@ -586,6 +588,7 @@ impl OpenRouterProvider {
     }
 
     /// Fetch redacted accounting metadata after a completion only if chat usage omitted cost.
+    #[allow(dead_code)]
     fn generation_cost(
         &self,
         generation_id: &str,
