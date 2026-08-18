@@ -1,5 +1,5 @@
 use pi_agent_core::provider::{openai::OpenAiContextHook, ProviderRegistry};
-use pi_agent_core::{Agent, DefaultCodingTools};
+use pi_agent_core::{Agent, DefaultCodingTools, ThinkingLevel};
 use std::sync::Arc;
 
 use super::error::AppError;
@@ -12,8 +12,16 @@ use super::error::AppError;
 pub fn build_host_agent(
     tools: DefaultCodingTools,
 ) -> Result<pi_agent_core::AgentBuilder, AppError> {
+    build_host_agent_with_thinking(tools, ThinkingLevel::Off)
+}
+
+pub(super) fn build_host_agent_with_thinking(
+    tools: DefaultCodingTools,
+    thinking_level: ThinkingLevel,
+) -> Result<pi_agent_core::AgentBuilder, AppError> {
     Agent::builder()
         .hooks(Arc::new(OpenAiContextHook))
+        .thinking_level(thinking_level)
         .pinned_default_coding_profile(tools)
         .map_err(|error| AppError::Setup(error.to_string()))
 }

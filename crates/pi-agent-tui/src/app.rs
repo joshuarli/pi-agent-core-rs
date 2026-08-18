@@ -17,7 +17,7 @@ mod support;
 #[cfg(test)]
 mod tests;
 
-pub use cli::{CliError, CliOptions};
+pub use cli::{CliCommand, CliError, CliOptions};
 pub use error::AppError;
 pub use host::build_host_agent;
 pub use runtime::App;

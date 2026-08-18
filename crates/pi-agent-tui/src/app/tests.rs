@@ -4,7 +4,7 @@ use pi_agent_core::scheduler::{
 };
 use pi_agent_core::state::{Message, MessageId, SerializedJson, ToolCallId};
 use pi_agent_core::tool::ToolUpdate;
-use pi_agent_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, Usage};
+use pi_agent_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, ThinkingLevel, Usage};
 use std::ffi::OsString;
 use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
@@ -45,6 +45,59 @@ fn cli_rejects_ambiguous_and_unknown_inputs() {
     assert!(matches!(
         CliOptions::parse(["pi-agent", "unexpected"].map(OsString::from)),
         Err(CliError::UnexpectedArgument(_))
+    ));
+}
+
+#[test]
+fn cli_help_accepts_short_and_long_forms() {
+    assert_eq!(
+        CliOptions::parse_command(["pi-agent", "-h"].map(OsString::from)),
+        Ok(CliCommand::Help)
+    );
+    assert_eq!(
+        CliOptions::parse_command(["pi-agent", "--help"].map(OsString::from)),
+        Ok(CliCommand::Help)
+    );
+    assert!(CliOptions::help_text().contains("--provider <id>"));
+}
+
+#[test]
+fn cli_parses_one_shot_prompt_and_thinking_level() {
+    let CliCommand::Options(options) = CliOptions::parse_command(
+        [
+            "pi-agent",
+            "--provider",
+            "openrouter",
+            "--model",
+            "poolside/laguna-xs-2.1:free",
+            "--thinking",
+            "high",
+            "-p",
+            "say hi",
+        ]
+        .map(OsString::from),
+    )
+    .expect("one-shot options parse")
+    else {
+        panic!("one-shot options unexpectedly parsed as help");
+    };
+    assert_eq!(options.provider(), Some(std::ffi::OsStr::new("openrouter")));
+    assert_eq!(
+        options.model(),
+        Some(std::ffi::OsStr::new("poolside/laguna-xs-2.1:free"))
+    );
+    assert_eq!(options.prompt(), Some(std::ffi::OsStr::new("say hi")));
+    assert_eq!(options.thinking_level(), ThinkingLevel::High);
+}
+
+#[test]
+fn cli_rejects_unknown_thinking_level() {
+    assert!(matches!(
+        CliOptions::parse(["pi-agent", "--thinking", "turbo"].map(OsString::from)),
+        Err(CliError::InvalidValue {
+            flag: "--thinking",
+            ..
+        })
     ));
 }
 

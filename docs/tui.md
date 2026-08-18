@@ -39,7 +39,15 @@ The command line is deliberately narrow:
 
 ```text
 pi-agent [--provider <id>] [--model <id>] [--cwd <path>]
+pi-agent [-h | --help]
+pi-agent --provider <id> --model <id> [--thinking <level>] -p <message>
 ```
+
+`-h` and `--help` print the usage text and exit without starting the
+terminal host. `-p`/`--prompt` runs one explicit prompt without terminal mode,
+streams only assistant text to stdout, and exits; it requires both
+`--provider` and `--model`. `--thinking` accepts `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, or `max`.
 
 `--cwd` is the explicit workspace authority passed to the default coding-tool
 bundle. With no provider/model pair, the host opens the compiled picker rather

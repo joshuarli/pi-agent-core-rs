@@ -2,9 +2,13 @@ use crate::grid::Grid;
 use crate::render;
 use crate::terminal::TerminalGuard;
 use pi_agent_core::compaction::CompactionHandle;
+use pi_agent_core::event::AgentEventKind;
 use pi_agent_core::provider::ProviderRegistry;
 use pi_agent_core::state::AgentPhase;
-use pi_agent_core::{Agent, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle};
+use pi_agent_core::{
+    Agent, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle,
+};
+use std::io::{self, Write};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
@@ -12,7 +16,7 @@ use std::time::Duration;
 
 use super::cli::CliOptions;
 use super::error::AppError;
-use super::host::build_host_agent;
+use super::host::build_host_agent_with_thinking;
 use super::state::{AppState, UiStatus};
 use super::support::composer_cursor;
 
@@ -57,6 +61,26 @@ impl App {
         smol::block_on(self.event_loop(&mut terminal))
     }
 
+    /// Run one explicit prompt without entering terminal mode, writing only streamed assistant
+    /// text to stdout before exiting.
+    pub fn run_prompt(&mut self, prompt: String) -> Result<(), AppError> {
+        if prompt.trim().is_empty() {
+            return Err(AppError::Setup(
+                "-p/--prompt must not be empty".into(),
+            ));
+        }
+        if self.options.provider().is_none() || self.options.model().is_none() {
+            return Err(AppError::Setup(
+                "-p/--prompt requires --provider and --model".into(),
+            ));
+        }
+        self.assemble_agent()?;
+        let agent = self.agent_or_setup()?.clone();
+        let subscription = agent.subscribe_lossless();
+        let run = agent.start_prompt(prompt)?;
+        smol::block_on(stream_prompt(run, subscription))
+    }
+
     /// Borrow startup options.
     pub fn options(&self) -> &CliOptions {
         &self.options
@@ -98,7 +122,7 @@ impl App {
         let tools = DefaultCodingTools::new(&workspace)
             .map_err(|error| AppError::Setup(format!("invalid --cwd: {error}")))?;
         self.workspace = Some(tools.workspace().as_path().to_path_buf());
-        let builder = build_host_agent(tools)?;
+        let builder = build_host_agent_with_thinking(tools, self.options.thinking_level())?;
         self.attach_agent(builder.build());
 
         match (self.options.provider(), self.options.model()) {
@@ -233,6 +257,52 @@ impl App {
             .as_ref()
             .is_some_and(|agent| !matches!(agent.snapshot().phase, AgentPhase::Idle))
     }
+}
+
+async fn stream_prompt(
+    run: RunHandle,
+    subscription: LosslessEventSubscription,
+) -> Result<(), AppError> {
+    let mut drive = Box::pin(run.drive());
+    loop {
+        drain_prompt_events(&subscription)?;
+        if let Some(result) = smol::future::poll_once(&mut drive).await {
+            drain_prompt_events(&subscription)?;
+            result.map_err(AppError::from)?;
+            let mut stdout = io::stdout().lock();
+            stdout
+                .write_all(b"\n")
+                .map_err(|error| AppError::Setup(format!("could not write response: {error}")))?;
+            stdout
+                .flush()
+                .map_err(|error| AppError::Setup(format!("could not flush response: {error}")))?;
+            return Ok(());
+        }
+        smol::future::yield_now().await;
+    }
+}
+
+fn drain_prompt_events(subscription: &LosslessEventSubscription) -> Result<(), AppError> {
+    let mut stdout = io::stdout().lock();
+    let mut wrote = false;
+    while let Ok(event) = subscription.try_recv() {
+        if let AgentEventKind::MessageUpdate {
+            text_delta: Some(text),
+            ..
+        } = event.kind
+        {
+            stdout
+                .write_all(text.as_bytes())
+                .map_err(|error| AppError::Setup(format!("could not write response: {error}")))?;
+            wrote = true;
+        }
+    }
+    if wrote {
+        stdout
+            .flush()
+            .map_err(|error| AppError::Setup(format!("could not flush response: {error}")))?;
+    }
+    Ok(())
 }
 
 fn os_text(value: &OsStr, flag: &str) -> Result<String, AppError> {

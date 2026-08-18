@@ -1,6 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
+use pi_agent_core::ThinkingLevel;
 
 /// Explicit command-line inputs accepted by the v0 terminal host.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -8,36 +9,33 @@ pub struct CliOptions {
     provider: Option<OsString>,
     model: Option<OsString>,
     cwd: Option<PathBuf>,
+    prompt: Option<OsString>,
+    thinking: Option<ThinkingLevel>,
 }
 
 impl CliOptions {
-    /// Parse `pi-agent [--provider <id>] [--model <id>] [--cwd <path>]`.
+    /// Parse `pi-agent [--provider <id>] [--model <id>] [--thinking <level>] [--prompt <text>]`.
     pub fn parse<I>(args: I) -> Result<Self, CliError>
     where
         I: IntoIterator<Item = OsString>,
     {
-        let mut arguments = args.into_iter();
-        let _program = arguments.next();
-        let mut options = Self::default();
-        while let Some(argument) = arguments.next() {
-            let slot = match argument.to_string_lossy().as_ref() {
-                "--provider" => OptionSlot::Provider,
-                "--model" => OptionSlot::Model,
-                "--cwd" => OptionSlot::Cwd,
-                _ if argument.as_os_str().to_string_lossy().starts_with('-') => {
-                    return Err(CliError::UnknownOption(argument));
-                }
-                _ => return Err(CliError::UnexpectedArgument(argument)),
-            };
-            let value = arguments
-                .next()
-                .ok_or_else(|| CliError::MissingValue(slot.name()))?;
-            if value.is_empty() {
-                return Err(CliError::EmptyValue(slot.name()));
-            }
-            options.set(slot, value)?;
+        match parse_impl(args, false)? {
+            CliCommand::Options(options) => Ok(options),
+            CliCommand::Help => unreachable!("help is disabled for CliOptions::parse"),
         }
-        Ok(options)
+    }
+
+    /// Parse startup arguments, including the conventional `-h`/`--help` command.
+    pub fn parse_command<I>(args: I) -> Result<CliCommand, CliError>
+    where
+        I: IntoIterator<Item = OsString>,
+    {
+        parse_impl(args, true)
+    }
+
+    /// Render the command-line usage text.
+    pub const fn help_text() -> &'static str {
+        "Usage: pi-agent [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n"
     }
 
     /// Borrow the explicitly selected provider, if supplied.
@@ -55,12 +53,30 @@ impl CliOptions {
         self.cwd.as_deref()
     }
 
+    /// Borrow the one-shot prompt, if supplied.
+    pub fn prompt(&self) -> Option<&OsStr> {
+        self.prompt.as_deref()
+    }
+
+    /// Return the selected reasoning budget, defaulting to disabled.
+    pub fn thinking_level(&self) -> ThinkingLevel {
+        self.thinking.unwrap_or_default()
+    }
+
     fn set(&mut self, slot: OptionSlot, value: OsString) -> Result<(), CliError> {
         let destination = match slot {
             OptionSlot::Provider => &mut self.provider,
             OptionSlot::Model => &mut self.model,
+            OptionSlot::Prompt => &mut self.prompt,
             OptionSlot::Cwd => {
                 if self.cwd.replace(PathBuf::from(value)).is_some() {
+                    return Err(CliError::DuplicateOption(slot.name()));
+                }
+                return Ok(());
+            }
+            OptionSlot::Thinking => {
+                let level = parse_thinking_level(&value)?;
+                if self.thinking.replace(level).is_some() {
                     return Err(CliError::DuplicateOption(slot.name()));
                 }
                 return Ok(());
@@ -74,10 +90,52 @@ impl CliOptions {
     }
 }
 
+/// A parsed `pi-agent` command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CliCommand {
+    /// Start the terminal host with explicit startup options.
+    Options(CliOptions),
+    /// Print command-line usage and exit.
+    Help,
+}
+
+fn parse_impl<I>(args: I, recognize_help: bool) -> Result<CliCommand, CliError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut arguments = args.into_iter();
+    let _program = arguments.next();
+    let mut options = CliOptions::default();
+    while let Some(argument) = arguments.next() {
+        let slot = match argument.to_string_lossy().as_ref() {
+            "-h" | "--help" if recognize_help => return Ok(CliCommand::Help),
+            "--provider" => OptionSlot::Provider,
+            "--model" => OptionSlot::Model,
+            "--thinking" => OptionSlot::Thinking,
+            "-p" | "--prompt" => OptionSlot::Prompt,
+            "--cwd" => OptionSlot::Cwd,
+            _ if argument.as_os_str().to_string_lossy().starts_with('-') => {
+                return Err(CliError::UnknownOption(argument));
+            }
+            _ => return Err(CliError::UnexpectedArgument(argument)),
+        };
+        let value = arguments
+            .next()
+            .ok_or_else(|| CliError::MissingValue(slot.name()))?;
+        if value.is_empty() {
+            return Err(CliError::EmptyValue(slot.name()));
+        }
+        options.set(slot, value)?;
+    }
+    Ok(CliCommand::Options(options))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OptionSlot {
     Provider,
     Model,
+    Thinking,
+    Prompt,
     Cwd,
 }
 
@@ -86,6 +144,8 @@ impl OptionSlot {
         match self {
             Self::Provider => "--provider",
             Self::Model => "--model",
+            Self::Thinking => "--thinking",
+            Self::Prompt => "-p/--prompt",
             Self::Cwd => "--cwd",
         }
     }
@@ -102,6 +162,13 @@ pub enum CliError {
     EmptyValue(&'static str),
     /// The option is not part of v0.
     UnknownOption(OsString),
+    /// An option value is not valid for its declared domain.
+    InvalidValue {
+        /// Option whose value was rejected.
+        flag: &'static str,
+        /// Rejected value.
+        value: OsString,
+    },
     /// Positional arguments are not part of v0.
     UnexpectedArgument(OsString),
 }
@@ -113,10 +180,29 @@ impl fmt::Display for CliError {
             Self::DuplicateOption(flag) => write!(formatter, "duplicate option {flag}"),
             Self::EmptyValue(flag) => write!(formatter, "empty value for {flag}"),
             Self::UnknownOption(option) => write!(formatter, "unknown option {option:?}"),
+            Self::InvalidValue { flag, value } => {
+                write!(formatter, "invalid value {value:?} for {flag}")
+            }
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument {argument:?}")
             }
         }
+    }
+}
+
+fn parse_thinking_level(value: &OsStr) -> Result<ThinkingLevel, CliError> {
+    match value.to_string_lossy().as_ref() {
+        "off" => Ok(ThinkingLevel::Off),
+        "minimal" => Ok(ThinkingLevel::Minimal),
+        "low" => Ok(ThinkingLevel::Low),
+        "medium" => Ok(ThinkingLevel::Medium),
+        "high" => Ok(ThinkingLevel::High),
+        "xhigh" => Ok(ThinkingLevel::XHigh),
+        "max" => Ok(ThinkingLevel::Max),
+        _ => Err(CliError::InvalidValue {
+            flag: "--thinking",
+            value: value.to_owned(),
+        }),
     }
 }
 
