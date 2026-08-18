@@ -398,9 +398,14 @@ impl AppState {
         let capacity = selected
             .and_then(|model| registry.provider(&model.provider)?.model(&model.model))
             .and_then(|model| model.context_window);
+        let compaction = selected
+            .and_then(|model| registry.provider(&model.provider))
+            .is_some_and(|provider| provider.capabilities.supports_compaction())
+            .then_some("automatic compaction available")
+            .unwrap_or("automatic compaction unavailable");
         let context = match &self.context_estimate {
             Some(estimate) => format!(
-                "context {}/{} ({} messages)",
+                "context {}/{} ({} messages); {compaction}",
                 estimate
                     .tokens
                     .map(|tokens| tokens.to_string())
@@ -411,7 +416,7 @@ impl AppState {
                 estimate.message_count
             ),
             None => format!(
-                "context unknown/{}",
+                "context unknown/{}; {compaction}",
                 capacity
                     .map(|tokens| tokens.to_string())
                     .unwrap_or_else(|| "unknown".into())

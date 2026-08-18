@@ -91,12 +91,19 @@ AgentEvent -> AppState projection -> Grid<Cell> -> frame diff -> Crossterm
 status presentation, and transient notices. It must not own model, provider,
 accounting, tool, compaction, or conversation semantics.
 
-The v0 renderer displays raw Markdown with simple wrapping and incremental
-assistant text. It renders tool calls generically from their name, serialized
-arguments, updates, and settled result/error rather than type-specific widgets.
+The v0 renderer displays incrementally delivered assistant text with bounded
+plain-text, heading/list, fenced-code, and error treatment. It renders tool
+calls generically as one lifecycle activity from their name, serialized
+arguments, progress, and settled result/error rather than type-specific widgets.
 `PageUp`, `PageDown`, and `End` provide basic scroll/follow behavior. Markdown
 parsing, syntax highlighting, rich text, and a general layout tree are not
 required for this boundary.
+
+The fixed footer keeps provider/model, run state, provider-reported token and
+cache counters, exact cost, and context status visible. Every unavailable
+field is rendered as `unknown`; the host never substitutes a price, cache hit,
+or context capacity. The second footer row explicitly says when automatic
+compaction is unavailable, rather than inventing a summary policy.
 
 The local terminal substrate is deliberately small: `Cell`, `Style`, `Rect`,
 `Grid`, previous/current frame comparison, and direct Crossterm flushing. A
@@ -139,6 +146,11 @@ silently substituted.
 
 Submitting text while idle starts a prompt. Submitting while active enqueues
 steering, and the transcript waits for the core event that makes it visible.
+`/steer <prompt>` and `/followup <prompt>` expose the two named core queues;
+the transcript projection shows each queued prompt, its drain mode, and its
+active-turn or idle-boundary placement until core consumes it. A failed or
+cancelled idle prompt is restored to the composer for an explicit re-submit;
+it is never silently replayed.
 `Ctrl+C` calls `Agent::abort` while active; it never kills the process to stop
 inference. While idle it clears nonempty input or exits with an empty composer.
 `/clear` refuses during an active run and never cancels or queues itself.

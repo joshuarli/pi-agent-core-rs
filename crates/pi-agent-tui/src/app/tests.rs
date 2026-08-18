@@ -192,6 +192,16 @@ fn accounting_does_not_render_unknown_as_zero() {
 }
 
 #[test]
+fn footer_reports_unknown_context_and_unavailable_compaction_without_guessing() {
+    let state = AppState::new();
+    let registry = pi_agent_core::provider::ProviderRegistry::new();
+    assert_eq!(
+        state.footer_lines(&registry)[1],
+        "context unknown/unknown; automatic compaction unavailable"
+    );
+}
+
+#[test]
 fn civil_date_epoch_is_stable_without_a_time_dependency() {
     assert_eq!(support::civil_from_days(0), (1970, 1, 1));
     assert_eq!(support::civil_from_days(20_000), (2024, 10, 4));
