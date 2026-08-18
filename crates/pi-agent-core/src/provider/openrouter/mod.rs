@@ -768,6 +768,51 @@ data: [DONE]
     }
 
     #[test]
+    fn streaming_sse_decoder_exposes_each_delta_before_body_settlement() {
+        let mut decoder = StreamingSseDecoder::new();
+        let first = decoder
+            .push(
+                br#"data: {"id":"gen_stream","choices":[{"delta":{"content":"first "},"finish_reason":null}]}
+
+"#,
+            )
+            .expect("first SSE record parses");
+        assert_eq!(first, [ModelStreamEvent::TextDelta("first ".into())]);
+
+        let second = decoder
+            .push(
+                br#"data: {"id":"gen_stream","choices":[{"delta":{"content":"second"},"finish_reason":null}]}
+
+"#,
+            )
+            .expect("second SSE record parses");
+        assert_eq!(second, [ModelStreamEvent::TextDelta("second".into())]);
+
+        assert!(decoder
+            .push(
+                br#"data: {"id":"gen_stream","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2}}
+
+data: [DONE]
+
+"#,
+            )
+            .expect("terminal SSE records parse")
+            .is_empty());
+        let complete = decoder.finish(false).expect("SSE body settles");
+        assert_eq!(
+            complete.events,
+            [
+                ModelStreamEvent::Usage(Usage {
+                    input_tokens: Some(2),
+                    output_tokens: Some(2),
+                    ..Usage::default()
+                }),
+                ModelStreamEvent::End(StopReason::Stop),
+            ]
+        );
+    }
+
+    #[test]
     fn parses_partial_sse_as_output_limit_only_when_explicitly_allowed() {
         let bytes = br#"data: {"id":"gen_partial","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}
 
