@@ -2,8 +2,9 @@ use super::*;
 use pi_agent_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
-use pi_agent_core::state::{Message, MessageId};
-use pi_agent_core::{DefaultCodingTools, ModelDescriptor, Usage};
+use pi_agent_core::state::{Message, MessageId, SerializedJson, ToolCallId};
+use pi_agent_core::tool::ToolUpdate;
+use pi_agent_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, Usage};
 use std::ffi::OsString;
 use std::sync::Arc;
 
@@ -74,6 +75,56 @@ fn event_projection_keeps_streaming_text_as_one_raw_line() {
     });
     assert_eq!(state.transcript().len(), 1);
     assert_eq!(state.transcript()[0].text, "assistant: hello");
+}
+
+#[test]
+fn event_projection_groups_a_tool_lifecycle_in_one_readable_row() {
+    let mut state = AppState::new();
+    let call_id = ToolCallId::new("call-1").expect("fixture ID");
+    let event = |sequence, kind| pi_agent_core::AgentEvent {
+        run_id: pi_agent_core::RunId(1),
+        sequence: pi_agent_core::EventSequence(sequence),
+        kind,
+    };
+    state.apply_event(&event(
+        1,
+        pi_agent_core::AgentEventKind::ToolExecutionStart {
+            tool_call_id: call_id.clone(),
+            tool_name: "shell".into(),
+            arguments: SerializedJson::new(r#"{"command":"cargo test"}"#),
+        },
+    ));
+    state.apply_event(&event(
+        2,
+        pi_agent_core::AgentEventKind::ToolExecutionUpdate {
+            tool_call_id: call_id.clone(),
+            tool_name: "shell".into(),
+            update: ToolUpdate {
+                content: "compiling".into(),
+                details: None,
+            },
+        },
+    ));
+    state.apply_event(&event(
+        3,
+        pi_agent_core::AgentEventKind::ToolExecutionEnd {
+            tool_call_id: call_id.clone(),
+            tool_name: "shell".into(),
+            result: AgentToolResult {
+                tool_call_id: call_id,
+                content: "exit 1".into(),
+                details: None,
+                usage: None,
+                added_tool_names: Vec::new(),
+                terminate: false,
+                is_error: true,
+                failure: None,
+            },
+        },
+    ));
+
+    assert_eq!(state.transcript().len(), 1);
+    assert_eq!(state.transcript()[0].text, "tool shell — failed: exit 1");
 }
 
 #[test]

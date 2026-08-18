@@ -3,8 +3,9 @@ use pi_agent_core::event::{
     AgentEventKind, AutomaticCompactionOutcome, CompactionOutcome, ProviderRequestSkipReason,
 };
 use pi_agent_core::provider::ProviderRegistry;
-use pi_agent_core::state::AgentSnapshot;
+use pi_agent_core::state::{AgentSnapshot, ToolCallId};
 use pi_agent_core::{AgentEvent, ModelDescriptor};
+use std::collections::BTreeMap;
 
 use super::host::{missing_credential, model_candidates, overlay_lines, provider_candidates};
 use super::support::format_usage;
@@ -61,6 +62,8 @@ pub struct AppState {
     pub(super) selected_model: Option<ModelDescriptor>,
     pub(super) picker: Option<Picker>,
     pub(super) streaming_line: Option<usize>,
+    /// Active generic tool rows keyed by the core-owned call identity.
+    pub(super) active_tool_lines: BTreeMap<ToolCallId, usize>,
 }
 
 impl AppState {
@@ -100,34 +103,56 @@ impl AppState {
                 }
             }
             AgentEventKind::MessageEnd { message } => {
-                if let pi_agent_core::Message::Assistant { content, .. } = message {
+                if let pi_agent_core::Message::Assistant {
+                    content,
+                    error_message,
+                    ..
+                } = message
+                {
                     if self.streaming_line.is_none() {
-                        self.push(sequence, format!("assistant: {content}"));
+                        if let Some(error) = error_message {
+                            self.push(sequence, format!("assistant error: {error}"));
+                        } else {
+                            self.push(sequence, format!("assistant: {content}"));
+                        }
                     }
                     self.streaming_line = None;
                 }
             }
             AgentEventKind::ToolExecutionStart {
+                tool_call_id,
                 tool_name,
                 arguments,
-                ..
-            } => self.push(
-                sequence,
-                format!("tool {tool_name}: {}", arguments.as_str()),
-            ),
-            AgentEventKind::ToolExecutionUpdate {
-                tool_name, update, ..
             } => {
-                self.push(sequence, format!("tool {tool_name}: {}", update.content));
-            }
-            AgentEventKind::ToolExecutionEnd {
-                tool_name, result, ..
-            } => {
-                let label = if result.is_error { "error" } else { "result" };
                 self.push(
                     sequence,
-                    format!("tool {tool_name} {label}: {}", result.content),
+                    format!("tool {tool_name} — started: {}", arguments.as_str()),
                 );
+                let index = self.transcript.len().saturating_sub(1);
+                self.active_tool_lines.insert(tool_call_id.clone(), index);
+            }
+            AgentEventKind::ToolExecutionUpdate {
+                tool_call_id,
+                tool_name,
+                update,
+            } => {
+                self.update_tool_line(
+                    tool_call_id,
+                    sequence,
+                    format!("tool {tool_name} — progress: {}", update.content),
+                );
+            }
+            AgentEventKind::ToolExecutionEnd {
+                tool_call_id,
+                tool_name, result, ..
+            } => {
+                let label = if result.is_error { "failed" } else { "completed" };
+                self.update_tool_line(
+                    tool_call_id,
+                    sequence,
+                    format!("tool {tool_name} — {label}: {}", result.content),
+                );
+                self.active_tool_lines.remove(tool_call_id);
             }
             AgentEventKind::ModelTurnUsage { accounting } => self.push(
                 sequence,
@@ -320,6 +345,24 @@ impl AppState {
         self.transcript.push(TranscriptLine { sequence, text });
     }
 
+    fn update_tool_line(
+        &mut self,
+        tool_call_id: &ToolCallId,
+        sequence: Option<u64>,
+        text: String,
+    ) {
+        if let Some(index) = self.active_tool_lines.get(tool_call_id).copied() {
+            if let Some(line) = self.transcript.get_mut(index) {
+                line.sequence = sequence;
+                line.text = text;
+                return;
+            }
+        }
+        self.push(sequence, text);
+        let index = self.transcript.len().saturating_sub(1);
+        self.active_tool_lines.insert(tool_call_id.clone(), index);
+    }
+
     pub(super) fn notice(&mut self, text: impl Into<String>) {
         self.status = UiStatus::Notice(text.into());
     }
@@ -331,6 +374,7 @@ impl AppState {
     pub(super) fn clear_transcript(&mut self) {
         self.transcript.clear();
         self.streaming_line = None;
+        self.active_tool_lines.clear();
         self.viewport_offset = 0;
         self.follow_output = true;
     }
