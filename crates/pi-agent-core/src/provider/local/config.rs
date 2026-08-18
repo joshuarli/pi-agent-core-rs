@@ -9,7 +9,7 @@ use std::time::Duration;
 pub enum LocalConfigError {
     /// A required caller-supplied text value was empty.
     EmptyField(&'static str),
-    /// The base URL must use an HTTP URL because it is passed directly to curl.
+    /// The base URL must use an HTTP or HTTPS URL accepted by the native transport.
     InvalidBaseUrl,
     /// The maximum output-token cap was zero.
     ZeroMaxTokens,

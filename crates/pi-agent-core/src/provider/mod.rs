@@ -1,9 +1,15 @@
 //! Optional concrete model-provider adapters.
 //!
 //! The core loop depends only on [`crate::scheduler::ModelProvider`]. These adapters are behind
-//! explicit Cargo features so transport processes and provider wire formats never become part of
+//! explicit Cargo features so transport dependencies and provider wire formats never become part of
 //! the default state-machine build.
 
+#[cfg(any(
+    feature = "provider-commandcode",
+    feature = "provider-openrouter",
+    feature = "provider-local"
+))]
+mod http;
 mod registry;
 #[cfg(any(feature = "provider-commandcode", feature = "provider-openrouter"))]
 mod retry;

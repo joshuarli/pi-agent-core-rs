@@ -14,7 +14,7 @@ pub enum OpenRouterConfigError {
     ZeroRequestTimeout,
     /// The response-stall timeout was zero.
     ZeroStallTimeout,
-    /// The API key contains a line break and cannot be represented safely in a curl config.
+    /// The API key contains a line break and cannot be represented safely in an HTTP header.
     ApiKeyContainsLineBreak,
 }
 

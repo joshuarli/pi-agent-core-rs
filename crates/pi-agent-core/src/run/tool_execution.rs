@@ -520,7 +520,7 @@ impl RunHandle {
                 message: crate::tool::truncate_middle(
                     failure
                         .recovery_guidance()
-                        .unwrap_or_else(|| result.content.as_str()),
+                        .unwrap_or(result.content.as_str()),
                     1024,
                 ),
             }));
@@ -528,7 +528,7 @@ impl RunHandle {
         let message = crate::tool::truncate_middle(
             failure
                 .recovery_guidance()
-                .unwrap_or_else(|| result.content.as_str()),
+                .unwrap_or(result.content.as_str()),
             1024,
         );
         self.emit(

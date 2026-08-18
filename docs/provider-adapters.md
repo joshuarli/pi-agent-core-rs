@@ -16,9 +16,9 @@ opaque caller providers or replay a stream after it has exposed events.
 
 | Feature | Module | Wire protocol | Intended use |
 | --- | --- | --- | --- |
-| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response transport with packet-bound model validation and cancellation-aware child custody. |
-| `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in Command Code gateway transport; the evaluation runner selects it with `--provider commandcode`. |
-| `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions endpoint | Opt-in finite-response transport for oMLX and similar local servers; no credentials or endpoint discovery. |
+| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions plus optional generation accounting | Opt-in finite-response rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
+| `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in native HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
+| `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions endpoint | Opt-in finite-response native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
 
 Enable only the provider an application owns:
 
@@ -44,24 +44,26 @@ network request.
 The configured `max_tokens` is sent as the OpenRouter `max_tokens` output cap.
 The adapter defaults each finite HTTP request to a 300-second timeout and
 detects a response that has started but then produced no non-whitespace bytes
-for 60 seconds. A finite (`stream: false`) request may legitimately have no
-body bytes while the provider is generating it, so the request timeout bounds
+for 60 seconds. A streaming request may legitimately have no body bytes while
+the provider is generating it, so the request timeout bounds
 that pre-response period; callers can replace both with
 `OpenRouterConfig::with_request_timeout` and `with_stall_timeout` to keep
 retries inside their own session wall budget. The factory host derives both
 timeouts from the admitted assignment wall limit rather than using the adapter
-defaults. A response stall kills and reaps the direct `curl` child and enters
-the same bounded retry policy as other transport failures.
+defaults. A response stall reaches the configured native receive timeout and
+enters the same bounded retry policy as other transport failures.
 Request-scoped `ThinkingLevel` values are mapped to OpenRouter's native
 `reasoning: { "effort": ... }` object (`off` maps to `none`); the default level
 omits the field. This keeps provider-specific wire details in the adapter while
 leaving policy and model selection with the host.
 
-The provider runs a direct `curl` child with a private mode-0600 config file,
-without putting the API key in argv or the child environment. It polls the
-run's `CancellationToken`; cancellation kills and reaps that direct child and
-settles as `StopReason::Cancelled`. Response output is captured in private
-bounded-lifetime files so a full provider response cannot deadlock on a pipe.
+The provider sends the API key as an in-memory Authorization header. It never
+puts the key in argv, a child environment, or a temporary file. The native
+transport has no ambient proxy or credential-file discovery. It checks the
+run's `CancellationToken` before, between received body chunks, and after the
+synchronous, timeout-bounded request; cancellation settles as
+`StopReason::Cancelled` once that operation settles. Response output is
+collected in memory before the finite core stream is returned.
 
 Provider accounting is available through `usage_snapshot` and `cost_report`.
 Token counters retain unknown-vs-zero semantics. Each cost turn and the
@@ -177,16 +179,17 @@ fallback. The current gateway may emit a `provider-metadata` envelope after
 `finish`; it is accepted as non-content metadata rather than misclassified as a
 second terminal event.
 
-The first adapters collect their bounded `curl` response before returning a
+The first adapters collect their timeout-bounded native HTTP response before returning a
 finite core stream. They preserve event grammar and terminal validation, but
 they do not yet expose network-time incremental deltas. Hosts needing live
 transport streaming should implement `ModelProvider` directly while preserving
 the same request and event contracts.
 
-All in-tree curl adapters own child custody. On the run cancellation token,
-Local, OpenRouter, and Command Code kill and reap their in-flight child before
-settling a cancelled core stream; cancellation does not become a retryable
-transport error.
+All in-tree native adapters own their synchronous request boundary. On the run
+cancellation token, Local, OpenRouter, and Command Code check cancellation
+before, between body chunks, and after the timeout-bounded request; cancellation does not become a
+retryable transport error. Immediate mid-read interruption is intentionally
+reserved for a future cancellation-aware streaming adapter.
 
 ## Local oMLX and Laguna
 

@@ -70,10 +70,10 @@ rather than ignored. A tool receives a call ID, validated JSON, cancellation, an
 Standard coding tools are ordinary tools behind explicit profile operation ports.
 
 The optional `pi_agent_core::provider` module is a separate adapter layer behind explicit Cargo
-features. `provider-openrouter` and `provider-commandcode` are opt-in `curl` transports with
-caller-supplied keys and no ambient configuration discovery; the evaluation runner selects one
-only through its explicit provider argument. They do not change the default build or the
-`ModelProvider` contract. See
+features. `provider-openrouter`, `provider-commandcode`, and `provider-local` are opt-in native
+rustls HTTP transports with caller-supplied keys and no ambient configuration discovery; the
+evaluation runner selects one only through its explicit provider argument. They do not change the
+default build or the `ModelProvider` contract. See
 [provider adapters](provider-adapters.md) for their wire and context boundaries.
 
 ## Ownership and state transitions
@@ -201,10 +201,10 @@ The core has no unsafe Rust and no Tokio type in public or private APIs. Depende
 keep cancellation executor-agnostic and isolate the chosen token implementation behind the core
 contract.
 
-Concrete curl adapters own their child process to settlement: cancellation kills and reaps Local,
-OpenRouter, and Command Code transport children. The generic core additionally wakes its
-sequential tool poll on cancellation and records a cancellation result rather than leaving an
-uncooperative future holding run ownership.
+Concrete native adapters own their synchronous request boundary to settlement. Local, OpenRouter,
+and Command Code check cancellation before, between body chunks, and after their timeout-bounded
+ureq operation; the generic core additionally wakes its sequential tool poll on cancellation and records a
+cancellation result rather than leaving an uncooperative future holding run ownership.
 
 ## Default coding profile adapter
 

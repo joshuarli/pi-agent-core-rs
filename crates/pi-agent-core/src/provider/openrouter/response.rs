@@ -505,7 +505,7 @@ fn parse_sse_response(bytes: &[u8], allow_partial: bool) -> Result<ParsedRespons
         let chunk = match from_bytes(data.as_bytes()) {
             Ok(chunk) => chunk,
             Err(_) if allow_partial && lines.peek().is_none() => {
-                // A semantic stall can cut curl's capture in the middle of the final SSE JSON
+                // A semantic stall can cut the native response capture in the middle of the final SSE JSON
                 // line. Preserve every complete event already observed, but never hide a
                 // malformed event that has a following line behind it.
                 break;

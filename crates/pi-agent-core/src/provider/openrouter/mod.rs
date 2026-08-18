@@ -1,8 +1,8 @@
 //! OpenRouter Chat Completions provider adapter.
 //!
-//! This opt-in adapter invokes a caller-provided OpenRouter API key through `curl`. It is a
-//! finite-response transport for the evaluation host: the core remains independent of HTTP,
-//! subprocesses, credentials, and provider price formats.
+//! This opt-in adapter sends a caller-provided OpenRouter API key through the native
+//! rustls-backed HTTP boundary. It is a finite-response transport for the evaluation host: the
+//! core remains independent of HTTP, credentials, and provider price formats.
 
 mod accounting;
 mod config;
@@ -10,6 +10,7 @@ mod payload;
 mod response;
 mod transport;
 
+use super::http::Request;
 use super::retry::{retry_with_backoff, RetryableError};
 use crate::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
@@ -19,8 +20,6 @@ use accounting::{add_usage, Accounting};
 pub use accounting::{OpenRouterCostReport, OpenRouterCostSource, OpenRouterCostTurn};
 pub use config::{OpenRouterConfig, OpenRouterConfigError};
 use std::fmt;
-use std::fs;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use payload::build_payload;
@@ -30,14 +29,12 @@ use response::{
     decimal_add, openrouter_response_retryable, openrouter_status_retryable, parse_generation_cost,
     parse_partial_response, parse_response, response_body_prefix, unavailable_cost,
 };
-use transport::{
-    retryable_transport_error, run_curl, write_curl_config, COMPLETIONS_URL, GENERATION_URL,
-};
+use transport::{retryable_transport_error, run_ureq, COMPLETIONS_URL, GENERATION_URL};
 
 /// The private source of the most recent OpenRouter failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenRouterErrorSource {
-    /// The local curl subprocess or its capture boundary failed.
+    /// The native HTTP transport or its response boundary failed.
     Transport,
     /// OpenRouter returned a response that the adapter could not accept.
     Response,
@@ -269,7 +266,7 @@ impl OpenRouterProvider {
         cancellation: &CancellationToken,
     ) -> Result<(Vec<ModelStreamEvent>, Usage, OpenRouterCostTurn), String> {
         self.clear_error();
-        self.validate_model(&request).map_err(|message| {
+        self.validate_model(&request).inspect_err(|message| {
             self.record_error(OpenRouterErrorReport {
                 source: OpenRouterErrorSource::Adapter,
                 message: message.clone(),
@@ -280,9 +277,8 @@ impl OpenRouterProvider {
                 request_bytes: None,
                 response_prefix: None,
             });
-            message
         })?;
-        let payload = build_payload(&self.config, &request).map_err(|message| {
+        let payload = build_payload(&self.config, &request).inspect_err(|message| {
             self.record_error(OpenRouterErrorReport {
                 source: OpenRouterErrorSource::Adapter,
                 message: message.clone(),
@@ -293,39 +289,19 @@ impl OpenRouterProvider {
                 request_bytes: None,
                 response_prefix: None,
             });
-            message
         })?;
         let mut attempts: u32 = 0;
         let parsed = retry_with_backoff(self.config.retry_policy, cancellation, || {
             attempts = attempts.saturating_add(1);
-            let config_path =
-                write_curl_config(&self.config.api_key).map_err(RetryableError::permanent)?;
-            let request_timeout = self.config.request_timeout.as_secs().max(1).to_string();
-            let output = run_curl(
-                Command::new("curl")
-                    .arg("--silent")
-                    .arg("--show-error")
-                    .arg("--connect-timeout")
-                    .arg("10")
-                    .arg("--max-time")
-                    .arg(&request_timeout)
-                    .arg("--request")
-                    .arg("POST")
-                    .arg(COMPLETIONS_URL)
-                    .arg("--config")
-                    .arg(&config_path)
-                    .arg("--data-binary")
-                    .arg("@-")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .env_clear()
-                    .env("PATH", "/usr/bin:/bin"),
-                &payload,
-                cancellation,
-                self.config.stall_timeout,
-            );
-            let _ = fs::remove_file(&config_path);
+            let request = Request::post(
+                COMPLETIONS_URL,
+                payload.clone(),
+                self.config.request_timeout,
+            )
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .with_stall_timeout(self.config.stall_timeout);
+            let output = run_ureq(request, cancellation);
             let output = output.map_err(|message| {
                 let retryable = !cancellation.is_cancelled() && retryable_transport_error(&message);
                 self.record_error(OpenRouterErrorReport {
@@ -394,26 +370,12 @@ impl OpenRouterProvider {
             if cancellation.is_cancelled() {
                 return None;
             }
-            let config_path = write_curl_config(&self.config.api_key).ok()?;
-            let mut command = Command::new("curl");
-            command
-                .arg("--silent")
-                .arg("--show-error")
-                .arg("--connect-timeout")
-                .arg("10")
-                .arg("--max-time")
-                .arg("15")
-                .arg("--get")
-                .arg(GENERATION_URL)
-                .arg("--data-urlencode")
-                .arg(format!("id={generation_id}"))
-                .arg("--config")
-                .arg(&config_path)
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin");
-            let output = run_curl(&mut command, &[], cancellation, self.config.stall_timeout);
-            let _ = fs::remove_file(&config_path);
-            if let Ok(output) = output {
+            let request = Request::get(GENERATION_URL, std::time::Duration::from_secs(15))
+                .query("id", generation_id)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .with_stall_timeout(self.config.stall_timeout);
+            if let Ok(output) = run_ureq(request, cancellation) {
                 if let Some(cost) = parse_generation_cost(&output.body, usage) {
                     return Some(cost);
                 }
@@ -857,16 +819,12 @@ data: [DONE]
     }
 
     #[test]
-    fn cancellation_kills_and_reaps_direct_transport_child() {
+    fn cancellation_is_rejected_before_native_request() {
         let cancellation = CancellationToken::new();
-        let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30"]);
         cancellation.cancel();
-        let result = run_curl(
-            &mut command,
-            b"",
+        let result = run_ureq(
+            Request::get("http://127.0.0.1:1", std::time::Duration::from_secs(1)),
             &cancellation,
-            std::time::Duration::from_secs(1),
         );
         assert_eq!(result.unwrap_err(), "OpenRouter HTTP transport cancelled");
     }

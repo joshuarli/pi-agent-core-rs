@@ -8,8 +8,8 @@
 mod config;
 mod payload;
 mod response;
-mod transport;
 
+use super::http::{send, Request};
 use super::retry::{retry_with_backoff, wait_with_cancellation, RetryableError};
 use crate::json::{json_value, to_bytes, JsonValue};
 use crate::scheduler::{
@@ -22,7 +22,6 @@ pub use config::{
     CommandCodeHostContext, CommandCodePermissionMode,
 };
 use std::fmt;
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 // Command Code's installed 1.24.0 client sends this exact gateway version. Keep this wire
@@ -33,12 +32,13 @@ use payload::{commandcode_messages, reasoning_effort};
 use response::{
     add_usage, is_retryable_response_error, parse_ndjson_response, ParsedCommandCodeResponse,
 };
-use transport::{run_curl, API_URL};
+
+const API_URL: &str = "https://api.commandcode.ai/alpha/generate";
 
 /// Command Code implementation of the generic [`ModelProvider`] port.
 ///
 /// This adapter deliberately returns a finite stream after collecting the gateway's NDJSON
-/// response through `curl`. Its parser preserves the gateway event grammar and rejects a
+/// response through the shared rustls-backed HTTP boundary. Its parser preserves the gateway event grammar and rejects a
 /// missing terminal event; it does not make an executor, transport, or credential-discovery
 /// mechanism a default core dependency.
 pub struct CommandCodeProvider {
@@ -276,31 +276,30 @@ impl CommandCodeProvider {
         cancellation: &CancellationToken,
     ) -> Result<Vec<u8>, String> {
         retry_with_backoff(self.config.retry_policy, cancellation, || {
-            let mut command = Command::new("curl");
-            command
-                .arg("--silent")
-                .arg("--show-error")
-                .arg("--no-buffer")
-                .arg("--connect-timeout")
-                .arg("10")
-                .arg("--max-time")
-                .arg("60")
-                .arg("--request")
-                .arg("POST")
-                .arg(API_URL);
+            let mut request = Request::post(
+                API_URL,
+                payload.to_vec(),
+                std::time::Duration::from_secs(60),
+            );
             for header in self.request_headers() {
-                command.arg("--header").arg(header);
+                let (name, value) = header
+                    .split_once(": ")
+                    .expect("Command Code headers use `name: value` spelling");
+                request = request.header(name, value);
             }
-            command
-                .arg("--data-binary")
-                .arg("@-")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            run_curl(&mut command, payload, cancellation).map_err(|message| RetryableError {
-                retryable: !cancellation.is_cancelled(),
-                message,
-            })
+            send(request, cancellation)
+                .map(|response| response.body)
+                .map_err(|failure| RetryableError {
+                    retryable: !cancellation.is_cancelled(),
+                    message: if cancellation.is_cancelled() {
+                        "Command Code request cancelled".to_owned()
+                    } else {
+                        format!(
+                            "Command Code HTTP transport failed before a provider response: {}",
+                            failure.message
+                        )
+                    },
+                })
         })
     }
 

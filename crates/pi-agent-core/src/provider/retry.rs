@@ -80,16 +80,6 @@ pub(crate) struct RetryableError {
     pub(crate) retryable: bool,
 }
 
-impl RetryableError {
-    #[cfg(feature = "provider-openrouter")]
-    pub(crate) fn permanent(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            retryable: false,
-        }
-    }
-}
-
 /// Run a replay-safe operation with bounded exponential backoff.
 pub(crate) fn retry_with_backoff<T, F>(
     policy: RetryPolicy,
@@ -173,7 +163,10 @@ mod tests {
         let mut attempts = 0;
         let result: Result<(), _> = retry_with_backoff(policy, &cancellation, || {
             attempts += 1;
-            Err(RetryableError::permanent("invalid request"))
+            Err(RetryableError {
+                message: "invalid request".into(),
+                retryable: false,
+            })
         });
         assert_eq!(result, Err("invalid request".into()));
         assert_eq!(attempts, 1);

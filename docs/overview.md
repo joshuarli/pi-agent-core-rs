@@ -60,6 +60,8 @@ downstream optional layers.
   — exact behavioral fixtures and verification evidence.
 - [Default coding profile](default-coding-profile.md) — captured prompt, tools,
   operation adapters, and update procedure.
+- [HTTP/2 boundary](../HTTP2.md) — transport-version evidence and the future
+  H2 adapter contract.
 - [Verification](verification.md) — required checks and completed V0 evidence.
 - [Quality evaluation](quality-evaluation.md) — deterministic trace parity,
   three pinned Express tasks, replay artifacts, and resource diagnostics.

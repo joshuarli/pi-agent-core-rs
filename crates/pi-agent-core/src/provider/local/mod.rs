@@ -2,28 +2,24 @@
 //!
 //! This adapter is intentionally transport-specific but server-agnostic: the caller supplies a
 //! base URL and model, and the adapter sends one finite `chat/completions` request through the
-//! local `curl` binary. It does not discover a server, read credentials, inspect the home
+//! shared rustls-backed HTTP boundary. It does not discover a server, read credentials, inspect the home
 //! directory, or select a model from the environment. oMLX is the first supported local server;
 //! its Laguna XS 2.1 endpoint is represented by [`LocalConfig::laguna_xs_2_1`].
 
 mod config;
 mod payload;
 mod response;
-mod transport;
 
+use super::http::{send, Request};
 pub use config::{LocalConfig, LocalConfigError};
 use payload::{cancelled_stream, local_payload};
 use response::parse_local_response;
-use transport::{process_capture_file, split_curl_status, wait_for_child_or_cancellation};
 
 use crate::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use crate::state::Usage;
 use std::fmt;
-use std::fs;
-use std::io::Write;
-use std::process::{Command, Stdio};
 
 /// The model ID exposed by the documented 5-bit Laguna checkpoint.
 pub const LAGUNA_XS_2_1_MODEL: &str = "Laguna-XS-2.1-5bit";
@@ -94,73 +90,26 @@ impl LocalProvider {
             ));
         }
         let payload = local_payload(&self.config, request)?;
-        let (stdout_path, stdout) = process_capture_file("stdout")?;
-        let (stderr_path, stderr) = match process_capture_file("stderr") {
-            Ok(capture) => capture,
-            Err(error) => {
-                let _ = fs::remove_file(&stdout_path);
-                return Err(error);
-            }
-        };
         let endpoint = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let output: Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> = (|| {
-            let timeout = self.config.request_timeout.as_secs().max(1).to_string();
-            let mut child = Command::new("/usr/bin/curl")
-                .args([
-                    "--silent",
-                    "--show-error",
-                    "--connect-timeout",
-                    "10",
-                    "--max-time",
-                    timeout.as_str(),
-                    "--header",
-                    "Content-Type: application/json",
-                    "--request",
-                    "POST",
-                    "--data-binary",
-                    "@-",
-                    "--write-out",
-                    "\n%{http_code}",
-                    endpoint.as_str(),
-                ])
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(stderr))
-                .spawn()
-                .map_err(|error| format!("could not start local transport: {error}"))?;
-            child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| "local transport did not expose request stdin".to_owned())?
-                .write_all(payload.as_bytes())
-                .map_err(|error| format!("could not write local request: {error}"))?;
-            drop(child.stdin.take());
-            let status = wait_for_child_or_cancellation(&mut child, cancellation)?;
-            let stdout = fs::read(&stdout_path)
-                .map_err(|error| format!("cannot read local response capture: {error}"))?;
-            let stderr = fs::read(&stderr_path)
-                .map_err(|error| format!("cannot read local error capture: {error}"))?;
-            Ok((status, stdout, stderr))
-        })();
-        let _ = fs::remove_file(&stdout_path);
-        let _ = fs::remove_file(&stderr_path);
-        let (status, stdout, stderr) = output?;
-        if cancellation.is_cancelled() {
-            return Err("local transport cancelled".to_owned());
-        }
-        if !status.success() {
-            return Err(format!(
-                "local transport failed before a provider response: {}",
-                String::from_utf8_lossy(&stderr).trim()
-            ));
-        }
-        let (body, status) = split_curl_status(&stdout)?;
-        parse_local_response(body, status)
+        let response = send(
+            Request::post(endpoint, payload.into_bytes(), self.config.request_timeout)
+                .header("Content-Type", "application/json"),
+            cancellation,
+        )
+        .map_err(|failure| {
+            if cancellation.is_cancelled() || failure.message == "HTTP request cancelled" {
+                "local transport cancelled".to_owned()
+            } else {
+                format!(
+                    "local transport failed before a provider response: {}",
+                    failure.message
+                )
+            }
+        })?;
+        parse_local_response(&response.body, response.status_code)
     }
 }
 
@@ -248,12 +197,12 @@ mod tests {
             let content_length = headers
                 .lines()
                 .find_map(|line| {
-                    line.strip_prefix("Content-Length:")?
-                        .trim()
-                        .parse::<usize>()
-                        .ok()
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
                 })
-                .expect("curl should send a content length");
+                .expect("native HTTP client should send a content length");
             while request.len() < body_start + content_length {
                 let read = stream.read(&mut buffer).expect("mock body should read");
                 assert!(read > 0, "mock client closed before body");
