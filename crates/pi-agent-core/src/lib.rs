@@ -14,6 +14,7 @@ pub mod default_tools;
 pub mod error;
 pub mod event;
 pub mod hooks;
+pub mod measurement;
 #[cfg(any(
     feature = "eval-runner",
     feature = "provider-commandcode",
@@ -43,7 +44,8 @@ pub use agent::{
 pub use compaction::{
     AutomaticCompactionPolicy, AutomaticCompactionReason, AutomaticCompactionRequest,
     CompactionContext, CompactionError, CompactionFuture, CompactionHandle, CompactionResult,
-    Compactor, ContextBudgetSource, OverflowRecovery, COMPACTION_CONTEXT_VERSION,
+    Compactor, ContextBudgetSource, OverflowRecovery, ProviderContext,
+    COMPACTION_CONTEXT_VERSION,
 };
 pub use default_tools::{
     CodingOperations, DefaultCodingTools, LocalCodingOperations, WorkspaceRoot,
@@ -54,6 +56,7 @@ pub use event::{
     EventObserver, EventSequence, ObserverFuture, ProviderRequestSkipReason,
 };
 pub use hooks::AgentLoopTurnUpdate;
+pub use measurement::{measure_prompt_cacheability, PromptCacheMeasurement};
 pub use run::RunHandle;
 pub use state::{
     AgentMessage, AgentSnapshot, AgentToolCall, Message, MessageId, ModelAccountingSnapshot,

@@ -3,7 +3,7 @@ use super::state::ContextEstimate;
 use super::*;
 use pi_agent_core::compaction::{
     AutomaticCompactionReason, AutomaticCompactionRequest, CompactionContext, Compactor,
-    OverflowRecovery,
+    OverflowRecovery, ProviderContext,
 };
 use pi_agent_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
@@ -14,7 +14,7 @@ use pi_agent_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, Thinki
 use std::ffi::OsString;
 use std::num::NonZeroU64;
 use std::sync::mpsc::sync_channel;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 struct ContextCheckingProvider;
@@ -22,6 +22,38 @@ struct ContextCheckingProvider;
 #[derive(Debug)]
 struct SummaryProvider {
     expected_model: ModelDescriptor,
+}
+
+#[derive(Debug, Clone)]
+struct RecordingSummaryProvider {
+    expected_model: ModelDescriptor,
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl ModelProvider for RecordingSummaryProvider {
+    fn stream<'a>(
+        &'a self,
+        request: ModelRequest,
+        _cancellation: CancellationToken,
+    ) -> ModelFuture<'a> {
+        self.requests
+            .lock()
+            .expect("summary request mutex poisoned")
+            .push(request.clone());
+        let events = if request.model.as_ref() == Some(&self.expected_model) {
+            vec![
+                ModelStreamEvent::TextDelta("updated summary".into()),
+                ModelStreamEvent::End(pi_agent_core::state::StopReason::EndTurn),
+            ]
+        } else {
+            vec![ModelStreamEvent::Error {
+                message: "summary request used the wrong model".into(),
+            }]
+        };
+        Box::pin(std::future::ready(
+            Ok(Box::new(ModelStream { events }) as _),
+        ))
+    }
 }
 
 impl ModelProvider for SummaryProvider {
@@ -401,6 +433,7 @@ fn local_compactor_summarizes_and_preserves_the_core_retained_suffix() {
                     model: Some(model),
                     messages: vec![prefix, retained.clone()],
                     host_messages: Vec::new(),
+                    provider_context: None,
                 },
                 request,
                 CancellationToken::new(),
@@ -413,6 +446,149 @@ fn local_compactor_summarizes_and_preserves_the_core_retained_suffix() {
             Message::User { content, .. } if content.contains("summary text")
         ));
         assert_eq!(result.messages[1], retained);
+    });
+}
+
+#[test]
+fn cache_friendly_compaction_appends_one_instruction_to_an_exact_source_prefix() {
+    smol::block_on(async {
+        let model = ModelDescriptor {
+            provider: "local".into(),
+            model: pi_agent_core::provider::local::LAGUNA_XS_2_1_MODEL.into(),
+            revision: None,
+        };
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let compactor = ProviderCompactor::default();
+        compactor.configure(
+            model.clone(),
+            Arc::new(RecordingSummaryProvider {
+                expected_model: model.clone(),
+                requests: Arc::clone(&requests),
+            }),
+        );
+        let source = r#"[{"content":"old work","role":"user"}]"#;
+        let active = r#"[{"content":"old work","role":"user"},{"content":"retained","role":"assistant"}]"#;
+        let result = compactor
+            .compact_automatic(
+                CompactionContext {
+                    version: pi_agent_core::COMPACTION_CONTEXT_VERSION,
+                    system_prompt: "unused standalone prompt".into(),
+                    model: Some(model),
+                    messages: vec![Message::User {
+                        id: MessageId(1),
+                        content: "old work".into(),
+                    }],
+                    host_messages: Vec::new(),
+                    provider_context: Some(ProviderContext {
+                        system_prompt: "active system".into(),
+                        context: source.into(),
+                        active_context: Some(active.into()),
+                        tools: Vec::new(),
+                    }),
+                },
+                AutomaticCompactionRequest {
+                    reason: AutomaticCompactionReason::Threshold,
+                    estimated_tokens_before: Some(30_000),
+                    context_budget_tokens: 100_000,
+                    reserved_tokens: 1_000,
+                    recent_tokens: 20_000,
+                    prefix_messages: vec![Message::User {
+                        id: MessageId(1),
+                        content: "old work".into(),
+                    }],
+                    retained_messages: Vec::new(),
+                    split_turn_prefix: Vec::new(),
+                    retry_provider_request: false,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("cache-friendly compaction succeeds");
+        assert!(matches!(
+            &result.messages[0],
+            Message::User { content, .. } if content.contains("updated summary")
+        ));
+        let requests = requests.lock().expect("summary request mutex poisoned");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].system_prompt, "active system");
+        let converted = pi_agent_protocol::JsonValue::parse(&requests[0].context)
+            .expect("summary context is JSON");
+        let pi_agent_protocol::JsonValue::Array(messages) = converted else {
+            panic!("summary context is not a message array")
+        };
+        assert_eq!(messages.len(), 2);
+        assert!(messages[1]
+            .get("content")
+            .and_then(pi_agent_protocol::JsonValue::as_str)
+            .is_some_and(|content| content.contains("Update the existing compacted summary")));
+    });
+}
+
+#[test]
+fn cache_friendly_compaction_falls_back_when_a_transform_breaks_the_prefix() {
+    smol::block_on(async {
+        let model = ModelDescriptor {
+            provider: "local".into(),
+            model: pi_agent_core::provider::local::LAGUNA_XS_2_1_MODEL.into(),
+            revision: None,
+        };
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let compactor = ProviderCompactor::default();
+        compactor.configure(
+            model.clone(),
+            Arc::new(RecordingSummaryProvider {
+                expected_model: model.clone(),
+                requests: Arc::clone(&requests),
+            }),
+        );
+        let result = compactor
+            .compact_automatic(
+                CompactionContext {
+                    version: pi_agent_core::COMPACTION_CONTEXT_VERSION,
+                    system_prompt: "standalone".into(),
+                    model: Some(model),
+                    messages: vec![Message::User {
+                        id: MessageId(1),
+                        content: "old work".into(),
+                    }],
+                    host_messages: Vec::new(),
+                    provider_context: Some(ProviderContext {
+                        system_prompt: "active system".into(),
+                        context: r#"[{"content":"old work","role":"user"}]"#.into(),
+                        active_context: Some(
+                            r#"[{"content":"injected metadata","role":"user"},{"content":"old work","role":"user"}]"#.into(),
+                        ),
+                        tools: Vec::new(),
+                    }),
+                },
+                AutomaticCompactionRequest {
+                    reason: AutomaticCompactionReason::Threshold,
+                    estimated_tokens_before: Some(30_000),
+                    context_budget_tokens: 100_000,
+                    reserved_tokens: 1_000,
+                    recent_tokens: 20_000,
+                    prefix_messages: vec![Message::User {
+                        id: MessageId(1),
+                        content: "old work".into(),
+                    }],
+                    retained_messages: Vec::new(),
+                    split_turn_prefix: Vec::new(),
+                    retry_provider_request: false,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("standalone fallback succeeds");
+        assert!(matches!(
+            &result.messages[0],
+            Message::User { content, .. } if content.contains("updated summary")
+        ));
+        let requests = requests.lock().expect("summary request mutex poisoned");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .system_prompt
+            .contains("You compact coding-agent conversation history"));
+        assert!(!requests[0].system_prompt.contains("active system"));
     });
 }
 

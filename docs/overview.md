@@ -63,6 +63,8 @@ downstream optional layers.
 - [HTTP/2 boundary](../HTTP2.md) — transport-version evidence and the future
   H2 adapter contract.
 - [Verification](verification.md) — required checks and completed V0 evidence.
+- [Prompt cache-friendliness](cache-friendliness.md) — deterministic prefix measurements and
+  compaction cache discipline.
 - [Quality evaluation](quality-evaluation.md) — deterministic trace parity,
   three pinned Express tasks, replay artifacts, and resource diagnostics.
 - [Tracing](trace.md) — optional trajectory observer boundary.

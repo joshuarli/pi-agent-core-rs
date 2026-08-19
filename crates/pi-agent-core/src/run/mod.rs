@@ -708,24 +708,42 @@ impl RunHandle {
                 self.configuration.tools.definitions(),
             )
         };
+        let provider_context = self
+            .build_provider_context(agent, context)
+            .await?;
+        Ok(ModelRequest {
+            system_prompt,
+            context: provider_context.context,
+            tools,
+            model,
+            thinking_level,
+        })
+    }
+
+    /// Build the exact provider-facing prompt used by a request or by an automatic compactor.
+    /// Keeping this pipeline in one helper prevents compaction from silently skipping model
+    /// projection or host context transforms.
+    async fn build_provider_context(
+        &self,
+        agent: &AgentInner,
+        context: crate::hooks::ContextEnvelope,
+    ) -> Result<crate::compaction::ProviderContext, CoreError> {
         let projected_context = project_model_context(context, &agent.tool_result_projection);
         let transformed = self
             .configuration
             .hooks
             .transform_context_async(projected_context, self.cancellation.clone())
             .await?;
-        let request = ModelRequest {
-            system_prompt,
+        Ok(crate::compaction::ProviderContext {
+            system_prompt: self.configuration.system_prompt.clone(),
             context: self
                 .configuration
                 .hooks
                 .convert_to_llm_async(transformed, self.cancellation.clone())
                 .await?,
-            tools,
-            model,
-            thinking_level,
-        };
-        Ok(request)
+            tools: self.configuration.tools.definitions(),
+            active_context: None,
+        })
     }
 
     /// Compact at the next-request boundary when the explicit automatic
@@ -827,9 +845,73 @@ impl RunHandle {
             return Err(CoreError::AutomaticCompactionUnavailable { reason });
         };
 
-        let context = crate::compaction::snapshot_context(agent);
+        let mut context = crate::compaction::snapshot_context(agent);
         let (prefix_messages, retained_messages, split_turn_prefix) =
             automatic_compaction_split(&context.messages, policy.recent_tokens);
+        let mut source_messages = prefix_messages.clone();
+        source_messages.extend(split_turn_prefix.iter().cloned());
+        let provider_context = async {
+            let source_provider_context = self
+                .build_provider_context(
+                    agent,
+                    crate::hooks::ContextEnvelope {
+                        version: context.version as u16,
+                        messages: source_messages,
+                        host_messages: context.host_messages.clone(),
+                    },
+                )
+                .await?;
+            let active_provider_context = self
+                .build_provider_context(
+                    agent,
+                    crate::hooks::ContextEnvelope {
+                        version: context.version as u16,
+                        messages: context.messages.clone(),
+                        host_messages: context.host_messages.clone(),
+                    },
+                )
+                .await?;
+            Ok::<_, CoreError>(crate::compaction::ProviderContext {
+                active_context: Some(active_provider_context.context),
+                ..source_provider_context
+            })
+        }
+        .await;
+        let provider_context = match provider_context {
+            Ok(provider_context) => provider_context,
+            Err(error) => {
+                if self.cancellation.is_cancelled() {
+                    self.policy
+                        .lock()
+                        .expect("run policy mutex poisoned")
+                        .compaction_cancelled = true;
+                    self.emit(
+                        agent,
+                        AgentEventKind::AutomaticCompactionEnd {
+                            reason,
+                            retry_provider_request,
+                            outcome: AutomaticCompactionOutcome::Cancelled,
+                        },
+                    )
+                    .await?;
+                    return Err(CoreError::Cancelled);
+                }
+                let message = crate::tool::truncate_middle(&error.to_string(), 1024);
+                self.emit(
+                    agent,
+                    AgentEventKind::AutomaticCompactionEnd {
+                        reason,
+                        retry_provider_request,
+                        outcome: AutomaticCompactionOutcome::Failed {
+                            message: message.clone(),
+                        },
+                    },
+                )
+                .await?;
+                return Err(CoreError::AutomaticCompaction { reason, message });
+            }
+        };
+        context.provider_context = Some(provider_context);
         let request = crate::compaction::AutomaticCompactionRequest {
             reason,
             estimated_tokens_before: Some(estimated_tokens_before),

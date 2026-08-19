@@ -13,6 +13,7 @@ use crate::scheduler::CancellationToken;
 use crate::state::{
     AgentMessage, AgentPhase, MessageId, ModelDescriptor, RunPhase, RunState, StopReason,
 };
+use crate::tool::ToolDefinition;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
@@ -172,7 +173,7 @@ pub struct AutomaticCompactionRequest {
 /// It contains only data retained by the core. The selected model remains
 /// informational: choosing or replacing a provider is a separate idle-only
 /// operation on [`Agent`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CompactionContext {
     /// Version of this request shape.
     pub version: u32,
@@ -184,6 +185,29 @@ pub struct CompactionContext {
     pub messages: Vec<AgentMessage>,
     /// Explicit host-only context retained beside the conversation.
     pub host_messages: Vec<crate::state::SerializedJson>,
+    /// Provider-visible context built through the active projection and hook pipeline when the
+    /// compaction was requested from a running model turn. `None` means the compactor must use
+    /// the standalone summary path; idle manual compaction intentionally has no request snapshot.
+    pub provider_context: Option<ProviderContext>,
+}
+
+/// The provider-visible prompt snapshot available to an automatic compactor.
+///
+/// `context` is intentionally opaque: the core does not impose a provider message schema. A
+/// host that understands its own conversion (for example the TUI's OpenAI-compatible adapter)
+/// may append a single summary instruction while preserving the exact preceding context bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderContext {
+    /// System instructions used for the active request.
+    pub system_prompt: String,
+    /// Converted provider conversation/context.
+    pub context: String,
+    /// Complete active provider context used to verify that `context` is an exact message-prefix.
+    /// Hosts that understand the conversion can reject cache-friendly summarization when a
+    /// transform reordered or injected content into the candidate source.
+    pub active_context: Option<String>,
+    /// Ordered prompt-facing tool definitions used for the active request.
+    pub tools: Vec<ToolDefinition>,
 }
 
 /// A validated-on-return proposal from a [`Compactor`].
@@ -545,6 +569,7 @@ pub(crate) fn snapshot_context(agent: &AgentInner) -> CompactionContext {
         model: state.model.clone(),
         messages: state.messages.clone(),
         host_messages: state.host_messages.clone(),
+        provider_context: None,
     }
 }
 

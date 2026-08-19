@@ -33,6 +33,10 @@ authorization. Its hermetic adapter, cache procedure, full validator, replay,
 and resource interpretation are documented in
 [`evals/quality/README.md`](../evals/quality/README.md).
 
+For prompt-cacheability and compaction-prefix evidence, run the deterministic fixture described
+in [`docs/cache-friendliness.md`](cache-friendliness.md). Its common-prefix values are a proxy;
+provider-reported cache usage remains the authoritative hit/write measurement.
+
 ## Completion evidence
 
 - The parity corpus runs the Rust runner against checked-in canonical goldens.

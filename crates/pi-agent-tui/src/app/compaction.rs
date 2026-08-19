@@ -7,13 +7,14 @@
 
 use pi_agent_core::compaction::{
     AutomaticCompactionRequest, CompactionContext, CompactionError, CompactionFuture,
-    CompactionResult, Compactor,
+    CompactionResult, Compactor, ProviderContext,
 };
 use pi_agent_core::hooks::{ContextEnvelope, HookSet};
 use pi_agent_core::provider::openai::OpenAiContextHook;
 use pi_agent_core::scheduler::{CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent};
 use pi_agent_core::state::{AgentMessage, MessageId, ModelDescriptor, StopReason, ThinkingLevel};
 use pi_agent_core::Usage;
+use pi_agent_protocol::JsonValue;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -52,6 +53,11 @@ Be concise, preserve exact file paths and identifiers, and do not omit unresolve
 const SUMMARY_PREFIX: &str =
     "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const SUMMARY_SUFFIX: &str = "\n</summary>";
+const UPDATE_SUMMARIZATION_INSTRUCTIONS: &str = r#"Update the existing compacted summary using the conversation above.
+Preserve all durable facts needed to continue the work, including exact paths, symbols, errors,
+constraints, unresolved work, and the next concrete actions. Return only the updated summary using
+the same Markdown sections as the system instructions; do not call tools."#;
+const CACHE_FRIENDLY_CONTEXT_SAFETY_MARGIN: u64 = 4_096;
 
 /// A compactor whose provider/model pair follows the TUI's idle model selection.
 pub(super) struct ProviderCompactor {
@@ -129,8 +135,14 @@ impl Compactor for ProviderCompactor {
             if context.messages.is_empty() {
                 return Ok(CompactionResult::new(Vec::new()));
             }
-            let (summary, usage) =
-                summarize(provider, model, context.messages.clone(), cancellation).await?;
+            let (summary, usage) = summarize(
+                provider,
+                model,
+                context.messages.clone(),
+                None,
+                cancellation,
+            )
+            .await?;
             let replacement = vec![summary_message(&context.messages, summary)];
             Ok(match usage {
                 Some(usage) => CompactionResult::new(replacement).with_usage(usage),
@@ -148,13 +160,23 @@ impl Compactor for ProviderCompactor {
         let configured = self.configured(&context);
         Box::pin(async move {
             let (provider, model) = configured?;
+            let source_context = context
+                .provider_context
+                .as_ref()
+                .filter(|source| source_context_fits(source, &request));
             let mut messages_to_summarize = request.prefix_messages;
             messages_to_summarize.extend(request.split_turn_prefix);
             if messages_to_summarize.is_empty() {
                 return Ok(CompactionResult::new(request.retained_messages));
             }
-            let (summary, usage) =
-                summarize(provider, model, messages_to_summarize.clone(), cancellation).await?;
+            let (summary, usage) = summarize(
+                provider,
+                model,
+                messages_to_summarize.clone(),
+                source_context,
+                cancellation,
+            )
+            .await?;
             let retained_messages = request.retained_messages;
             let mut all_messages = messages_to_summarize;
             all_messages.extend(retained_messages.iter().cloned());
@@ -195,19 +217,29 @@ async fn summarize(
     provider: Arc<dyn ModelProvider>,
     model: ModelDescriptor,
     messages: Vec<AgentMessage>,
+    source_context: Option<&ProviderContext>,
     cancellation: CancellationToken,
 ) -> Result<(String, Option<Usage>), CompactionError> {
-    let context = OpenAiContextHook
-        .convert_to_llm(ContextEnvelope {
-            version: 1,
-            messages,
-            host_messages: Vec::new(),
-        })
-        .map_err(|error| CompactionError::failed(error.to_string()))?;
+    let (system_prompt, context, tools) = if let Some(source) = source_context {
+        (
+            source.system_prompt.clone(),
+            append_update_instruction(&source.context)?,
+            source.tools.clone(),
+        )
+    } else {
+        let context = OpenAiContextHook
+            .convert_to_llm(ContextEnvelope {
+                version: 1,
+                messages,
+                host_messages: Vec::new(),
+            })
+            .map_err(|error| CompactionError::failed(error.to_string()))?;
+        (SUMMARY_SYSTEM_PROMPT.into(), context, Vec::new())
+    };
     let request = ModelRequest {
-        system_prompt: SUMMARY_SYSTEM_PROMPT.into(),
+        system_prompt,
         context,
-        tools: Vec::new(),
+        tools,
         model: Some(model),
         thinking_level: ThinkingLevel::Off,
     };
@@ -257,4 +289,66 @@ async fn summarize(
         ));
     }
     Ok((summary, usage))
+}
+
+fn source_context_fits(
+    source: &ProviderContext,
+    request: &AutomaticCompactionRequest,
+) -> bool {
+    if let Some(active_context) = &source.active_context {
+        if !is_exact_message_prefix(&source.context, active_context) {
+            return false;
+        }
+    }
+    let tool_bytes = source
+        .tools
+        .iter()
+        .map(|tool| {
+            tool.schema
+                .to_json_string()
+                .map_or(0, |schema| schema.len())
+                .saturating_add(tool.name.len())
+                .saturating_add(tool.description.len())
+        })
+        .sum::<usize>();
+    let source_bytes = source
+        .system_prompt
+        .len()
+        .saturating_add(source.context.len())
+        .saturating_add(tool_bytes);
+    let source_tokens = (source_bytes as u64).saturating_add(3) / 4;
+    source_tokens
+        .saturating_add(request.reserved_tokens)
+        .saturating_add(CACHE_FRIENDLY_CONTEXT_SAFETY_MARGIN)
+        <= request.context_budget_tokens
+}
+
+fn is_exact_message_prefix(source: &str, active: &str) -> bool {
+    let Ok(JsonValue::Array(source_messages)) = JsonValue::parse(source) else {
+        return false;
+    };
+    let Ok(JsonValue::Array(active_messages)) = JsonValue::parse(active) else {
+        return false;
+    };
+    active_messages.starts_with(&source_messages)
+}
+
+fn append_update_instruction(context: &str) -> Result<String, CompactionError> {
+    let mut value = JsonValue::parse(context)
+        .map_err(|error| CompactionError::failed(format!("active provider context is not JSON: {error}")))?;
+    let JsonValue::Array(messages) = &mut value else {
+        return Err(CompactionError::failed(
+            "active provider context is not a message array",
+        ));
+    };
+    messages.push(JsonValue::object([
+        ("role", JsonValue::from("user")),
+        (
+            "content",
+            JsonValue::from(UPDATE_SUMMARIZATION_INSTRUCTIONS),
+        ),
+    ]));
+    value
+        .to_json_string()
+        .map_err(|error| CompactionError::failed(error.to_string()))
 }
