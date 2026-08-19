@@ -93,6 +93,8 @@ fn cli_parses_one_shot_prompt_and_thinking_level() {
             "openrouter",
             "--model",
             "poolside/laguna-xs-2.1:free",
+            "--local-base-url",
+            "http://127.0.0.1:12345/v1",
             "--thinking",
             "high",
             "-p",
@@ -107,6 +109,10 @@ fn cli_parses_one_shot_prompt_and_thinking_level() {
     assert_eq!(
         options.model(),
         Some(std::ffi::OsStr::new("poolside/laguna-xs-2.1:free"))
+    );
+    assert_eq!(
+        options.local_base_url(),
+        Some(std::ffi::OsStr::new("http://127.0.0.1:12345/v1"))
     );
     assert_eq!(options.prompt(), Some(std::ffi::OsStr::new("say hi")));
     assert_eq!(options.thinking_level(), ThinkingLevel::High);
@@ -397,6 +403,62 @@ fn headless_host_agent_sends_openai_compatible_context() {
             .await
             .expect("headless host request should be valid JSON");
     });
+}
+
+#[test]
+fn local_provider_is_selectable_without_a_credential() {
+    assert_eq!(super::host::missing_credential("local"), None);
+
+    let workspace = std::env::current_dir().expect("test workspace");
+    let tools = DefaultCodingTools::new(workspace).expect("default tools");
+    let agent = build_host_agent(tools)
+        .expect("host agent builder")
+        .build();
+    let mut app = App::new(CliOptions::default());
+    app.attach_agent(agent);
+
+    app.select_model(
+        "local".into(),
+        pi_agent_core::provider::local::LAGUNA_XS_2_1_MODEL.into(),
+    )
+    .expect("local provider should configure without a key");
+
+    assert_eq!(
+        app.state().selected_model.as_ref().map(|model| (
+            model.provider.as_str(),
+            model.model.as_str(),
+        )),
+        Some(("local", "Laguna-XS-2.1-5bit"))
+    );
+    assert!(app.agent().expect("attached agent").has_model_provider());
+}
+
+#[test]
+fn local_provider_accepts_an_explicit_api_root() {
+    let workspace = std::env::current_dir().expect("test workspace");
+    let tools = DefaultCodingTools::new(workspace).expect("default tools");
+    let agent = build_host_agent(tools).expect("host agent builder").build();
+    let options = CliOptions::parse(
+        [
+            "pi-agent",
+            "--provider",
+            "local",
+            "--model",
+            "Qwen3.5-4B-MLX-4bit",
+            "--local-base-url",
+            "http://127.0.0.1:12345/v1",
+        ]
+        .map(OsString::from),
+    )
+    .expect("local endpoint options parse");
+    let mut app = App::new(options);
+    app.attach_agent(agent);
+    app.select_model("local".into(), "Qwen3.5-4B-MLX-4bit".into())
+        .expect("local provider should accept explicit endpoint");
+    assert_eq!(
+        app.options().local_base_url(),
+        Some(std::ffi::OsStr::new("http://127.0.0.1:12345/v1"))
+    );
 }
 
 #[test]

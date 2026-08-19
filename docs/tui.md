@@ -38,7 +38,7 @@ picker is a temporary overlay.
 The command line is deliberately narrow:
 
 ```text
-pi-agent [--provider <id>] [--model <id>] [--cwd <path>]
+pi-agent [--provider <id>] [--model <id>] [--local-base-url <url>] [--cwd <path>]
 pi-agent [-h | --help]
 pi-agent --provider <id> --model <id> [--thinking <level>] -p <message>
 ```
@@ -72,6 +72,38 @@ make tui-smoke
 Provider failures are returned as a non-zero process result with their local
 error classification, which makes this a useful first check before debugging
 terminal rendering or input handling.
+
+The TUI also compiles the credential-free `local` provider for an oMLX server.
+Select it explicitly with `--provider local`; the default model is
+`Laguna-XS-2.1-5bit` and the default endpoint is
+`http://127.0.0.1:8000/v1`:
+
+```bash
+cargo run -p pi-agent-tui --bin pi-agent -- --provider local --model Laguna-XS-2.1-5bit
+```
+
+For a nonstandard oMLX port, pass `--local-base-url`, for example
+`http://127.0.0.1:12345/v1`. The repository `make local` target uses this
+explicit endpoint option.
+
+To download the configured Qwen3.5 4B MLX checkpoint, idempotently start oMLX
+on port 12345, and launch the TUI against it, run:
+
+```bash
+make local
+```
+
+The target bootstraps `~/d/omlx/.venv` and installs the checkout in editable
+mode with `uv` before downloading the model, so the first run does not require
+a separate Python setup. Repeating the command safely reuses that environment.
+
+Use `make local LOCAL_PI_ARGS="-p 'say hi'"` for a one-shot smoke test. The
+target uses the working `hf` downloader shipped in the oMLX virtual environment;
+newer `huggingface-cli` wrappers may only emit a deprecation error.
+
+The adapter is configured without an API key or environment lookup. The command
+will fail at the provider boundary until the local server is running; that is an
+expected live-integration prerequisite, not a TUI setup failure.
 
 The registry is checked-in, feature-selected Rust data. It exposes stable
 provider/model identifiers, optional source-backed context capacity, explicit

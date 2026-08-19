@@ -43,6 +43,9 @@ pub(super) fn missing_credential(provider: &str) -> Option<String> {
     let variable = match provider {
         "openrouter" => "OPENROUTER_API_KEY",
         "command-code" => "COMMANDCODE_API_KEY",
+        // Local OpenAI-compatible servers are reached through an explicit host URL and do not
+        // have a credential boundary in this TUI.
+        "local" => return None,
         _ => return Some("provider is not compiled in".into()),
     };
     std::env::var_os(variable)

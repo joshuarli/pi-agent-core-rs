@@ -22,7 +22,11 @@ pty-harness = ["pi-agent-core/provider-openrouter-test-support"]
 
 [dependencies]
 crossterm = { version = "=0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
-pi-agent-core = { path = "../pi-agent-core", features = ["provider-commandcode", "provider-openrouter"] }
+pi-agent-core = { path = "../pi-agent-core", features = [
+    "provider-commandcode",
+    "provider-openrouter",
+    "provider-local",
+] }
 smol = { workspace = true }
 
 [dev-dependencies]

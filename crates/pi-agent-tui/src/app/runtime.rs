@@ -309,7 +309,7 @@ fn drain_prompt_events(subscription: &LosslessEventSubscription) -> Result<(), A
     Ok(())
 }
 
-fn os_text(value: &OsStr, flag: &str) -> Result<String, AppError> {
+pub(super) fn os_text(value: &OsStr, flag: &str) -> Result<String, AppError> {
     value
         .to_str()
         .map(str::to_owned)

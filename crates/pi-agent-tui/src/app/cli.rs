@@ -8,6 +8,7 @@ use std::path::PathBuf;
 pub struct CliOptions {
     provider: Option<OsString>,
     model: Option<OsString>,
+    local_base_url: Option<OsString>,
     cwd: Option<PathBuf>,
     prompt: Option<OsString>,
     thinking: Option<ThinkingLevel>,
@@ -35,7 +36,7 @@ impl CliOptions {
 
     /// Render the command-line usage text.
     pub const fn help_text() -> &'static str {
-        "Usage: pi-agent [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n"
+        "Usage: pi-agent [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --local-base-url <url>  Set the local provider API root\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n"
     }
 
     /// Borrow the explicitly selected provider, if supplied.
@@ -46,6 +47,11 @@ impl CliOptions {
     /// Borrow the explicitly selected model, if supplied.
     pub fn model(&self) -> Option<&OsStr> {
         self.model.as_deref()
+    }
+
+    /// Borrow the explicit local provider API root, if supplied.
+    pub fn local_base_url(&self) -> Option<&OsStr> {
+        self.local_base_url.as_deref()
     }
 
     /// Borrow the explicit workspace authority, if supplied.
@@ -67,6 +73,7 @@ impl CliOptions {
         let destination = match slot {
             OptionSlot::Provider => &mut self.provider,
             OptionSlot::Model => &mut self.model,
+            OptionSlot::LocalBaseUrl => &mut self.local_base_url,
             OptionSlot::Prompt => &mut self.prompt,
             OptionSlot::Cwd => {
                 if self.cwd.replace(PathBuf::from(value)).is_some() {
@@ -111,6 +118,7 @@ where
             "-h" | "--help" if recognize_help => return Ok(CliCommand::Help),
             "--provider" => OptionSlot::Provider,
             "--model" => OptionSlot::Model,
+            "--local-base-url" => OptionSlot::LocalBaseUrl,
             "--thinking" => OptionSlot::Thinking,
             "-p" | "--prompt" => OptionSlot::Prompt,
             "--cwd" => OptionSlot::Cwd,
@@ -134,6 +142,7 @@ where
 enum OptionSlot {
     Provider,
     Model,
+    LocalBaseUrl,
     Thinking,
     Prompt,
     Cwd,
@@ -144,6 +153,7 @@ impl OptionSlot {
         match self {
             Self::Provider => "--provider",
             Self::Model => "--model",
+            Self::LocalBaseUrl => "--local-base-url",
             Self::Thinking => "--thinking",
             Self::Prompt => "-p/--prompt",
             Self::Cwd => "--cwd",

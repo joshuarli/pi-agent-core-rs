@@ -234,6 +234,22 @@ impl App {
                         .map_err(|error| AppError::Setup(error.to_string()))?,
                 )
             }
+            "local" => {
+                let base_url = self
+                    .options
+                    .local_base_url()
+                    .map(|value| super::runtime::os_text(value, "--local-base-url"))
+                    .transpose()?
+                    .unwrap_or_else(|| {
+                        pi_agent_core::provider::local::DEFAULT_BASE_URL.to_owned()
+                    });
+                let config = pi_agent_core::provider::local::LocalConfig::try_new(
+                    base_url,
+                    model,
+                )
+                .map_err(|error| AppError::Setup(error.to_string()))?;
+                ProviderConfiguration::Local(config)
+            }
             _ => {
                 return Err(AppError::Setup(format!(
                     "provider {provider:?} is not compiled in"
