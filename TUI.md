@@ -274,10 +274,6 @@ Add features that make repeated work pleasant after the live loop is solid.
 
 - Persist and resume **linear** sessions with an explicit, versioned privacy and
   redaction contract; add `/new` and a minimal session picker.
-- Search, copy, new-output markers, and richer scrolling affordances.
-- Better catalog loading, filtering, and recovery affordances around `/model`.
-- Richer accounting history and clearly labelled local estimates only if a
-  pricing source and staleness policy are approved.
 - Full Markdown parsing, syntax highlighting, type-specific tool cards,
   expandable diffs, and richer tool-output presentation.
 
