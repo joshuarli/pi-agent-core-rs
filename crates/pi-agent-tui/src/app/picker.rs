@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::error::AppError;
 use super::host::model_candidates;
 use super::runtime::App;
+use super::session::{SessionRecord, SessionStore};
 use super::state::Picker;
 use super::support::utc_date;
 
@@ -20,6 +21,89 @@ impl App {
             filter: String::new(),
             selected: 0,
         });
+    }
+
+    pub(super) fn open_session_picker(&mut self) -> Result<(), AppError> {
+        if self.agent_is_active() {
+            self.state.notice("session changes require an idle agent");
+            return Ok(());
+        }
+        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref()) else {
+            return Err(AppError::Setup("Phi home is not initialized".into()));
+        };
+        let entries = SessionStore::new(home).for_workspace(workspace).list()?;
+        if entries.is_empty() {
+            self.state.notice("no saved sessions");
+            return Ok(());
+        }
+        self.state.picker = Some(Picker::Session {
+            filter: String::new(),
+            selected: 0,
+            entries,
+        });
+        Ok(())
+    }
+
+    pub(super) fn resume_session(&mut self, id: &str) -> Result<(), AppError> {
+        if self.agent_is_active() {
+            self.state.notice("session changes require an idle agent");
+            return Ok(());
+        }
+        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref()) else {
+            return Err(AppError::Setup("Phi home is not initialized".into()));
+        };
+        let record = SessionStore::new(home).for_workspace(workspace).load(id)?;
+        if !record.cwd.is_empty() && record.cwd != workspace.to_string_lossy() {
+            return Err(AppError::Setup(format!(
+                "session belongs to workspace {}; current workspace is {}",
+                record.cwd,
+                workspace.display()
+            )));
+        }
+        let messages = record.messages.clone();
+        pi_agent_core::Agent::validate_messages(&messages)?;
+        if let Some(model) = record.model.clone() {
+            self.select_model(model.provider, model.model)?;
+        }
+        let agent = self.agent_or_setup()?.clone();
+        agent.replace_thinking_level(record.thinking_level)?;
+        agent.restore_messages(messages.clone())?;
+        self.state.restore_messages(&messages);
+        self.state.set_snapshot(agent.snapshot());
+        self.current_session = Some(record);
+        self.state.picker = None;
+        self.state.notice(format!("resumed session {id}"));
+        Ok(())
+    }
+
+    pub(super) fn new_session(&mut self) -> Result<(), AppError> {
+        if self.agent_is_active() {
+            self.state.notice("new session requires an idle agent");
+            return Ok(());
+        }
+        if !self.persist_session() {
+            self.state
+                .notice("new session cancelled; the current session was not saved");
+            return Ok(());
+        }
+        let agent = self.agent_or_setup()?.clone();
+        agent.reset()?;
+        let thinking_level = agent.snapshot().thinking_level;
+        self.state.clear_transcript();
+        self.state.clear_history();
+        self.state.composer_mut().clear();
+        self.state.set_snapshot(agent.snapshot());
+        self.current_session = Some(SessionRecord::new(
+            self.state.selected_model.clone(),
+            thinking_level,
+        ).with_workspace(
+            self.workspace
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ));
+        self.state.notice("new session");
+        Ok(())
     }
 
     pub(super) fn handle_picker_key(&mut self, key: KeyEvent) -> Result<(), AppError> {
@@ -49,6 +133,10 @@ impl App {
                 *selected = 0;
             }
             Picker::CustomModel { input, .. } => input.push_str(text),
+            Picker::Session { filter, selected, .. } => {
+                filter.push_str(text);
+                *selected = 0;
+            }
         }
         Ok(())
     }
@@ -65,6 +153,10 @@ impl App {
             Picker::CustomModel { input, .. } => {
                 input.pop();
             }
+            Picker::Session { filter, selected, .. } => {
+                filter.pop();
+                *selected = 0;
+            }
         }
     }
 
@@ -75,10 +167,24 @@ impl App {
         let length = match picker {
             Picker::Model { filter, .. } => model_candidates(&self.registry, filter).len(),
             Picker::CustomModel { .. } => return,
+            Picker::Session { filter, entries, .. } => entries
+                .iter()
+                .filter(|entry| {
+                    let model = entry
+                        .model
+                        .as_ref()
+                        .map(|model| format!("{} {}", model.provider, model.model))
+                        .unwrap_or_default();
+                    format!("{} {model}", entry.id)
+                        .to_ascii_lowercase()
+                        .contains(&filter.to_ascii_lowercase())
+                })
+                .count(),
         };
         let selected = match picker {
             Picker::Model { selected, .. } => selected,
             Picker::CustomModel { .. } => return,
+            Picker::Session { selected, .. } => selected,
         };
         if length != 0 {
             *selected = (*selected as isize + delta).rem_euclid(length as isize) as usize;
@@ -115,6 +221,32 @@ impl App {
                     if let Err(error) = self.select_model(provider.clone(), input.clone()) {
                         self.state.notice(error.to_string());
                         self.state.picker = Some(Picker::CustomModel { provider, input });
+                    }
+                }
+            }
+            Picker::Session { filter, selected, entries } => {
+                let matches = entries
+                    .iter()
+                    .filter(|entry| {
+                        let model = entry
+                            .model
+                            .as_ref()
+                            .map(|model| format!("{} {}", model.provider, model.model))
+                            .unwrap_or_default();
+                        format!("{} {model}", entry.id)
+                            .to_ascii_lowercase()
+                            .contains(&filter.to_ascii_lowercase())
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(summary) = matches.get(selected) {
+                    let id = summary.id.clone();
+                    if let Err(error) = self.resume_session(&id) {
+                        self.state.notice(error.to_string());
+                        self.state.picker = Some(Picker::Session {
+                            filter,
+                            selected,
+                            entries,
+                        });
                     }
                 }
             }
@@ -160,6 +292,9 @@ impl App {
             self.agent_or_setup()?.automatic_compaction().enabled;
         self.state.selected_context_window = context_window;
         self.state.selected_model = Some(descriptor);
+        if let Some(session) = self.current_session.as_mut() {
+            session.model = self.state.selected_model.clone();
+        }
         self.state.context_estimate = None;
         self.state.picker = None;
         self.state.set_snapshot(self.agent_or_setup()?.snapshot());

@@ -364,6 +364,23 @@ impl Agent {
         }
     }
 
+    /// Replace the reasoning level used by future runs while the agent is idle.
+    pub fn replace_thinking_level(
+        &self,
+        thinking_level: crate::state::ThinkingLevel,
+    ) -> Result<(), CoreError> {
+        let mut state = self.inner.state.lock().expect("agent state mutex poisoned");
+        match state.phase {
+            AgentPhase::Idle => {
+                state.thinking_level = thinking_level;
+                Ok(())
+            }
+            AgentPhase::Running(run_id) | AgentPhase::Cancelling(run_id) => {
+                Err(CoreError::ActiveRun { run_id })
+            }
+        }
+    }
+
     /// Atomically replace the prompt, tools, and hooks used by future runs while idle.
     ///
     /// The retained transcript, selected model/provider, reasoning level, and
@@ -386,6 +403,41 @@ impl Agent {
         state.system_prompt = configuration.system_prompt.clone();
         *current = Arc::new(configuration);
         Ok(())
+    }
+
+    /// Restore a validated linear conversation while the agent is idle.
+    ///
+    /// This is an explicit host boundary for resuming a persisted conversation. The core does
+    /// not read files or choose a persistence format; callers provide owned messages and the
+    /// same message/tool relationship validation used by compaction. Transient execution state,
+    /// queues, and provider accounting are cleared so a resumed conversation starts a fresh run.
+    pub fn restore_messages(
+        &self,
+        messages: Vec<crate::state::AgentMessage>,
+    ) -> Result<(), CoreError> {
+        let mut state = self.inner.state.lock().expect("agent state mutex poisoned");
+        match state.phase {
+            AgentPhase::Idle => {
+                Self::validate_messages(&messages)?;
+                state.replace_messages(messages);
+                state.partial_response = None;
+                state.is_streaming = false;
+                state.pending_tool_calls.clear();
+                state.last_error = None;
+                state.accounting = crate::state::ModelAccountingSnapshot::default();
+                drop(state);
+                self.clear_all_queues();
+                Ok(())
+            }
+            AgentPhase::Running(run_id) | AgentPhase::Cancelling(run_id) => {
+                Err(CoreError::ActiveRun { run_id })
+            }
+        }
+    }
+
+    /// Validate a persisted message vector without changing agent state.
+    pub fn validate_messages(messages: &[crate::state::AgentMessage]) -> Result<(), CoreError> {
+        crate::compaction::validate_messages(messages).map_err(CoreError::Compaction)
     }
 
     /// Return an owned copy of the prompt, tools, and hooks used by future runs.

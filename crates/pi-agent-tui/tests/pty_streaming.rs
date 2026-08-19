@@ -183,6 +183,42 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
         )
         .expect("application should become idle");
     terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "/new")
+        .expect("open a fresh linear session");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Enter)
+        .expect("submit new-session command");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "new session",
+            |screen| screen.contains("new session"),
+        )
+        .expect("new session should reset the idle transcript");
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "/session")
+        .expect("open the saved-session picker");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Enter)
+        .expect("submit session-picker command");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "saved session picker",
+            |screen| screen.contains("Sessions"),
+        )
+        .expect("settled session should be discoverable in the picker");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Enter)
+        .expect("resume the saved session");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "resumed session transcript",
+            |screen| screen.contains("first") && screen.contains("second"),
+        )
+        .expect("resuming should rebuild the visible transcript");
+    terminal
         .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
         .expect("send clean interrupt");
     assert_eq!(

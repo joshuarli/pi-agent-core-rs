@@ -12,8 +12,8 @@ pub(super) use crate::scheduler::{
     Scheduler,
 };
 pub(super) use crate::state::{
-    AgentPhase, AgentToolCall, ModelDescriptor, SerializedJson, StopReason, ThinkingLevel,
-    ToolCallId, Usage,
+    AgentMessage, AgentPhase, AgentToolCall, MessageId, ModelDescriptor, SerializedJson,
+    StopReason, ThinkingLevel, ToolCallId, Usage,
 };
 pub(super) use crate::tool::{
     AgentTool, AgentToolResult, ToolCall, ToolContext, ToolExecutionMode, ToolFuture,

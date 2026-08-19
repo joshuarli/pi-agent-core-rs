@@ -3,12 +3,13 @@ use pi_agent_core::event::{
     AgentEventKind, AutomaticCompactionOutcome, CompactionOutcome, ProviderRequestSkipReason,
 };
 use pi_agent_core::provider::ProviderRegistry;
-use pi_agent_core::state::{AgentSnapshot, ToolCallId};
+use pi_agent_core::state::{AgentMessage, AgentSnapshot, ToolCallId};
 use pi_agent_core::{Agent, AgentEvent, ModelDescriptor};
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use super::host::{model_candidates, overlay_lines};
+use super::session::SessionSummary;
 use super::support::format_usage;
 
 /// One display row derived from a core event, never a second source of state.
@@ -74,6 +75,11 @@ pub enum UiStatus {
 pub(super) enum Picker {
     Model { filter: String, selected: usize },
     CustomModel { provider: String, input: String },
+    Session {
+        filter: String,
+        selected: usize,
+        entries: Vec<SessionSummary>,
+    },
 }
 
 /// Terminal-owned state: event-derived rows plus local input and overlay state.
@@ -109,6 +115,8 @@ pub struct AppState {
     pub(super) history_index: Option<usize>,
     /// Draft saved when history navigation first leaves the live composer.
     pub(super) history_draft: Option<String>,
+    /// Whether multiline tool output and diff bodies are expanded.
+    pub(super) tool_output_expanded: bool,
 }
 
 /// Context-policy information carried by the core event stream for footer projection.
@@ -139,8 +147,18 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             follow_output: true,
+            tool_output_expanded: true,
             ..Self::default()
         }
+    }
+
+    pub(super) fn toggle_tool_output(&mut self) {
+        self.tool_output_expanded = !self.tool_output_expanded;
+        self.notice(if self.tool_output_expanded {
+            "tool output expanded"
+        } else {
+            "tool output collapsed"
+        });
     }
 
     /// Apply one typed core event after its reducer has committed state.
@@ -384,6 +402,54 @@ impl AppState {
         self.last_snapshot = Some(snapshot);
     }
 
+    /// Rebuild the visible transcript from a restored canonical conversation.
+    ///
+    /// These rows deliberately have no event sequence: loading a session is a host projection,
+    /// not a replay of historical core events. Future events continue from the live subscription.
+    pub(super) fn restore_messages(&mut self, messages: &[AgentMessage]) {
+        self.clear_transcript();
+        for message in messages {
+            match message {
+                AgentMessage::User { content, .. } => {
+                    self.push_kind(None, format!("you: {content}"), TranscriptKind::User);
+                }
+                AgentMessage::Assistant {
+                    content,
+                    error_message,
+                    ..
+                } => {
+                    if let Some(error) = error_message {
+                        self.push_kind(None, format!("assistant error: {error}"), TranscriptKind::Error);
+                    } else if !content.is_empty() {
+                        self.push_kind(None, format!("assistant: {content}"), TranscriptKind::Assistant);
+                    }
+                }
+                AgentMessage::ToolResult {
+                    tool_call_id: _,
+                    tool_name,
+                    content,
+                    is_error,
+                    ..
+                } => {
+                    let state = if *is_error {
+                        ToolState::Failed
+                    } else {
+                        ToolState::Completed
+                    };
+                    let label = if *is_error { "failed" } else { "completed" };
+                    self.push_kind(
+                        None,
+                        format!("tool {tool_name} — {label}: {content}"),
+                        TranscriptKind::Tool {
+                            name: tool_name.clone(),
+                            state,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     /// Refresh the visible queue projection from the agent's owned inspection boundary.
     pub(super) fn set_queue_snapshot(&mut self, agent: &Agent) {
         let queues = agent.queue_snapshot();
@@ -442,6 +508,10 @@ impl AppState {
     /// Whether output should continue to follow the newest event.
     pub fn follows_output(&self) -> bool {
         self.follow_output
+    }
+
+    pub(crate) fn tool_output_expanded(&self) -> bool {
+        self.tool_output_expanded
     }
 
     /// Whether the transcript row is still receiving assistant deltas.
@@ -568,6 +638,35 @@ impl AppState {
                 format!("> {input}"),
                 "Enter selects; Esc cancels".into(),
             ],
+            Picker::Session {
+                filter,
+                selected,
+                entries,
+            } => {
+                let filter_lower = filter.to_ascii_lowercase();
+                let rows = entries
+                    .iter()
+                    .filter(|entry| {
+                        let model = entry
+                            .model
+                            .as_ref()
+                            .map(|model| format!("{} {}", model.provider, model.model))
+                            .unwrap_or_default();
+                        format!("{} {model}", entry.id)
+                            .to_ascii_lowercase()
+                            .contains(&filter_lower)
+                    })
+                    .map(|entry| {
+                        let model = entry
+                            .model
+                            .as_ref()
+                            .map(|model| format!("{}/{}", model.provider, model.model))
+                            .unwrap_or_else(|| "unknown model".into());
+                        format!("{} · {model} · {} messages", entry.id, entry.message_count)
+                    })
+                    .collect::<Vec<_>>();
+                overlay_lines("Sessions", filter, &rows, *selected, max_rows)
+            }
         })
     }
 
@@ -685,6 +784,12 @@ impl AppState {
         self.active_tool_lines.clear();
         self.viewport_offset = 0;
         self.follow_output = true;
+    }
+
+    pub(super) fn clear_history(&mut self) {
+        self.history.clear();
+        self.history_index = None;
+        self.history_draft = None;
     }
 
     pub(super) fn page_up(&mut self, lines: usize) {

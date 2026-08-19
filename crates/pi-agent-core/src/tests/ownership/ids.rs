@@ -215,6 +215,49 @@ fn provider_replacement_is_rejected_while_a_run_is_owned() {
 }
 
 #[test]
+fn restoring_messages_is_idle_only_and_advances_message_ids() {
+    smol::block_on(async {
+        let agent = Agent::builder()
+            .model_provider(Arc::new(TextOnlyProvider))
+            .build();
+        agent
+            .restore_messages(vec![AgentMessage::User {
+                id: MessageId(40),
+                content: "restored".into(),
+            }])
+            .expect("valid linear messages restore while idle");
+        agent
+            .replace_thinking_level(ThinkingLevel::High)
+            .expect("thinking level replacement is idle-only");
+        assert_eq!(agent.snapshot().thinking_level, ThinkingLevel::High);
+        assert_eq!(agent.snapshot().messages.len(), 1);
+
+        agent.start_prompt("next")?.drive().await?;
+        let snapshot = agent.snapshot();
+        let next_id = snapshot
+            .messages
+            .iter()
+            .map(|message| match message {
+                AgentMessage::User { id, .. }
+                | AgentMessage::Assistant { id, .. }
+                | AgentMessage::ToolResult { id, .. } => id.0,
+            })
+            .max()
+            .expect("restored and new messages remain present");
+        assert!(next_id > 40);
+
+        let active = agent.start_prompt("active")?;
+        let error = agent
+            .restore_messages(Vec::new())
+            .expect_err("active run owns the canonical transcript");
+        assert!(matches!(error, CoreError::ActiveRun { .. }));
+        active.abort().expect("created run aborts cleanly");
+        Ok::<(), CoreError>(())
+    })
+    .expect("restoring a session must preserve idle-only ownership");
+}
+
+#[test]
 fn agent_allows_one_run_and_drop_settles_cancellation() {
     let agent = Agent::builder().build();
     let run = agent.start_prompt("first").expect("first run should start");

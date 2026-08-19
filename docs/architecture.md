@@ -145,6 +145,11 @@ invent UI concepts or provider-specific fields. `convert_to_llm` is called only 
 boundary; a transform failure, conversion failure, provider protocol violation, or provider
 transport failure has a typed terminal path and cannot bypass cleanup.
 
+An application-owned session store may pass a validated linear message vector back through
+`Agent::restore_messages` while the agent is idle. That API clears transient execution state,
+queues, and retained provider accounting; the core still performs no file, home-directory, or
+session-format discovery.
+
 ## Tool scheduling and ordering
 
 For one assistant message:

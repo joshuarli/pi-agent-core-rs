@@ -46,6 +46,11 @@ impl App {
             self.handle_control_c();
             return Ok(());
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            self.state.toggle_tool_output();
+            self.previous_grid = None;
+            return Ok(());
+        }
         match key.code {
             KeyCode::Tab => self.complete_command(),
             KeyCode::Char(character)
@@ -163,6 +168,9 @@ impl App {
             "/reload-extensions",
             "/steer",
             "/followup",
+            "/session",
+            "/resume",
+            "/new",
             "/clear",
             "/quit",
         ];
@@ -182,7 +190,7 @@ impl App {
         let mut words = input.split_whitespace();
         let command = words.next().unwrap_or_default();
         if self.agent_is_active()
-            && matches!(command, "/model" | "/compact" | "/clear" | "/reload-extensions")
+            && matches!(command, "/model" | "/compact" | "/session" | "/resume" | "/new" | "/clear" | "/reload-extensions")
         {
             self.state
                 .notice(format!("{command} is unavailable while a run is active"));
@@ -191,7 +199,7 @@ impl App {
         match command {
             "/help" => {
                 self.state.local_line(
-                    "keys: Enter submit, Shift+Enter newline, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, Alt+B/Alt+F words, Up/Down history, Tab command completion, PgUp/PgDn scroll, Ctrl+End follow; commands: /model /cost /compact /reload-extensions /steer <prompt> /followup <prompt> /clear /quit",
+                    "keys: Enter submit, Shift+Enter newline, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, Ctrl+O expand/collapse tool output, Alt+B/Alt+F words, Up/Down history, Tab command completion, PgUp/PgDn scroll, Ctrl+End follow; commands: /model /cost /compact /session /resume /new /reload-extensions /steer <prompt> /followup <prompt> /clear /quit",
                 );
             }
             "/model" => {
@@ -210,6 +218,16 @@ impl App {
                 input.strip_prefix("/followup").unwrap_or_default(),
                 QueueDelivery::FollowUp,
             )?,
+            "/session" | "/resume" => {
+                if let Err(error) = self.open_session_picker() {
+                    self.state.notice(error.to_string());
+                }
+            }
+            "/new" => {
+                if let Err(error) = self.new_session() {
+                    self.state.notice(error.to_string());
+                }
+            }
             "/compact" => {
                 let agent = self.agent_or_setup()?;
                 match agent.start_compaction() {

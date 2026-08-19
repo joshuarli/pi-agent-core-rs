@@ -597,7 +597,15 @@ fn active_commands_refuse_without_replacing_or_compacting_the_agent() {
     let mut app = App::new(CliOptions::default());
     app.attach_agent(agent.clone());
 
-    for command in ["/model", "/compact", "/reload-extensions", "/clear"] {
+    for command in [
+        "/model",
+        "/compact",
+        "/session",
+        "/resume",
+        "/new",
+        "/reload-extensions",
+        "/clear",
+    ] {
         app.dispatch_command(command).expect("command is handled");
         assert!(matches!(
             app.state().status(),
@@ -697,4 +705,17 @@ fn command_completion_includes_extension_reload() {
     app.complete_command();
 
     assert_eq!(app.state.composer().text(), "/reload-extensions ");
+}
+
+#[test]
+fn command_completion_includes_linear_session_commands() {
+    let mut app = App::new(CliOptions::default());
+    app.state.composer_mut().insert_str("/sess").expect("prefix");
+    app.complete_command();
+    assert_eq!(app.state.composer().text(), "/session ");
+
+    app.state.composer_mut().clear();
+    app.state.composer_mut().insert_str("/new").expect("prefix");
+    app.complete_command();
+    assert_eq!(app.state.composer().text(), "/new ");
 }

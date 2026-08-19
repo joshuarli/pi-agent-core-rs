@@ -17,6 +17,7 @@ use super::compaction::ProviderCompactor;
 use super::error::AppError;
 use super::host::{build_host_agent_with_thinking, compose_phi_configuration};
 use super::phi::{load_phi_extensions, resolve_phi_home, PhiExtensions};
+use super::session::{SessionRecord, SessionStore};
 use super::state::{AppState, UiStatus};
 use super::support::composer_cursor;
 use std::sync::Arc;
@@ -30,6 +31,8 @@ pub struct App {
     pub(super) compactor: Option<Arc<ProviderCompactor>>,
     pub(super) phi_home: Option<PathBuf>,
     pub(super) phi_extensions: PhiExtensions,
+    pub(super) session_store: Option<SessionStore>,
+    pub(super) current_session: Option<SessionRecord>,
     pub(super) phi_base_configuration: Option<AgentConfiguration>,
     pub(super) registry: ProviderRegistry,
     pub(super) workspace: Option<PathBuf>,
@@ -52,6 +55,8 @@ impl App {
             compactor: None,
             phi_home: None,
             phi_extensions: PhiExtensions::default(),
+            session_store: None,
+            current_session: None,
             phi_base_configuration: None,
             registry: ProviderRegistry::new(),
             workspace: None,
@@ -186,6 +191,18 @@ impl App {
         self.phi_base_configuration = Some(base);
         self.phi_home = Some(home);
         self.phi_extensions = extensions;
+        let workspace = self
+            .workspace
+            .as_ref()
+            .ok_or_else(|| AppError::Setup("workspace is not initialized".into()))?;
+        self.session_store = Some(
+            SessionStore::new(self.phi_home.as_ref().expect("Phi home was just initialized"))
+                .for_workspace(workspace),
+        );
+        self.current_session = Some(
+            SessionRecord::new(None, self.options.thinking_level())
+                .with_workspace(workspace.to_string_lossy()),
+        );
         self.state.welcome_line();
 
         match (self.options.provider(), self.options.model()) {
@@ -247,6 +264,7 @@ impl App {
                 self.submitted_prompt = None;
                 self.state.status = UiStatus::Idle;
                 self.reload_phi_extensions_after_settlement();
+                self.persist_session();
             }
             Ok(Err(CoreError::Cancelled)) => {
                 self.active_task = None;
@@ -322,6 +340,37 @@ impl App {
         self.core
             .as_ref()
             .is_some_and(|agent| !matches!(agent.snapshot().phase, AgentPhase::Idle))
+    }
+
+    /// Persist the last fully settled canonical conversation. A failed save is a presentation
+    /// notice only; it never changes core settlement or replaces the previous valid file.
+    pub(super) fn persist_session(&mut self) -> bool {
+        let (Some(store), Some(record), Some(agent)) = (
+            self.session_store.clone(),
+            self.current_session.as_mut(),
+            self.core.as_ref(),
+        ) else {
+            return true;
+        };
+        let snapshot = agent.snapshot();
+        if !matches!(snapshot.phase, AgentPhase::Idle) {
+            return false;
+        }
+        // Match Pi's deferred-file behavior: an untouched/new session has no persisted file.
+        if snapshot.messages.is_empty() {
+            return true;
+        }
+        record.messages = snapshot.messages;
+        record.model = snapshot.model;
+        record.thinking_level = snapshot.thinking_level;
+        if let Some(workspace) = self.workspace.as_ref() {
+            record.cwd = workspace.to_string_lossy().into_owned();
+        }
+        if let Err(error) = store.save(record) {
+            self.state.notice(format!("session was not saved: {error}"));
+            return false;
+        }
+        true
     }
 }
 

@@ -1,9 +1,9 @@
 # `pi-agent` terminal host
 
 `pi-agent` is the small interactive terminal host in
-[`crates/pi-agent-tui`](../crates/pi-agent-tui). It is a control surface and
-projection for `pi-agent-core`, not a second agent runtime, session manager, or
-ambient Pi installation.
+[`crates/pi-agent-tui`](../crates/pi-agent-tui). It is a control surface,
+projection, and explicitly bounded linear-session host for `pi-agent-core`, not
+a second agent runtime or an ambient Pi installation.
 
 The core continues to own conversation state, model streaming, tool scheduling,
 queues, cancellation, accounting, compaction transactions, and lifecycle
@@ -22,18 +22,17 @@ TUI must not infer state from terminal output or keep a shadow conversation.
 
 ## V0 product boundary
 
-One invocation hosts one linear, in-memory coding conversation in an explicit
+One invocation hosts one linear coding conversation in an explicit
 workspace. It can select a compiled provider/model, run the pinned coding
 profile, render the lossless core event stream, submit or steer prompts, cancel
 work, show generic tool activity, display provider-reported accounting, invoke
 manual compaction when configured, and edit the prompt in `$EDITOR`.
 
-It does not persist sessions, discover a Pi installation, or become a general
-terminal framework. Its sole persistent application input is the optional Phi
-extension home described below; it does not read a Pi installation or a
-general TUI configuration file. The normal screen is intentionally only a
-transcript, a compact multiline composer, and a status line; a picker is a
-temporary overlay.
+It persists and resumes only explicit linear sessions below the Phi application
+home, never discovers a Pi installation, and does not become a general terminal
+framework. The normal screen is intentionally only a transcript, a compact
+multiline composer, and a status line; model and session pickers are temporary
+overlays.
 
 ## Ownership and explicit inputs
 
@@ -57,8 +56,51 @@ bundle. With no provider/model pair, the host opens the cross-provider model
 selector rather than guessing a model. The host may read documented credential
 environment variables, but it must never log them or move credential discovery
 into core.
-No preferences, keys, model choices, themes, keymaps, or sessions are
-persisted.
+No preferences, keys, themes, keymaps, credentials, or Phi source/configuration
+are persisted. Linear session files are the one deliberate continuity feature
+and are stored below `<phi-home>/sessions` (normally `~/.phi/sessions`).
+
+## Linear session persistence
+
+The TUI owns a versioned, file-backed linear session store. The core remains
+file-system agnostic and receives a validated message vector only through
+`Agent::restore_messages`.
+
+Each session is a Pi-compatible v3 JSONL file below the explicit Phi home:
+`sessions/--<resolved-cwd-with-separators-replaced>--/<timestamp>_<uuid>.jsonl`.
+The first line is a `type: "session"` header with `version`, `id`, ISO
+`timestamp`, and `cwd`. Following lines are typed entries with Pi's
+`type`/`id`/`parentId`/`timestamp` shape: `model_change`,
+`thinking_level_change`, and `message`. Messages use Pi's `user`, `assistant`,
+and `toolResult` roles and content blocks, so the files remain inspectable and
+forward-compatible with the upstream format. The TUI intentionally exposes
+only the linear leaf; it does not add branch/tree controls.
+
+The application privacy contract is separate from the JSONL shape: it writes
+canonical user, assistant, and tool-result payloads without redaction because
+redacting them would change resumed model context. The file does not include
+the system prompt, Phi extension files or hooks, credentials, queues, composer/history,
+partial responses, transient phases, or provider accounting. Prompts, tool
+arguments, tool output, and exact provider responses can contain secrets; the
+host creates the session directory with owner-only permissions and callers must
+choose the Phi home accordingly. Session state is not trace telemetry and does
+not silently apply the trace crate's redactor.
+
+Files are bounded to 16 MiB, malformed entries are ignored during discovery,
+and writes replace the current JSONL file through a same-directory temporary
+file and rename. A failed write leaves the previous valid file intact.
+
+Sessions are autosaved only after a run or compaction has settled successfully;
+`/new` explicitly attempts one final idle save before resetting. An interrupted
+or failed active run cannot overwrite the last settled file during settlement.
+`/session` (also `/resume`) opens the minimal picker, and `/new` resets the
+idle agent and rotates to a fresh session ID. Neither command is available
+while a run is active. Resuming validates the complete message/tool
+relationship, reuses only the currently configured host capabilities, and
+requires the same explicit provider credential checks as a new model selection;
+it never selects an alternate provider or credential source. A session load
+rebuilds the visible transcript as a host projection rather than replaying
+historical core events.
 
 ## Phi extension home
 
@@ -239,6 +281,9 @@ The direct commands are intentionally not a plugin framework:
 /cost      print per-turn and aggregate reported accounting
 /compact   invoke the configured manual compactor
 /reload-extensions  reload the idle Phi extension snapshot
+/session   open the saved linear-session picker
+/resume    alias for /session
+/new       start a fresh linear session
 /clear     reset the idle linear conversation
 /quit      exit after structured cancellation and settlement
 ```
@@ -299,8 +344,8 @@ is needed for ordinary interactive use, cannot be clearly implemented locally,
 adds less surface than it removes, and improves rather than weakens auditability.
 
 Do not add an application state framework, command framework, terminal widget
-system, configuration/session format, fuzzy matcher, clipboard layer, or
-generic event bus merely to factor this small program.
+system, second session format, fuzzy matcher, clipboard layer, or generic event
+bus merely to factor this small program.
 
 ## Post-V0 direction
 
@@ -315,7 +360,7 @@ agent loop, hidden session store, or ambient configuration system.
 | Providers | Authorized cached remote model discovery, catalog update tooling, richer metadata, and explicit user-managed authentication flows |
 | Accounting | Budgets, warnings, richer history, and clearly labelled local estimates where they are ever justified |
 | Context | Automatic compaction policy, context-window recovery, previews, and configurable compactor policies |
-| Continuity | Persistent linear sessions, resume, import/export, and their separate privacy/redaction contract |
+| Continuity | Session trees/branches, import/export, sharing, and bookmarks |
 
 The following remain out of scope unless a separate proposal establishes their
 authority and contract: session trees/branches/bookmarks, subagents or

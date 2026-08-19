@@ -6,6 +6,7 @@ use std::fmt;
 
 use super::cli::CliError;
 use super::phi::PhiLoadError;
+use super::session::SessionError;
 
 /// Local application failures. Provider and core failures retain their typed source.
 #[derive(Debug)]
@@ -22,6 +23,8 @@ pub enum AppError {
     Registry(RegistryError),
     /// Phi extension discovery or authoring boundary failed.
     Phi(PhiLoadError),
+    /// Versioned linear-session persistence failed at the TUI-owned boundary.
+    Session(SessionError),
     /// A core state-machine operation failed.
     Core(CoreError),
 }
@@ -35,6 +38,7 @@ impl fmt::Display for AppError {
             Self::Setup(message) => formatter.write_str(message),
             Self::Registry(error) => error.fmt(formatter),
             Self::Phi(error) => error.fmt(formatter),
+            Self::Session(error) => error.fmt(formatter),
             Self::Core(error) => error.fmt(formatter),
         }
     }
@@ -48,6 +52,7 @@ impl std::error::Error for AppError {
             Self::Editor(error) => Some(error),
             Self::Registry(error) => Some(error),
             Self::Phi(error) => Some(error),
+            Self::Session(error) => Some(error),
             Self::Core(error) => Some(error),
             Self::Setup(_) => None,
         }
@@ -81,6 +86,12 @@ impl From<RegistryError> for AppError {
 impl From<PhiLoadError> for AppError {
     fn from(error: PhiLoadError) -> Self {
         Self::Phi(error)
+    }
+}
+
+impl From<SessionError> for AppError {
+    fn from(error: SessionError) -> Self {
+        Self::Session(error)
     }
 }
 

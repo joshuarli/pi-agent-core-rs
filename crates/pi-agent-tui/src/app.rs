@@ -13,6 +13,7 @@ mod input;
 mod picker;
 mod phi;
 mod runtime;
+mod session;
 mod state;
 mod support;
 

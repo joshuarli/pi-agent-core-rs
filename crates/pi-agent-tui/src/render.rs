@@ -9,6 +9,7 @@ use crate::composer::Composer;
 use crate::grid::{Cell, Grid, Rect, Style};
 use crossterm::style::Color;
 use hi_lite::{Highlighter, Kind, Language};
+use pi_agent_protocol::JsonValue;
 use pi_agent_core::provider::ProviderRegistry;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -340,6 +341,7 @@ fn wrapped_transcript(state: &AppState, width: u16) -> Vec<RenderLine> {
             line,
             width,
             state.is_streaming_transcript(index),
+            state.tool_output_expanded(),
         ));
         emitted = true;
     }
@@ -366,13 +368,14 @@ fn welcome_lines(state: &AppState, width: u16) -> Vec<RenderLine> {
 }
 
 fn entry_lines(line: &crate::app::TranscriptLine, width: u16) -> Vec<RenderLine> {
-    entry_lines_for_state(line, width, false)
+    entry_lines_for_state(line, width, false, true)
 }
 
 fn entry_lines_for_state(
     line: &crate::app::TranscriptLine,
     width: u16,
     streaming: bool,
+    tool_output_expanded: bool,
 ) -> Vec<RenderLine> {
     match &line.kind {
         TranscriptKind::Welcome => wrap_lines(
@@ -388,7 +391,9 @@ fn entry_lines_for_state(
         TranscriptKind::Assistant => {
             markdown_lines(strip_prefix(&line.text, "assistant: "), width, !streaming)
         }
-        TranscriptKind::Tool { name, state } => tool_lines(name, *state, &line.text, width),
+        TranscriptKind::Tool { name, state } => {
+            tool_lines(name, *state, &line.text, width, tool_output_expanded)
+        }
         TranscriptKind::Error => wrap_lines(
             strip_prefix(&line.text, "assistant error: "),
             width,
@@ -423,34 +428,152 @@ fn rail_lines(text: &str, width: u16) -> Vec<RenderLine> {
         .collect()
 }
 
-fn tool_lines(name: &str, state: ToolState, raw: &str, width: u16) -> Vec<RenderLine> {
+fn tool_lines(
+    name: &str,
+    state: ToolState,
+    raw: &str,
+    width: u16,
+    expanded: bool,
+) -> Vec<RenderLine> {
     let marker = match state {
         ToolState::Started => '⏺',
         ToolState::Progress => '…',
         ToolState::Completed => '✓',
         ToolState::Failed => '✗',
     };
-    let detail = raw
-        .split_once(": ")
-        .map(|(_, detail)| compact_tool_detail(detail))
-        .unwrap_or_default();
+    let (phase, payload) = tool_phase_and_payload(name, raw);
+    let mut detail = payload.lines().next().unwrap_or_default().trim();
+    let summary = (phase == "started")
+        .then(|| tool_argument_summary(name, payload))
+        .flatten();
+    if let Some(summary) = summary.as_deref() {
+        detail = summary;
+    }
     let label = if detail.is_empty() {
         format!("{marker} {name}")
     } else {
-        format!("{marker} {name}: {detail}")
+        format!("{marker} {name}: {}", compact_tool_detail(detail))
     };
-    wrap_lines(
+    let style = Style {
+        foreground: Some(match state {
+            ToolState::Failed => Color::Red,
+            ToolState::Completed => Color::Green,
+            ToolState::Started | ToolState::Progress => Color::DarkGrey,
+        }),
+        bold: state == ToolState::Failed,
+        ..Style::default()
+    };
+    let mut output = wrap_lines(
         &label,
         width,
-        Style {
+        style,
+    );
+    // Keep a multiline result readable without letting its first line hide the
+    // lifecycle card. Standard tools can return source files, command output,
+    // or search matches; each continuation line gets a low-contrast body rail.
+    if phase != "started" && expanded {
+        let continuation = payload
+            .split_once('\n')
+            .map(|(_, continuation)| continuation)
+            .unwrap_or_default();
+        let body_style = Style {
             foreground: Some(if state == ToolState::Failed {
                 Color::Red
             } else {
                 Color::DarkGrey
             }),
             ..Style::default()
-        },
-    )
+        };
+        output.extend(tool_body_lines(continuation, width, body_style));
+    } else if phase != "started" && payload.lines().count() > 1 {
+        output.push(RenderLine::plain(
+            "  └ … (Ctrl+O to expand)",
+            Style {
+                foreground: Some(Color::DarkGrey),
+                ..Style::default()
+            },
+        ));
+    }
+    output
+}
+
+fn tool_phase_and_payload<'a>(name: &str, raw: &'a str) -> (&'a str, &'a str) {
+    let prefix = format!("tool {name} — ");
+    let body = raw.strip_prefix(&prefix).unwrap_or(raw);
+    body.split_once(": ").unwrap_or(("", body))
+}
+
+fn tool_body_lines(text: &str, width: u16, style: Style) -> Vec<RenderLine> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let body_width = width.saturating_sub(4);
+    wrap_raw_text_preserving_indentation(text, body_width)
+        .into_iter()
+        .map(|line| RenderLine::plain(format!("  │ {line}"), style))
+        .collect()
+}
+
+/// Render stable, human-oriented summaries for the pinned coding tools. The
+/// tool event still owns the raw JSON; parsing it here keeps presentation from
+/// becoming another semantic tool contract and preserves a generic fallback
+/// for extension-defined tools.
+fn tool_argument_summary(name: &str, payload: &str) -> Option<String> {
+    let object = JsonValue::parse(payload).ok()?.as_object()?.clone();
+    let value = |key: &str| object.get(key).and_then(JsonValue::as_str);
+    match name {
+        "bash" | "shell" => value("command").map(|command| {
+            format!("$ {}", truncate_display(command.trim(), 72))
+        }),
+        "read" => value("path").map(|path| {
+            let range = match (json_u64(&object, "offset"), json_u64(&object, "limit")) {
+                (Some(offset), Some(limit)) => format!(
+                    " lines {offset}–{}",
+                    offset.saturating_add(limit.saturating_sub(1))
+                ),
+                (Some(offset), None) => format!(" from line {offset}"),
+                _ => String::new(),
+            };
+            format!("{}{}", truncate_display(path, 64), range)
+        }),
+        "write" => value("path").map(|path| {
+            let bytes = value("content").map_or(0, str::len);
+            format!("{} ({bytes} bytes)", truncate_display(path, 56))
+        }),
+        "edit" => value("path").map(|path| {
+            let count = object
+                .get("edits")
+                .and_then(JsonValue::as_array)
+                .map_or(0, |edits| edits.len());
+            let noun = if count == 1 { "replacement" } else { "replacements" };
+            format!("{} ({count} {noun})", truncate_display(path, 56))
+        }),
+        "grep" => value("pattern").map(|pattern| {
+            let location = value("path").or_else(|| value("glob"));
+            match location {
+                Some(location) => format!(
+                    "/{}/ in {}",
+                    truncate_display(pattern, 36),
+                    truncate_display(location, 28)
+                ),
+                None => format!("/{}/", truncate_display(pattern, 64)),
+            }
+        }),
+        "find" => value("pattern").map(|pattern| {
+            let location = value("path").map_or(".", |path| path);
+            format!("{} in {}", truncate_display(pattern, 44), truncate_display(location, 24))
+        }),
+        "ls" => Some(value("path").map_or_else(|| ".".into(), |path| truncate_display(path, 72))),
+        _ => None,
+    }
+}
+
+fn json_u64(object: &std::collections::BTreeMap<String, JsonValue>, key: &str) -> Option<u64> {
+    object
+        .get(key)
+        .and_then(JsonValue::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| value as u64)
 }
 
 fn compact_tool_detail(detail: &str) -> String {
@@ -606,12 +729,37 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
             .or_else(|| trimmed.strip_prefix("* "))
         {
             output.extend(wrap_lines(&format!("• {item}"), width, Style::default()));
+        } else if let Some((marker, item)) = ordered_list_item(trimmed) {
+            output.extend(wrap_lines(
+                &format!("{marker} {item}"),
+                width,
+                Style::default(),
+            ));
+        } else if let Some(quote) = trimmed.strip_prefix('>') {
+            output.extend(wrap_lines(
+                &format!("│ {}", quote.trim_start()),
+                width,
+                Style {
+                    foreground: Some(Color::DarkGrey),
+                    ..Style::default()
+                },
+            ));
         } else {
             output.extend(wrap_styled_line(&highlighted, width, false));
         }
         index += 1;
     }
     output
+}
+
+fn ordered_list_item(line: &str) -> Option<(&str, &str)> {
+    let boundary = line.find(". ")?;
+    let (number, item) = line.split_at(boundary);
+    if !number.is_empty() && number.chars().all(|character| character.is_ascii_digit()) {
+        Some((number, item.trim_start_matches(". ")))
+    } else {
+        None
+    }
 }
 
 fn highlighted_line(
@@ -1083,6 +1231,13 @@ mod tests {
     }
 
     #[test]
+    fn markdown_ordered_lists_and_quotes_get_bounded_structure() {
+        let lines = markdown_lines("1. first\n2. second\n> quoted", 40, true);
+        let text = lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>();
+        assert_eq!(text, ["1 first", "2 second", "│ quoted"]);
+    }
+
+    #[test]
     fn fenced_code_uses_the_declared_language_and_preserves_the_rail() {
         let lines = markdown_lines("```rust\nfn main() { return 1; }\n```", 40, true);
         assert_eq!(lines[0].text, "┌ rust");
@@ -1138,6 +1293,51 @@ mod tests {
                 .foreground,
             Some(Color::Red)
         );
+    }
+
+    #[test]
+    fn standard_tool_arguments_render_as_type_specific_cards() {
+        let bash = tool_lines(
+            "bash",
+            ToolState::Started,
+            r#"tool bash — started: {"command":"cargo test -p pi-agent-tui","timeout":30}"#,
+            80,
+            true,
+        );
+        assert_eq!(bash[0].text, "⏺ bash: $ cargo test -p pi-agent-tui");
+
+        let edit = tool_lines(
+            "edit",
+            ToolState::Started,
+            r#"tool edit — started: {"path":"src/render.rs","edits":[{"oldText":"a","newText":"b"},{"oldText":"c","newText":"d"}]}"#,
+            80,
+            true,
+        );
+        assert_eq!(edit[0].text, "⏺ edit: src/render.rs (2 replacements)");
+    }
+
+    #[test]
+    fn multiline_tool_results_render_a_body_rail() {
+        let lines = tool_lines(
+            "read",
+            ToolState::Completed,
+            "tool read — completed: first line\n  second line\nthird line",
+            30,
+            true,
+        );
+        assert_eq!(lines[0].text, "✓ read: first line");
+        assert_eq!(lines[1].text, "  │   second line");
+        assert_eq!(lines[2].text, "  │ third line");
+        assert_eq!(lines[0].style.foreground, Some(Color::Green));
+
+        let collapsed = tool_lines(
+            "read",
+            ToolState::Completed,
+            "tool read — completed: first line\nsecond line",
+            30,
+            false,
+        );
+        assert_eq!(collapsed[1].text, "  └ … (Ctrl+O to expand)");
     }
 
     #[test]
