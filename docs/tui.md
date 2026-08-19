@@ -38,7 +38,8 @@ picker is a temporary overlay.
 The command line is deliberately narrow:
 
 ```text
-pi-agent [--provider <id>] [--model <id>] [--local-base-url <url>] [--cwd <path>]
+pi-agent [--provider <id>] [--model <id>] [--local-base-url <url>]
+         [--local-context-window <tokens>] [--cwd <path>]
 pi-agent [-h | --help]
 pi-agent --provider <id> --model <id> [--thinking <level>] -p <message>
 ```
@@ -84,7 +85,18 @@ cargo run -p pi-agent-tui --bin pi-agent -- --provider local --model Laguna-XS-2
 
 For a nonstandard oMLX port, pass `--local-base-url`, for example
 `http://127.0.0.1:12345/v1`. The repository `make local` target uses this
-explicit endpoint option.
+explicit endpoint option and supplies oMLX's default 32,768-token context
+capacity; override it with `LOCAL_CONTEXT_WINDOW=<tokens>` when the server is
+configured differently.
+
+Local compaction uses the same OpenAI-compatible streaming endpoint as a normal
+turn: the TUI asks the selected oMLX model for a tool-free summary, and core
+commits the summary transaction. oMLX does not expose a separate compaction
+endpoint. The checked-in Laguna model has a 32,768-token capacity and therefore
+gets automatic compaction. For a custom local model, pass its effective server
+capacity explicitly, for example `--local-context-window 32768`, to enable
+automatic compaction; without that authority, manual `/compact` remains
+available but automatic compaction stays disabled.
 
 To download the configured Qwen3.5 4B MLX checkpoint, idempotently start oMLX
 on port 12345, and launch the TUI against it, run:
@@ -223,12 +235,13 @@ tool-call relationships, commits atomically on success, emits typed
 old conversation intact on failure, invalid output, or cancellation.
 
 Manual compaction is idle-only. The TUI installs a provider-backed `Compactor`
-for the selected model and configures core `AutomaticCompactionPolicy` from the
-registry's source-backed capacity. Its summary request reuses the selected
-OpenRouter model through the OpenAI-compatible context hook, while core owns
-the split, validation, atomic commit, threshold trigger, and event lifecycle.
-Models without a documented capacity remain manual-only and report automatic
-compaction unavailable; the TUI does not guess a context budget.
+for the selected provider/model and configures core `AutomaticCompactionPolicy`
+from either an explicit local capacity or the registry's source-backed model
+capacity. Its summary request reuses the selected provider through the
+OpenAI-compatible context hook, while core owns the split, validation, atomic
+commit, threshold trigger, and event lifecycle. Models without a documented or
+explicit capacity remain manual-only and report automatic compaction
+unavailable; the TUI does not guess a context budget.
 
 ## Dependency and architecture discipline
 

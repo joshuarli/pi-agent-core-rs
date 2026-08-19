@@ -221,3 +221,15 @@ prompt/completion/cache usage fields (requested with
 text is intentionally ignored because the current core stream model has no
 separate reasoning-content event; turning it into assistant text would corrupt
 later context.
+
+### Local compaction boundary
+
+oMLX does not define a provider-side compaction operation. A host that wants
+compaction sends an ordinary tool-free summary request through
+`LocalProvider`, then gives the proposed replacement messages to core's
+transactional `Compactor` boundary. This is the same path used for other
+OpenAI-compatible providers and works with the local SSE stream, including its
+final usage event. Automatic compaction requires an explicit effective context
+capacity: the TUI uses the checked-in Laguna capacity or the
+`--local-context-window <tokens>` value for a custom local model. It never
+infers capacity from an arbitrary model ID.

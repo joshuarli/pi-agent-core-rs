@@ -3,6 +3,7 @@ use super::compaction::ProviderCompactor;
 use super::state::ContextEstimate;
 use pi_agent_core::compaction::{
     AutomaticCompactionReason, AutomaticCompactionRequest, CompactionContext, Compactor,
+    OverflowRecovery,
 };
 use pi_agent_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
@@ -11,6 +12,7 @@ use pi_agent_core::state::{Message, MessageId, SerializedJson, ToolCallId};
 use pi_agent_core::tool::ToolUpdate;
 use pi_agent_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, ThinkingLevel, Usage};
 use std::ffi::OsString;
+use std::num::NonZeroU64;
 use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 
@@ -18,19 +20,28 @@ use std::sync::Arc;
 struct ContextCheckingProvider;
 
 #[derive(Debug)]
-struct SummaryProvider;
+struct SummaryProvider {
+    expected_model: ModelDescriptor,
+}
 
 impl ModelProvider for SummaryProvider {
     fn stream<'a>(
         &'a self,
-        _request: ModelRequest,
+        request: ModelRequest,
         _cancellation: CancellationToken,
     ) -> ModelFuture<'a> {
-        Box::pin(std::future::ready(Ok(Box::new(ModelStream {
-            events: vec![
+        let events = if request.model.as_ref() == Some(&self.expected_model) {
+            vec![
                 ModelStreamEvent::TextDelta("summary text".into()),
                 ModelStreamEvent::End(pi_agent_core::state::StopReason::EndTurn),
-            ],
+            ]
+        } else {
+            vec![ModelStreamEvent::Error {
+                message: "summary request used the wrong local model".into(),
+            }]
+        };
+        Box::pin(std::future::ready(Ok(Box::new(ModelStream {
+            events,
         }) as _)))
     }
 }
@@ -124,6 +135,22 @@ fn cli_rejects_unknown_thinking_level() {
         CliOptions::parse(["pi-agent", "--thinking", "turbo"].map(OsString::from)),
         Err(CliError::InvalidValue {
             flag: "--thinking",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn cli_parses_and_validates_explicit_local_context_capacity() {
+    let options = CliOptions::parse(
+        ["pi-agent", "--local-context-window", "32768"].map(OsString::from),
+    )
+    .expect("local context capacity parses");
+    assert_eq!(options.local_context_window(), NonZeroU64::new(32_768));
+    assert!(matches!(
+        CliOptions::parse(["pi-agent", "--local-context-window", "0"].map(OsString::from)),
+        Err(CliError::InvalidValue {
+            flag: "--local-context-window",
             ..
         })
     ));
@@ -321,15 +348,20 @@ fn footer_reports_context_percentage_and_enabled_compaction() {
 }
 
 #[test]
-fn openrouter_compactor_summarizes_and_preserves_the_core_retained_suffix() {
+fn local_compactor_summarizes_and_preserves_the_core_retained_suffix() {
     smol::block_on(async {
         let model = ModelDescriptor {
-            provider: "openrouter".into(),
-            model: "poolside/laguna-xs-2.1:free".into(),
+            provider: "local".into(),
+            model: pi_agent_core::provider::local::LAGUNA_XS_2_1_MODEL.into(),
             revision: None,
         };
         let compactor = ProviderCompactor::default();
-        compactor.configure(model.clone(), Arc::new(SummaryProvider));
+        compactor.configure(
+            model.clone(),
+            Arc::new(SummaryProvider {
+                expected_model: model.clone(),
+            }),
+        );
         let prefix = Message::User {
             id: MessageId(1),
             content: "old work".into(),
@@ -344,7 +376,7 @@ fn openrouter_compactor_summarizes_and_preserves_the_core_retained_suffix() {
         let request = AutomaticCompactionRequest {
             reason: AutomaticCompactionReason::Threshold,
             estimated_tokens_before: Some(300_000),
-            context_budget_tokens: 262_144,
+            context_budget_tokens: 32_768,
             reserved_tokens: 8_192,
             recent_tokens: 20_000,
             prefix_messages: vec![prefix.clone()],
@@ -373,6 +405,84 @@ fn openrouter_compactor_summarizes_and_preserves_the_core_retained_suffix() {
         ));
         assert_eq!(result.messages[1], retained);
     });
+}
+
+#[test]
+fn local_catalog_selection_enables_automatic_compaction() {
+    let workspace = std::env::current_dir().expect("test workspace");
+    let tools = DefaultCodingTools::new(workspace).expect("default tools");
+    let compactor = Arc::new(ProviderCompactor::default());
+    let compactor_capability: Arc<dyn Compactor> = compactor.clone();
+    let agent = build_host_agent(tools)
+        .expect("host agent builder")
+        .compactor(compactor_capability)
+        .build();
+    let mut app = App::new(CliOptions::default());
+    app.attach_agent(agent);
+    app.compactor = Some(compactor);
+
+    app.select_model(
+        "local".into(),
+        pi_agent_core::provider::local::LAGUNA_XS_2_1_MODEL.into(),
+    )
+    .expect("local model selection");
+
+    let policy = app
+        .agent()
+        .expect("attached agent")
+        .automatic_compaction();
+    assert!(policy.enabled);
+    assert_eq!(policy.context_budget.tokens(), 32_768);
+    assert_eq!(policy.reserved_tokens, 8_192);
+    assert_eq!(policy.recent_tokens, 16_384);
+    assert_eq!(policy.overflow_recovery, OverflowRecovery::CompactAndRetry);
+    assert_eq!(policy.max_compactions_per_run, 4);
+    assert_eq!(policy.max_overflow_retries_per_run, 1);
+    assert_eq!(
+        app.state().footer_lines(&app.registry)[1],
+        "context unknown% used (unknown/32768); automatic compaction available"
+    );
+}
+
+#[test]
+fn custom_local_model_enables_automatic_compaction_with_explicit_capacity() {
+    let workspace = std::env::current_dir().expect("test workspace");
+    let tools = DefaultCodingTools::new(workspace).expect("default tools");
+    let compactor = Arc::new(ProviderCompactor::default());
+    let compactor_capability: Arc<dyn Compactor> = compactor.clone();
+    let agent = build_host_agent(tools)
+        .expect("host agent builder")
+        .compactor(compactor_capability)
+        .build();
+    let options = CliOptions::parse(
+        [
+            "pi-agent",
+            "--provider",
+            "local",
+            "--model",
+            "Qwen3.5-4B-MLX-4bit",
+            "--local-context-window",
+            "32768",
+        ]
+        .map(OsString::from),
+    )
+    .expect("local capacity options parse");
+    let mut app = App::new(options);
+    app.attach_agent(agent);
+    app.compactor = Some(compactor);
+    app.select_model("local".into(), "Qwen3.5-4B-MLX-4bit".into())
+        .expect("custom local model selection");
+
+    let policy = app
+        .agent()
+        .expect("attached agent")
+        .automatic_compaction();
+    assert!(policy.enabled);
+    assert_eq!(policy.context_budget.tokens(), 32_768);
+    assert_eq!(
+        app.state().footer_lines(&app.registry)[1],
+        "context unknown% used (unknown/32768); automatic compaction available"
+    );
 }
 
 #[test]

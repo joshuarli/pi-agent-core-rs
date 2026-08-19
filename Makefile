@@ -24,6 +24,8 @@ OMLX_HF ?= $(OMLX_VENV)/bin/hf
 LOCAL_PORT ?= 12345
 LOCAL_BASE_URL ?= http://127.0.0.1:$(LOCAL_PORT)/v1
 LOCAL_MODEL ?= Qwen3.5-4B-MLX-4bit
+# Effective oMLX prompt capacity used by the TUI's automatic-compaction policy.
+LOCAL_CONTEXT_WINDOW ?= 32768
 LOCAL_MODEL_REPO ?= mlx-community/Qwen3.5-4B-MLX-4bit
 LOCAL_MODEL_DIR ?= $(HOME)/.omlx/models/$(LOCAL_MODEL)
 LOCAL_OMLX_BASE_PATH ?= /tmp/pi-agent-omlx-$(LOCAL_PORT)
@@ -74,7 +76,7 @@ local-server: local-model
 
 local: local-server
 	cargo build --package pi-agent-tui --bin pi-agent
-	"$(CURDIR)/target/debug/pi-agent" --provider local --local-base-url "$(LOCAL_BASE_URL)" --model "$(LOCAL_MODEL)" --thinking low $(LOCAL_PI_ARGS)
+	"$(CURDIR)/target/debug/pi-agent" --provider local --local-base-url "$(LOCAL_BASE_URL)" --model "$(LOCAL_MODEL)" --local-context-window "$(LOCAL_CONTEXT_WINDOW)" --thinking low $(LOCAL_PI_ARGS)
 
 quality-fast:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality fast

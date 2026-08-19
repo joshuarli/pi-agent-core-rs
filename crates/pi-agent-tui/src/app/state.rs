@@ -6,6 +6,7 @@ use pi_agent_core::provider::ProviderRegistry;
 use pi_agent_core::state::{AgentSnapshot, ToolCallId};
 use pi_agent_core::{Agent, AgentEvent, ModelDescriptor};
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 
 use super::host::{missing_credential, model_candidates, overlay_lines, provider_candidates};
 use super::support::format_usage;
@@ -63,6 +64,9 @@ pub struct AppState {
     /// Presentation projection of the selected model's installed compactor/policy; core remains
     /// the source of compaction truth.
     pub(super) automatic_compaction_enabled: bool,
+    /// Effective context capacity selected by the host. This may be an explicit local override;
+    /// the registry remains the fallback for catalog-backed models.
+    pub(super) selected_context_window: Option<NonZeroU64>,
     pub(super) picker: Option<Picker>,
     pub(super) streaming_line: Option<usize>,
     /// Active generic tool rows keyed by the core-owned call identity.
@@ -405,9 +409,14 @@ impl AppState {
         let usage = usage
             .map(super::support::format_footer_usage)
             .unwrap_or_else(|| super::support::format_unknown_footer_usage().into());
-        let capacity = selected
-            .and_then(|model| registry.provider(&model.provider)?.model(&model.model))
-            .and_then(|model| model.context_window);
+        let capacity = self
+            .selected_context_window
+            .map(NonZeroU64::get)
+            .or_else(|| {
+                selected
+                    .and_then(|model| registry.provider(&model.provider)?.model(&model.model))
+                    .and_then(|model| model.context_window)
+            });
         let compaction = if self.automatic_compaction_enabled {
             "automatic compaction available"
         } else {

@@ -162,6 +162,11 @@ impl App {
             self.state.notice("model changes require an idle agent");
             return Ok(());
         }
+        if provider != "local" && self.options.local_context_window().is_some() {
+            return Err(AppError::Setup(
+                "--local-context-window requires --provider local".into(),
+            ));
+        }
         let configured = self.configured_provider(&provider, &model)?;
         let descriptor = configured.descriptor.clone();
         let configured_provider = configured.provider;
@@ -170,12 +175,18 @@ impl App {
         if let Some(compactor) = &self.compactor {
             compactor.configure(descriptor.clone(), Arc::clone(&configured_provider));
         }
+        let context_window = self
+            .options
+            .local_context_window()
+            .or_else(|| {
+                self.registry
+                    .provider(&provider)
+                    .and_then(|entry| entry.model(&model))
+                    .and_then(|model| model.context_window)
+                    .and_then(NonZeroU64::new)
+            });
         let policy = if self.compactor.is_some() {
-            self.registry
-                .provider(&provider)
-                .and_then(|entry| entry.model(&model))
-                .and_then(|model| model.context_window)
-                .and_then(NonZeroU64::new)
+            context_window
                 .map(automatic_compaction_policy)
                 .unwrap_or_else(AutomaticCompactionPolicy::disabled)
         } else {
@@ -186,6 +197,7 @@ impl App {
             .agent_or_setup()?
             .automatic_compaction()
             .enabled;
+        self.state.selected_context_window = context_window;
         self.state.selected_model = Some(descriptor);
         self.state.context_estimate = None;
         self.state.picker = None;

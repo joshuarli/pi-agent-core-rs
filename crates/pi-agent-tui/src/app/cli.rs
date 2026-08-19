@@ -1,6 +1,7 @@
 use pi_agent_core::ThinkingLevel;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 /// Explicit command-line inputs accepted by the v0 terminal host.
@@ -9,13 +10,15 @@ pub struct CliOptions {
     provider: Option<OsString>,
     model: Option<OsString>,
     local_base_url: Option<OsString>,
+    local_context_window: Option<NonZeroU64>,
     cwd: Option<PathBuf>,
     prompt: Option<OsString>,
     thinking: Option<ThinkingLevel>,
 }
 
 impl CliOptions {
-    /// Parse `pi-agent [--provider <id>] [--model <id>] [--thinking <level>] [--prompt <text>]`.
+    /// Parse explicit provider/model, local endpoint/capacity, thinking, prompt, and workspace
+    /// options.
     pub fn parse<I>(args: I) -> Result<Self, CliError>
     where
         I: IntoIterator<Item = OsString>,
@@ -36,7 +39,7 @@ impl CliOptions {
 
     /// Render the command-line usage text.
     pub const fn help_text() -> &'static str {
-        "Usage: pi-agent [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --local-base-url <url>  Set the local provider API root\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n"
+        "Usage: pi-agent [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --local-base-url <url>  Set the local provider API root\n        --local-context-window <tokens>\n                                Set explicit local context capacity for automatic compaction\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n"
     }
 
     /// Borrow the explicitly selected provider, if supplied.
@@ -52,6 +55,11 @@ impl CliOptions {
     /// Borrow the explicit local provider API root, if supplied.
     pub fn local_base_url(&self) -> Option<&OsStr> {
         self.local_base_url.as_deref()
+    }
+
+    /// Return the explicit local context capacity, if supplied.
+    pub fn local_context_window(&self) -> Option<NonZeroU64> {
+        self.local_context_window
     }
 
     /// Borrow the explicit workspace authority, if supplied.
@@ -88,6 +96,13 @@ impl CliOptions {
                 }
                 return Ok(());
             }
+            OptionSlot::LocalContextWindow => {
+                let context_window = parse_local_context_window(&value)?;
+                if self.local_context_window.replace(context_window).is_some() {
+                    return Err(CliError::DuplicateOption(slot.name()));
+                }
+                return Ok(());
+            }
         };
         if destination.replace(value).is_some() {
             Err(CliError::DuplicateOption(slot.name()))
@@ -119,6 +134,7 @@ where
             "--provider" => OptionSlot::Provider,
             "--model" => OptionSlot::Model,
             "--local-base-url" => OptionSlot::LocalBaseUrl,
+            "--local-context-window" => OptionSlot::LocalContextWindow,
             "--thinking" => OptionSlot::Thinking,
             "-p" | "--prompt" => OptionSlot::Prompt,
             "--cwd" => OptionSlot::Cwd,
@@ -143,6 +159,7 @@ enum OptionSlot {
     Provider,
     Model,
     LocalBaseUrl,
+    LocalContextWindow,
     Thinking,
     Prompt,
     Cwd,
@@ -154,6 +171,7 @@ impl OptionSlot {
             Self::Provider => "--provider",
             Self::Model => "--model",
             Self::LocalBaseUrl => "--local-base-url",
+            Self::LocalContextWindow => "--local-context-window",
             Self::Thinking => "--thinking",
             Self::Prompt => "-p/--prompt",
             Self::Cwd => "--cwd",
@@ -214,6 +232,17 @@ fn parse_thinking_level(value: &OsStr) -> Result<ThinkingLevel, CliError> {
             value: value.to_owned(),
         }),
     }
+}
+
+fn parse_local_context_window(value: &OsStr) -> Result<NonZeroU64, CliError> {
+    value
+        .to_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(NonZeroU64::new)
+        .ok_or_else(|| CliError::InvalidValue {
+            flag: "--local-context-window",
+            value: value.to_owned(),
+        })
 }
 
 impl std::error::Error for CliError {}
