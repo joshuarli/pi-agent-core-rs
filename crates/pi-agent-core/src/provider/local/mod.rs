@@ -1,7 +1,7 @@
 //! Local OpenAI-compatible Chat Completions provider.
 //!
 //! This adapter is intentionally transport-specific but server-agnostic: the caller supplies a
-//! base URL and model, and the adapter sends one finite `chat/completions` request through the
+//! base URL and model, and the adapter sends one streaming `chat/completions` request through the
 //! shared rustls-backed HTTP boundary. It does not discover a server, read credentials, inspect the home
 //! directory, or select a model from the environment. oMLX is the first supported local server;
 //! its Laguna XS 2.1 endpoint is represented by [`LocalConfig::laguna_xs_2_1`].
@@ -10,16 +10,18 @@ mod config;
 mod payload;
 mod response;
 
-use super::http::{send, Request};
+use super::http::{stream, HttpStream, Request, StreamEvent};
 pub use config::{LocalConfig, LocalConfigError};
-use payload::{cancelled_stream, local_payload};
-use response::parse_local_response;
+use payload::local_payload;
+use response::{parse_local_response, LocalSseComplete, LocalSseDecoder};
 
 use crate::scheduler::{
-    CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    CancellationToken, ModelEventFuture, ModelEventStream, ModelFuture, ModelProvider,
+    ModelRequest, ModelStreamEvent,
 };
-use crate::state::Usage;
+use std::collections::VecDeque;
 use std::fmt;
+use std::task::{Context, Poll};
 
 /// The model ID exposed by the documented 5-bit Laguna checkpoint.
 pub const LAGUNA_XS_2_1_MODEL: &str = "Laguna-XS-2.1-5bit";
@@ -27,7 +29,7 @@ pub const LAGUNA_XS_2_1_MODEL: &str = "Laguna-XS-2.1-5bit";
 /// Default local OpenAI-compatible API root used by oMLX.
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 
-/// A finite-response local OpenAI-compatible provider.
+/// A streaming local OpenAI-compatible provider.
 pub struct LocalProvider {
     config: LocalConfig,
 }
@@ -47,38 +49,65 @@ impl LocalProvider {
         Self { config }
     }
 
-    fn response_stream(
-        &self,
+}
+
+/// One live local SSE response.  The HTTP worker owns blocking body reads while this source
+/// remains caller-polled through the provider-neutral model stream boundary.
+struct LocalEventStream {
+    config: LocalConfig,
+    response: Option<HttpStream>,
+    decoder: Option<LocalSseDecoder>,
+    pending: VecDeque<ModelStreamEvent>,
+    status_code: Option<u16>,
+    error_body: Vec<u8>,
+}
+
+impl LocalEventStream {
+    fn start(
+        config: LocalConfig,
         request: ModelRequest,
         cancellation: CancellationToken,
-    ) -> ModelStream {
+    ) -> Self {
+        let mut event_stream = Self {
+            config,
+            response: None,
+            decoder: None,
+            pending: VecDeque::new(),
+            status_code: None,
+            error_body: Vec::new(),
+        };
         if cancellation.is_cancelled() {
-            return cancelled_stream();
+            event_stream
+                .pending
+                .push_back(ModelStreamEvent::End(crate::state::StopReason::Cancelled));
+            return event_stream;
         }
-        match self.complete(request, &cancellation) {
-            Ok((mut events, usage)) => {
-                if cancellation.is_cancelled() {
-                    return cancelled_stream();
-                }
-                let terminal = events
-                    .pop()
-                    .expect("local response parser always returns a terminal event");
-                events.push(ModelStreamEvent::Usage(usage));
-                events.push(terminal);
-                ModelStream { events }
+        if let Err(message) = event_stream.validate_model(&request) {
+            event_stream.pending.push_back(ModelStreamEvent::Error { message });
+            return event_stream;
+        }
+        let payload = match local_payload(&event_stream.config, request) {
+            Ok(payload) => payload,
+            Err(message) => {
+                event_stream.pending.push_back(ModelStreamEvent::Error { message });
+                return event_stream;
             }
-            Err(_message) if cancellation.is_cancelled() => cancelled_stream(),
-            Err(message) => ModelStream {
-                events: vec![ModelStreamEvent::Error { message }],
-            },
-        }
+        };
+        let endpoint = format!(
+            "{}/chat/completions",
+            event_stream.config.base_url.trim_end_matches('/')
+        );
+        event_stream.response = Some(stream(
+            Request::post(endpoint, payload.into_bytes(), event_stream.config.request_timeout)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream"),
+            &cancellation,
+        ));
+        event_stream.decoder = Some(LocalSseDecoder::new());
+        event_stream
     }
 
-    fn complete(
-        &self,
-        request: ModelRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<ModelStreamEvent>, Usage), String> {
+    fn validate_model(&self, request: &ModelRequest) -> Result<(), String> {
         let model = request
             .model
             .as_ref()
@@ -89,27 +118,114 @@ impl LocalProvider {
                 model.provider, model.model, self.config.model
             ));
         }
-        let payload = local_payload(&self.config, request)?;
-        let endpoint = format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        );
-        let response = send(
-            Request::post(endpoint, payload.into_bytes(), self.config.request_timeout)
-                .header("Content-Type", "application/json"),
-            cancellation,
-        )
-        .map_err(|failure| {
-            if cancellation.is_cancelled() || failure.message == "HTTP request cancelled" {
-                "local transport cancelled".to_owned()
-            } else {
+        Ok(())
+    }
+
+    fn response_failure(&mut self, message: String) {
+        self.response = None;
+        self.decoder = None;
+        self.pending.push_back(ModelStreamEvent::Error { message });
+    }
+
+    fn finish_response(&mut self) {
+        self.response = None;
+        if self
+            .status_code
+            .is_some_and(|status| !(200..300).contains(&status))
+        {
+            let message = parse_local_response(
+                &self.error_body,
+                self.status_code.expect("non-success status is present"),
+            )
+            .err()
+            .unwrap_or_else(|| {
                 format!(
-                    "local transport failed before a provider response: {}",
-                    failure.message
+                    "local server returned HTTP {} without a completion",
+                    self.status_code.expect("non-success status is present")
                 )
+            });
+            self.response_failure(message);
+            return;
+        }
+        let Some(decoder) = self.decoder.take() else {
+            self.response_failure("local response stream was not initialized".to_owned());
+            return;
+        };
+        match decoder.finish() {
+            Ok(LocalSseComplete { events }) => self.pending.extend(events),
+            Err(message) => self.response_failure(message),
+        }
+    }
+
+    fn poll_next_event(
+        &mut self,
+        context: &mut Context<'_>,
+        cancellation: CancellationToken,
+    ) -> Poll<Result<Option<ModelStreamEvent>, crate::error::SchedulerError>> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Poll::Ready(Ok(Some(event)));
             }
-        })?;
-        parse_local_response(&response.body, response.status_code)
+            if cancellation.is_cancelled() {
+                self.response = None;
+                self.decoder = None;
+                return Poll::Ready(Ok(Some(ModelStreamEvent::End(
+                    crate::state::StopReason::Cancelled,
+                ))));
+            }
+            let Some(response) = self.response.as_mut() else {
+                return Poll::Ready(Ok(None));
+            };
+            match response.poll_next(context) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(StreamEvent::Response { status_code }) => {
+                    self.status_code = Some(status_code);
+                }
+                Poll::Ready(StreamEvent::Chunk(bytes)) => {
+                    if self
+                        .status_code
+                        .is_some_and(|status| !(200..300).contains(&status))
+                    {
+                        self.error_body.extend_from_slice(&bytes);
+                        continue;
+                    }
+                    let Some(decoder) = self.decoder.as_mut() else {
+                        self.response_failure("local response stream was not initialized".to_owned());
+                        continue;
+                    };
+                    match decoder.push(&bytes) {
+                        Ok(events) => self.pending.extend(events),
+                        Err(message) => self.response_failure(message),
+                    }
+                }
+                Poll::Ready(StreamEvent::End) => self.finish_response(),
+                Poll::Ready(StreamEvent::Failure(failure)) => {
+                    if cancellation.is_cancelled() || failure.message == "HTTP request cancelled" {
+                        self.response = None;
+                        self.decoder = None;
+                        self.pending
+                            .push_back(ModelStreamEvent::End(crate::state::StopReason::Cancelled));
+                    } else {
+                        self.response_failure(format!(
+                            "local HTTP transport failed{}: {}",
+                            failure
+                                .status_code
+                                .map(|status| format!(" with status {status}"))
+                                .unwrap_or_default(),
+                            failure.message
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ModelEventStream for LocalEventStream {
+    fn next_event<'a>(&'a mut self, cancellation: CancellationToken) -> ModelEventFuture<'a> {
+        Box::pin(std::future::poll_fn(move |context| {
+            self.poll_next_event(context, cancellation.clone())
+        }))
     }
 }
 
@@ -119,7 +235,7 @@ impl ModelProvider for LocalProvider {
         request: ModelRequest,
         cancellation: CancellationToken,
     ) -> ModelFuture<'a> {
-        let stream = self.response_stream(request, cancellation);
+        let stream = LocalEventStream::start(self.config.clone(), request, cancellation);
         Box::pin(std::future::ready(Ok(Box::new(stream) as _)))
     }
 }
@@ -129,7 +245,9 @@ mod tests {
     use super::{
         local_payload, parse_local_response, LocalConfig, LocalProvider, LAGUNA_XS_2_1_MODEL,
     };
-    use crate::scheduler::{CancellationToken, ModelRequest, ModelStreamEvent};
+    use crate::scheduler::{
+        CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent,
+    };
     use crate::state::{ModelDescriptor, ThinkingLevel, Usage};
     use crate::tool::ToolDefinition;
     use pi_agent_protocol::JsonValue;
@@ -137,6 +255,8 @@ mod tests {
     use std::io::{Read, Write};
     #[cfg(unix)]
     use std::net::TcpListener;
+    #[cfg(unix)]
+    use std::sync::mpsc;
 
     #[test]
     fn laguna_defaults_target_o_mlx_without_ambient_configuration() {
@@ -180,7 +300,13 @@ mod tests {
     fn transport_posts_the_serialized_body_to_the_local_endpoint() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
         let address = listener.local_addr().expect("mock server address");
-        let response = br#"{"choices":[{"finish_reason":"stop","message":{"content":"READY","tool_calls":[]}}],"usage":{"prompt_tokens":4,"completion_tokens":1}}"#;
+        let response = br#"data: {"choices":[{"delta":{"content":"READY"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1}}
+
+data: [DONE]
+
+"#;
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("mock server should accept");
             let mut request = Vec::new();
@@ -211,8 +337,10 @@ mod tests {
             let body = String::from_utf8_lossy(&request[body_start..body_start + content_length]);
             assert!(body.contains("\"model\":\"Laguna-XS-2.1-5bit\""));
             assert!(body.contains("\"enable_thinking\":true"));
+            assert!(body.contains("\"stream\":true"));
+            assert!(body.contains("\"include_usage\":true"));
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 response.len()
             );
             stream
@@ -234,15 +362,106 @@ mod tests {
             }),
             thinking_level: ThinkingLevel::High,
         };
-        let (events, usage) = provider
-            .complete(request, &CancellationToken::new())
-            .expect("mock local response should parse");
+        let cancellation = CancellationToken::new();
+        let mut source = smol::block_on(provider.stream(request, cancellation.clone()))
+            .expect("mock local response should start");
         server.join().expect("mock server should finish");
         assert!(
-            matches!(events.first(), Some(ModelStreamEvent::TextDelta(text)) if text == "READY")
+            matches!(smol::block_on(source.next_event(cancellation.clone())), Ok(Some(ModelStreamEvent::TextDelta(text))) if text == "READY")
         );
-        assert_eq!(usage.input_tokens, Some(4));
-        assert_eq!(usage.output_tokens, Some(1));
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation.clone())),
+            Ok(Some(ModelStreamEvent::Usage(Usage {
+                input_tokens: Some(4),
+                output_tokens: Some(1),
+                ..Usage::default()
+            })))
+        );
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation)),
+            Ok(Some(ModelStreamEvent::End(crate::state::StopReason::Stop)))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_local_stream_yields_a_delta_before_the_response_body_settles() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock HTTP server should bind");
+        let address = listener.local_addr().expect("mock HTTP server address");
+        let first = br#"data: {"choices":[{"delta":{"content":"first "},"finish_reason":null}]}
+
+"#;
+        let second = br#"data: {"choices":[{"delta":{"content":"second"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2}}
+
+data: [DONE]
+
+"#;
+        let (first_sent, first_received) = mpsc::channel();
+        let (release, wait_for_release) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("provider should connect");
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        first.len() + second.len()
+                    )
+                    .as_bytes(),
+                )
+                .expect("response headers should write");
+            socket.write_all(first).expect("first SSE record should write");
+            socket.flush().expect("first SSE record should flush");
+            first_sent.send(()).expect("test should observe first record");
+            wait_for_release
+                .recv()
+                .expect("test should release the response body");
+            socket
+                .write_all(second)
+                .expect("terminal SSE records should write");
+        });
+        let provider = LocalProvider::new(
+            LocalConfig::laguna_xs_2_1(format!("http://{address}/v1"))
+                .with_request_timeout(std::time::Duration::from_secs(5)),
+        );
+        let cancellation = CancellationToken::new();
+        let mut source = smol::block_on(provider.stream(
+            ModelRequest {
+                context: "[]".into(),
+                model: Some(ModelDescriptor {
+                    provider: "local".into(),
+                    model: LAGUNA_XS_2_1_MODEL.into(),
+                    revision: None,
+                }),
+                ..ModelRequest::default()
+            },
+            cancellation.clone(),
+        ))
+        .expect("local provider should start an event source");
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation.clone())),
+            Ok(Some(ModelStreamEvent::TextDelta("first ".into())))
+        );
+        first_received
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("mock server should send the first record");
+        release.send(()).expect("mock server should receive release");
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation.clone())),
+            Ok(Some(ModelStreamEvent::TextDelta("second".into())))
+        );
+        assert!(matches!(
+            smol::block_on(source.next_event(cancellation.clone())),
+            Ok(Some(ModelStreamEvent::Usage(Usage {
+                input_tokens: Some(2),
+                output_tokens: Some(2),
+                ..
+            })))
+        ));
+        assert_eq!(
+            smol::block_on(source.next_event(cancellation)),
+            Ok(Some(ModelStreamEvent::End(crate::state::StopReason::Stop)))
+        );
+        server.join().expect("mock server should finish");
     }
 
     #[test]

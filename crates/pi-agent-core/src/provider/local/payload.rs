@@ -2,14 +2,8 @@
 
 use super::config::LocalConfig;
 use crate::json::{json_value, JsonValue};
-use crate::scheduler::{ModelRequest, ModelStream, ModelStreamEvent};
-use crate::state::{StopReason, ThinkingLevel};
-
-pub(super) fn cancelled_stream() -> ModelStream {
-    ModelStream {
-        events: vec![ModelStreamEvent::End(StopReason::Cancelled)],
-    }
-}
+use crate::scheduler::ModelRequest;
+use crate::state::ThinkingLevel;
 
 pub(super) fn local_payload(config: &LocalConfig, request: ModelRequest) -> Result<String, String> {
     let context = JsonValue::parse(request.context.trim())
@@ -48,7 +42,10 @@ pub(super) fn local_payload(config: &LocalConfig, request: ModelRequest) -> Resu
         "top_p": config.top_p,
         "min_p": config.min_p,
         "max_tokens": config.max_tokens,
-        "stream": false,
+        // Local OpenAI-compatible servers expose incremental responses as SSE.  The
+        // provider owns decoding those records, so the request must opt into that wire mode.
+        "stream": true,
+        "stream_options": JsonValue::object([("include_usage", JsonValue::from(true))]),
         "chat_template_kwargs": JsonValue::object([(
             "enable_thinking",
             JsonValue::from(config.enable_thinking && request.thinking_level != ThinkingLevel::Off),

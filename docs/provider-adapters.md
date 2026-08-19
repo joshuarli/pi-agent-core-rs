@@ -18,7 +18,7 @@ opaque caller providers or replay a stream after it has exposed events.
 | --- | --- | --- | --- |
 | `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions SSE plus inline usage/accounting | Opt-in incremental rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
 | `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in native HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
-| `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions endpoint | Opt-in finite-response native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
+| `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions SSE endpoint | Opt-in incremental native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
 
 Enable only the provider an application owns:
 
@@ -182,17 +182,17 @@ fallback. The current gateway may emit a `provider-metadata` envelope after
 `finish`; it is accepted as non-content metadata rather than misclassified as a
 second terminal event.
 
-OpenRouter exposes network-time assistant deltas through the core stream while
-preserving final usage before its terminal event. Command Code and Local still
-collect their timeout-bounded native responses before returning their finite
-core streams. Hosts that need live transport streaming from those adapters
-should implement `ModelProvider` directly while preserving the same request
-and event contracts.
+OpenRouter and Local expose network-time assistant deltas through the core
+stream while preserving final usage before their terminal events. Command Code
+still collects its timeout-bounded native response before returning a finite
+core stream. The generic `ModelProvider` port does not retry or replay a stream
+after it has exposed events.
 
 All in-tree native adapters own their native request boundary. On the run
-cancellation token, Local and Command Code check cancellation before, between
-body chunks, and after the timeout-bounded request. OpenRouter's body worker
-does the same while yielding completed chunks to the caller-polled stream.
+cancellation token, Local and Command Code check cancellation before and
+between body chunks, while OpenRouter's and Local's body workers yield
+completed chunks to the caller-polled stream. Command Code also checks after
+its timeout-bounded request settles.
 Cancellation does not become a retryable transport error. Immediate mid-read
 interruption remains bounded by the native receive timeout.
 
@@ -211,10 +211,13 @@ let provider = LocalProvider::new(config);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The request uses `POST /v1/chat/completions` with `stream: false`, OpenAI
+The request uses `POST /v1/chat/completions` with `stream: true`, OpenAI
 function tools, `max_tokens`, and
 `chat_template_kwargs: {"enable_thinking": true}` for Laguna. The adapter
-maps oMLX's `tool_calls`, `finish_reason`, and prompt/completion/cache usage
-fields into the core stream contract. Reasoning text is intentionally ignored
-because the current core stream model has no separate reasoning-content event;
-turning it into assistant text would corrupt later context.
+decodes SSE `delta.content` records as they arrive, assembles indexed tool-call
+fragments into complete calls, and maps `finish_reason` plus
+prompt/completion/cache usage fields (requested with
+`stream_options.include_usage`) into the core stream contract. Reasoning
+text is intentionally ignored because the current core stream model has no
+separate reasoning-content event; turning it into assistant text would corrupt
+later context.

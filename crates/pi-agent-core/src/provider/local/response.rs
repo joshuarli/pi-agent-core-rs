@@ -4,6 +4,198 @@ use crate::json::{from_bytes, JsonValue};
 use crate::scheduler::ModelStreamEvent;
 use crate::state::{AgentToolCall, SerializedJson, StopReason, ToolCallId, Usage};
 use std::collections::BTreeMap;
+
+/// The completed portion of one local OpenAI-compatible SSE response.
+pub(super) struct LocalSseComplete {
+    pub(super) events: Vec<ModelStreamEvent>,
+}
+
+#[derive(Default)]
+struct StreamingToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+/// Incremental decoder for OpenAI-compatible Chat Completions SSE records.
+///
+/// Text is emitted as each `delta.content` record arrives. Tool calls are assembled from their
+/// indexed fragments and exposed only after the response has settled, matching the core event
+/// contract's complete-call boundary.
+pub(super) struct LocalSseDecoder {
+    buffered: Vec<u8>,
+    tool_calls: Vec<Option<StreamingToolCall>>,
+    finish_reason: Option<String>,
+    usage: JsonValue,
+    saw_data: bool,
+    saw_done: bool,
+}
+
+impl LocalSseDecoder {
+    pub(super) fn new() -> Self {
+        Self {
+            buffered: Vec::new(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            usage: JsonValue::Null,
+            saw_data: false,
+            saw_done: false,
+        }
+    }
+
+    /// Reduce complete SSE records from an arbitrary HTTP body chunk.
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, String> {
+        self.buffered.extend_from_slice(bytes);
+        let mut events = Vec::new();
+        while let Some(newline) = self.buffered.iter().position(|byte| *byte == b'\n') {
+            let mut line = self.buffered.drain(..=newline).collect::<Vec<_>>();
+            line.pop();
+            self.process_line(&line, &mut events)?;
+        }
+        Ok(events)
+    }
+
+    /// Finish a response body and append usage, tool calls, and the terminal event.
+    pub(super) fn finish(mut self) -> Result<LocalSseComplete, String> {
+        let mut events = Vec::new();
+        if !self.buffered.is_empty() {
+            let line = std::mem::take(&mut self.buffered);
+            self.process_line(&line, &mut events)?;
+        }
+        if !self.saw_data || (!self.saw_done && self.finish_reason.is_none()) {
+            return Err("local SSE response ended before completion".to_owned());
+        }
+        let has_tool_calls = self.tool_calls.iter().any(Option::is_some);
+        for (index, call) in self.tool_calls.into_iter().flatten().enumerate() {
+            let id = call
+                .id
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| format!("local-call-{index}"));
+            let name = call
+                .name
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| "local tool call did not contain a name".to_owned())?;
+            events.push(ModelStreamEvent::ToolCall(AgentToolCall {
+                id: ToolCallId::new(id).map_err(|error| error.to_string())?,
+                name,
+                arguments: SerializedJson::new(call.arguments),
+            }));
+        }
+        let usage = parse_stream_usage(Some(&self.usage));
+        // Preserve the finite local adapter's accounting contract: one usage update precedes
+        // every terminal event, even when the server omitted token counts.
+        events.push(ModelStreamEvent::Usage(usage));
+        let stop_reason = match self.finish_reason.as_deref() {
+            Some("length") => StopReason::Length,
+            Some("tool_calls" | "tool_call") if has_tool_calls => {
+                StopReason::ToolUse
+            }
+            _ if has_tool_calls => StopReason::ToolUse,
+            _ => StopReason::Stop,
+        };
+        events.push(ModelStreamEvent::End(stop_reason));
+        Ok(LocalSseComplete { events })
+    }
+
+    fn process_line(
+        &mut self,
+        line: &[u8],
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> Result<(), String> {
+        let line = std::str::from_utf8(line)
+            .map_err(|_| "local server returned a non-UTF-8 SSE response".to_owned())?
+            .trim();
+        if line.is_empty() || line.starts_with(':') {
+            return Ok(());
+        }
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            return Ok(());
+        };
+        if data == "[DONE]" {
+            self.saw_done = true;
+            return Ok(());
+        }
+        self.saw_data = true;
+        let chunk = crate::json::from_bytes(data.as_bytes())
+            .map_err(|_| "local server returned an invalid SSE event".to_owned())?;
+        if let Some(error) = chunk.get("error") {
+            return Err(format!(
+                "local server rejected the request: {}",
+                error_message(error)
+            ));
+        }
+        if let Some(usage) = chunk.get("usage") {
+            if !matches!(usage, JsonValue::Null) {
+                self.usage = usage.clone();
+            }
+        }
+        let Some(choice) = chunk
+            .get("choices")
+            .and_then(JsonValue::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            return Ok(());
+        };
+        if let Some(reason) = choice.get("finish_reason").and_then(JsonValue::as_str) {
+            self.finish_reason = Some(reason.to_owned());
+        }
+        let delta = choice
+            .get("delta")
+            .and_then(JsonValue::as_object)
+            .or_else(|| choice.get("message").and_then(JsonValue::as_object));
+        let Some(delta) = delta else {
+            return Ok(());
+        };
+        if let Some(content) = delta.get("content").and_then(JsonValue::as_str) {
+            if !content.is_empty() {
+                events.push(ModelStreamEvent::TextDelta(content.to_owned()));
+            }
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(JsonValue::as_array) {
+            for (position, call) in calls.iter().enumerate() {
+                let index = call
+                    .get("index")
+                    .and_then(JsonValue::as_u64)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .unwrap_or(position);
+                while self.tool_calls.len() <= index {
+                    self.tool_calls.push(None);
+                }
+                let entry = self.tool_calls[index].get_or_insert_with(StreamingToolCall::default);
+                if let Some(id) = call.get("id").and_then(JsonValue::as_str) {
+                    entry.id = Some(id.to_owned());
+                }
+                if let Some(function) = call.get("function").and_then(JsonValue::as_object) {
+                    if let Some(name) = function.get("name").and_then(JsonValue::as_str) {
+                        entry.name = Some(name.to_owned());
+                    }
+                    if let Some(arguments) = function.get("arguments").and_then(JsonValue::as_str)
+                    {
+                        entry.arguments.push_str(arguments);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_stream_usage(value: Option<&JsonValue>) -> Usage {
+    let Some(value) = value else {
+        return Usage::default();
+    };
+    Usage {
+        input_tokens: value.get("prompt_tokens").and_then(JsonValue::as_u64),
+        output_tokens: value.get("completion_tokens").and_then(JsonValue::as_u64),
+        cache_read_tokens: value
+            .get("prompt_tokens_details")
+            .and_then(JsonValue::as_object)
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(JsonValue::as_u64),
+        ..Usage::default()
+    }
+}
+
 pub(super) fn parse_local_response(
     bytes: &[u8],
     http_status: u16,
@@ -148,4 +340,82 @@ fn error_message(error: &JsonValue) -> String {
             _ => None,
         })
         .unwrap_or_else(|| "local server rejected the request".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LocalSseDecoder, ModelStreamEvent};
+    use crate::state::{StopReason, Usage};
+
+    #[test]
+    fn local_sse_decoder_releases_text_before_terminal_records() {
+        let mut decoder = LocalSseDecoder::new();
+        assert_eq!(
+            decoder
+                .push(
+                    br#"data: {"choices":[{"delta":{"content":"first "},"finish_reason":null}]}
+
+"#,
+                )
+                .expect("first local SSE record parses"),
+            [ModelStreamEvent::TextDelta("first ".into())]
+        );
+        assert_eq!(
+            decoder
+                .push(
+                    br#"data: {"choices":[{"delta":{"content":"second"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}
+
+data: [DONE]
+
+"#,
+                )
+                .expect("terminal local SSE records parse"),
+            [ModelStreamEvent::TextDelta("second".into())]
+        );
+        let complete = decoder.finish().expect("local SSE body settles");
+        assert_eq!(
+            complete.events,
+            [
+                ModelStreamEvent::Usage(Usage {
+                    input_tokens: Some(2),
+                    output_tokens: Some(1),
+                    ..Usage::default()
+                }),
+                ModelStreamEvent::End(StopReason::Stop),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_sse_decoder_assembles_indexed_tool_fragments() {
+        let mut decoder = LocalSseDecoder::new();
+        decoder
+            .push(
+                br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"write","arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+"#,
+            )
+            .expect("first tool fragment parses");
+        decoder
+            .push(
+                br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"a.py\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+            )
+            .expect("terminal tool fragment parses");
+        let complete = decoder.finish().expect("tool response settles");
+        assert!(matches!(
+            complete.events.first(),
+            Some(ModelStreamEvent::ToolCall(call))
+                if call.id.as_str() == "call_1"
+                    && call.name == "write"
+                    && call.arguments.as_str() == "{\"path\":\"a.py\"}"
+        ));
+        assert_eq!(
+            complete.events.last(),
+            Some(&ModelStreamEvent::End(StopReason::ToolUse))
+        );
+    }
 }

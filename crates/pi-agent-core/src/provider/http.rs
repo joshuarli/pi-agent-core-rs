@@ -2,8 +2,9 @@
 //!
 //! The core deliberately does not expose an HTTP client. Provider features use one explicit
 //! `ureq` agent configured with rustls, no ambient proxy discovery, and bounded request phases.
-//! Responses are collected before the adapter returns its finite model stream; provider modules
-//! retain ownership of status/error classification and response parsing.
+//! Providers choose whether to collect the body with [`send`] or expose the body incrementally
+//! with [`stream`]; provider modules retain ownership of status/error classification and response
+//! parsing.
 
 #![allow(dead_code)] // provider features consume different request methods and response fields
 

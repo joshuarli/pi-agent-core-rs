@@ -201,10 +201,11 @@ The core has no unsafe Rust and no Tokio type in public or private APIs. Depende
 keep cancellation executor-agnostic and isolate the chosen token implementation behind the core
 contract.
 
-Concrete native adapters own their synchronous request boundary to settlement. Local, OpenRouter,
-and Command Code check cancellation before, between body chunks, and after their timeout-bounded
-ureq operation; the generic core additionally wakes its sequential tool poll on cancellation and records a
-cancellation result rather than leaving an uncooperative future holding run ownership.
+Concrete native adapters own their request boundary to settlement. Local and OpenRouter expose
+caller-polled body streams; Command Code uses a finite response. Each checks cancellation before
+and between body chunks (and after a finite request settles); the generic core additionally wakes
+its sequential tool poll on cancellation and records a cancellation result rather than leaving an
+uncooperative future holding run ownership.
 
 ## Default coding profile adapter
 
