@@ -190,7 +190,16 @@ impl App {
         let mut words = input.split_whitespace();
         let command = words.next().unwrap_or_default();
         if self.agent_is_active()
-            && matches!(command, "/model" | "/compact" | "/session" | "/resume" | "/new" | "/clear" | "/reload-extensions")
+            && matches!(
+                command,
+                "/model"
+                    | "/compact"
+                    | "/session"
+                    | "/resume"
+                    | "/new"
+                    | "/clear"
+                    | "/reload-extensions"
+            )
         {
             self.state
                 .notice(format!("{command} is unavailable while a run is active"));

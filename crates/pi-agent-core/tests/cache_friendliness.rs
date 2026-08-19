@@ -47,8 +47,13 @@ fn adjacent_text_turns_keep_the_prior_context_prefix() {
         .build();
 
     for prompt in ["first turn", "second turn", "third turn"] {
-        smol::block_on(agent.start_prompt(prompt).expect("idle fixture agent").drive())
-            .expect("fixture run settles");
+        smol::block_on(
+            agent
+                .start_prompt(prompt)
+                .expect("idle fixture agent")
+                .drive(),
+        )
+        .expect("fixture run settles");
     }
 
     let requests = provider

@@ -63,17 +63,39 @@ pub(crate) struct SessionSummary {
 /// Failures at the application-owned persistence boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionError {
-    Io { path: PathBuf, message: String },
-    Contract { path: PathBuf, message: String },
-    Json { path: PathBuf, line: usize, message: String },
+    Io {
+        path: PathBuf,
+        message: String,
+    },
+    Contract {
+        path: PathBuf,
+        message: String,
+    },
+    Json {
+        path: PathBuf,
+        line: usize,
+        message: String,
+    },
 }
 
 impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io { path, message } => write!(f, "session I/O failed at {}: {message}", path.display()),
-            Self::Contract { path, message } => write!(f, "invalid session at {}: {message}", path.display()),
-            Self::Json { path, line, message } => write!(f, "invalid session JSON at {} line {line}: {message}", path.display()),
+            Self::Io { path, message } => {
+                write!(f, "session I/O failed at {}: {message}", path.display())
+            }
+            Self::Contract { path, message } => {
+                write!(f, "invalid session at {}: {message}", path.display())
+            }
+            Self::Json {
+                path,
+                line,
+                message,
+            } => write!(
+                f,
+                "invalid session JSON at {} line {line}: {message}",
+                path.display()
+            ),
         }
     }
 }
@@ -109,9 +131,13 @@ impl SessionStore {
     pub(crate) fn save(&self, record: &SessionRecord) -> Result<PathBuf, SessionError> {
         validate_session_id(&record.id).map_err(|message| contract(&self.directory, message))?;
         self.ensure_directory()?;
-        let destination = self
-            .find_path(&record.id)?
-            .unwrap_or_else(|| self.directory.join(format!("{}_{}.jsonl", filename_timestamp(&record.timestamp), record.id)));
+        let destination = self.find_path(&record.id)?.unwrap_or_else(|| {
+            self.directory.join(format!(
+                "{}_{}.jsonl",
+                filename_timestamp(&record.timestamp),
+                record.id
+            ))
+        });
         let source = encode_file(record)
             .into_iter()
             .map(|value| value.to_json_string().map(|line| format!("{line}\n")))
@@ -122,7 +148,10 @@ impl SessionStore {
                 message: error.to_string(),
             })?;
         if source.len() as u64 > MAX_SESSION_BYTES {
-            return Err(contract(&destination, "session exceeds the 16 MiB safety limit"));
+            return Err(contract(
+                &destination,
+                "session exceeds the 16 MiB safety limit",
+            ));
         }
         let nonce = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let temporary = self.directory.join(format!(".session-{nonce}.tmp"));
@@ -140,9 +169,12 @@ impl SessionStore {
 
     pub(crate) fn load(&self, id: &str) -> Result<SessionRecord, SessionError> {
         validate_session_id(id).map_err(|message| contract(&self.directory, message))?;
-        let path = self
-            .find_path(id)?
-            .ok_or_else(|| io_error(&self.directory, std::io::Error::from(std::io::ErrorKind::NotFound)))?;
+        let path = self.find_path(id)?.ok_or_else(|| {
+            io_error(
+                &self.directory,
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            )
+        })?;
         decode_file(&path)
     }
 
@@ -168,7 +200,9 @@ impl SessionStore {
             {
                 continue;
             }
-            let Ok(record) = decode_file(&path) else { continue };
+            let Ok(record) = decode_file(&path) else {
+                continue;
+            };
             let modified_at_ms = metadata
                 .modified()
                 .ok()
@@ -200,7 +234,9 @@ impl SessionStore {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
             if !metadata.file_type().is_file()
                 || path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
             {
@@ -224,9 +260,13 @@ impl SessionStore {
             }
         }
         fs::create_dir_all(&self.directory).map_err(|error| io_error(&self.directory, error))?;
-        let metadata = fs::symlink_metadata(&self.directory).map_err(|error| io_error(&self.directory, error))?;
+        let metadata = fs::symlink_metadata(&self.directory)
+            .map_err(|error| io_error(&self.directory, error))?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(contract(&self.directory, "session directory must be a real directory"));
+            return Err(contract(
+                &self.directory,
+                "session directory must be a real directory",
+            ));
         }
         set_private_directory(&self.sessions_root)?;
         set_private_directory(&self.directory)?;
@@ -262,7 +302,10 @@ fn encode_file(record: &SessionRecord) -> Vec<JsonValue> {
         ("id", JsonValue::String(thinking_id.clone())),
         ("parentId", optional_string(parent.as_deref())),
         ("timestamp", JsonValue::String(timestamp_iso(now_ms()))),
-        ("thinkingLevel", JsonValue::String(thinking_name(record.thinking_level).into())),
+        (
+            "thinkingLevel",
+            JsonValue::String(thinking_name(record.thinking_level).into()),
+        ),
     ]));
     parent = Some(thinking_id);
     for message in &record.messages {
@@ -311,9 +354,26 @@ fn encode_message(message: &AgentMessage, model: Option<&ModelDescriptor>) -> Js
             let mut fields = vec![
                 ("role", JsonValue::String("assistant".into())),
                 ("content", JsonValue::Array(blocks)),
-                ("provider", JsonValue::String(model.map(|model| model.provider.clone()).unwrap_or_default())),
-                ("model", JsonValue::String(model.map(|model| model.model.clone()).unwrap_or_default())),
-                ("stopReason", stop_reason.map(stop_reason_name).map(String::from).map(JsonValue::String).unwrap_or(JsonValue::String("stop".into()))),
+                (
+                    "provider",
+                    JsonValue::String(
+                        model
+                            .map(|model| model.provider.clone())
+                            .unwrap_or_default(),
+                    ),
+                ),
+                (
+                    "model",
+                    JsonValue::String(model.map(|model| model.model.clone()).unwrap_or_default()),
+                ),
+                (
+                    "stopReason",
+                    stop_reason
+                        .map(stop_reason_name)
+                        .map(String::from)
+                        .map(JsonValue::String)
+                        .unwrap_or(JsonValue::String("stop".into())),
+                ),
                 ("timestamp", number(now_ms())),
             ];
             if let Some(error) = error_message {
@@ -333,14 +393,29 @@ fn encode_message(message: &AgentMessage, model: Option<&ModelDescriptor>) -> Js
         } => {
             let mut fields = vec![
                 ("role", JsonValue::String("toolResult".into())),
-                ("toolCallId", JsonValue::String(tool_call_id.as_str().into())),
+                (
+                    "toolCallId",
+                    JsonValue::String(tool_call_id.as_str().into()),
+                ),
                 ("toolName", JsonValue::String(tool_name.clone())),
-                ("content", JsonValue::Array(vec![JsonValue::object([
-                    ("type", JsonValue::String("text".into())),
-                    ("text", JsonValue::String(content.clone())),
-                ])])),
-                ("details", details.as_ref().map(|value| parse_or_string(value.as_str())).unwrap_or(JsonValue::Null)),
-                ("usage", usage.as_ref().map(encode_usage).unwrap_or(JsonValue::Null)),
+                (
+                    "content",
+                    JsonValue::Array(vec![JsonValue::object([
+                        ("type", JsonValue::String("text".into())),
+                        ("text", JsonValue::String(content.clone())),
+                    ])]),
+                ),
+                (
+                    "details",
+                    details
+                        .as_ref()
+                        .map(|value| parse_or_string(value.as_str()))
+                        .unwrap_or(JsonValue::Null),
+                ),
+                (
+                    "usage",
+                    usage.as_ref().map(encode_usage).unwrap_or(JsonValue::Null),
+                ),
                 ("isError", JsonValue::Bool(*is_error)),
                 ("timestamp", number(now_ms())),
             ];
@@ -366,18 +441,31 @@ fn encode_usage(usage: &Usage) -> JsonValue {
         ("output", optional_number(usage.output_tokens)),
         ("cacheRead", optional_number(usage.cache_read_tokens)),
         ("cacheWrite", optional_number(usage.cache_write_tokens)),
-        ("totalTokens", usage
-            .input_tokens
-            .zip(usage.output_tokens)
-            .map(|(input, output)| number(input.saturating_add(output)))
-            .unwrap_or(JsonValue::Null)),
-        ("cost", JsonValue::object([
-            ("input", JsonValue::Null),
-            ("output", JsonValue::Null),
-            ("cacheRead", JsonValue::Null),
-            ("cacheWrite", JsonValue::Null),
-            ("total", usage.cost.clone().map(JsonValue::String).unwrap_or(JsonValue::Null)),
-        ])),
+        (
+            "totalTokens",
+            usage
+                .input_tokens
+                .zip(usage.output_tokens)
+                .map(|(input, output)| number(input.saturating_add(output)))
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "cost",
+            JsonValue::object([
+                ("input", JsonValue::Null),
+                ("output", JsonValue::Null),
+                ("cacheRead", JsonValue::Null),
+                ("cacheWrite", JsonValue::Null),
+                (
+                    "total",
+                    usage
+                        .cost
+                        .clone()
+                        .map(JsonValue::String)
+                        .unwrap_or(JsonValue::Null),
+                ),
+            ]),
+        ),
     ])
 }
 
@@ -388,15 +476,27 @@ fn decode_file(path: &Path) -> Result<SessionRecord, SessionError> {
     }
     let source = fs::read_to_string(path).map_err(|error| io_error(path, error))?;
     let mut lines = source.lines();
-    let header_line = lines.next().ok_or_else(|| contract(path, "session has no header"))?;
-    let header = JsonValue::parse(header_line).map_err(|error| SessionError::Json { path: path.to_path_buf(), line: 1, message: error.to_string() })?;
+    let header_line = lines
+        .next()
+        .ok_or_else(|| contract(path, "session has no header"))?;
+    let header = JsonValue::parse(header_line).map_err(|error| SessionError::Json {
+        path: path.to_path_buf(),
+        line: 1,
+        message: error.to_string(),
+    })?;
     let header = expect_object(path, &header)?;
     if required_string(path, header, "type")? != "session" {
         return Err(contract(path, "first entry is not a session header"));
     }
-    let version = header.get("version").and_then(JsonValue::as_u64).unwrap_or(1);
+    let version = header
+        .get("version")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(1);
     if !(1..=SESSION_VERSION).contains(&version) {
-        return Err(contract(path, format!("unsupported session version {version}")));
+        return Err(contract(
+            path,
+            format!("unsupported session version {version}"),
+        ));
     }
     let id = required_string(path, header, "id")?;
     validate_session_id(&id).map_err(|message| contract(path, message))?;
@@ -442,10 +542,13 @@ fn decode_file(path: &Path) -> Result<SessionRecord, SessionError> {
                 });
             }
             "thinking_level_change" => {
-                thinking_level = parse_thinking(path, required_string(path, object, "thinkingLevel")?)?;
+                thinking_level =
+                    parse_thinking(path, required_string(path, object, "thinkingLevel")?)?;
             }
             "message" => {
-                let message = object.get("message").ok_or_else(|| contract(path, "message entry has no message"))?;
+                let message = object
+                    .get("message")
+                    .ok_or_else(|| contract(path, "message entry has no message"))?;
                 let decoded = decode_message(path, message, MessageId(messages.len() as u64 + 1))?;
                 if model.is_none() {
                     if let AgentMessage::Assistant { .. } = &decoded {
@@ -453,11 +556,15 @@ fn decode_file(path: &Path) -> Result<SessionRecord, SessionError> {
                             message.get("provider").and_then(JsonValue::as_str),
                             message.get("model").and_then(JsonValue::as_str),
                         ) {
-                            (Some(provider), Some(model)) if !provider.is_empty() && !model.is_empty() => Some(ModelDescriptor {
-                                provider: provider.into(),
-                                model: model.into(),
-                                revision: None,
-                            }),
+                            (Some(provider), Some(model))
+                                if !provider.is_empty() && !model.is_empty() =>
+                            {
+                                Some(ModelDescriptor {
+                                    provider: provider.into(),
+                                    model: model.into(),
+                                    revision: None,
+                                })
+                            }
                             _ => None,
                         };
                     }
@@ -469,16 +576,34 @@ fn decode_file(path: &Path) -> Result<SessionRecord, SessionError> {
             }
         }
     }
-    Ok(SessionRecord { id, timestamp, cwd, model, thinking_level, messages })
+    Ok(SessionRecord {
+        id,
+        timestamp,
+        cwd,
+        model,
+        thinking_level,
+        messages,
+    })
 }
 
-fn decode_message(path: &Path, value: &JsonValue, id: MessageId) -> Result<AgentMessage, SessionError> {
+fn decode_message(
+    path: &Path,
+    value: &JsonValue,
+    id: MessageId,
+) -> Result<AgentMessage, SessionError> {
     let object = expect_object(path, value)?;
     match required_string(path, object, "role")?.as_str() {
-        "user" => Ok(AgentMessage::User { id, content: decode_content(path, object.get("content"))? }),
+        "user" => Ok(AgentMessage::User {
+            id,
+            content: decode_content(path, object.get("content"))?,
+        }),
         "assistant" => {
             let (content, tool_calls) = decode_assistant_content(path, object.get("content"))?;
-            let stop_reason = object.get("stopReason").and_then(JsonValue::as_str).map(|value| parse_stop_reason(path, value)).transpose()?;
+            let stop_reason = object
+                .get("stopReason")
+                .and_then(JsonValue::as_str)
+                .map(|value| parse_stop_reason(path, value))
+                .transpose()?;
             Ok(AgentMessage::Assistant {
                 id,
                 content,
@@ -488,7 +613,8 @@ fn decode_message(path: &Path, value: &JsonValue, id: MessageId) -> Result<Agent
             })
         }
         "toolResult" => {
-            let tool_call_id = ToolCallId::new(required_string(path, object, "toolCallId")?).map_err(|_| contract(path, "toolCallId cannot be empty"))?;
+            let tool_call_id = ToolCallId::new(required_string(path, object, "toolCallId")?)
+                .map_err(|_| contract(path, "toolCallId cannot be empty"))?;
             Ok(AgentMessage::ToolResult {
                 id,
                 tool_call_id,
@@ -498,7 +624,10 @@ fn decode_message(path: &Path, value: &JsonValue, id: MessageId) -> Result<Agent
                 usage: decode_usage(path, object.get("usage"))?,
                 added_tool_names: decode_string_array(object.get("addedToolNames")),
                 terminate: false,
-                is_error: object.get("isError").and_then(JsonValue::as_bool).unwrap_or(false),
+                is_error: object
+                    .get("isError")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false),
                 failure: None,
             })
         }
@@ -506,12 +635,19 @@ fn decode_message(path: &Path, value: &JsonValue, id: MessageId) -> Result<Agent
     }
 }
 
-fn decode_assistant_content(path: &Path, value: Option<&JsonValue>) -> Result<(String, Vec<AgentToolCall>), SessionError> {
-    let Some(value) = value else { return Err(contract(path, "assistant content is missing")); };
+fn decode_assistant_content(
+    path: &Path,
+    value: Option<&JsonValue>,
+) -> Result<(String, Vec<AgentToolCall>), SessionError> {
+    let Some(value) = value else {
+        return Err(contract(path, "assistant content is missing"));
+    };
     if let Some(text) = value.as_str() {
         return Ok((text.to_owned(), Vec::new()));
     }
-    let values = value.as_array().ok_or_else(|| contract(path, "assistant content must be text or an array"))?;
+    let values = value
+        .as_array()
+        .ok_or_else(|| contract(path, "assistant content must be text or an array"))?;
     let mut text = String::new();
     let mut calls = Vec::new();
     for value in values {
@@ -519,9 +655,15 @@ fn decode_assistant_content(path: &Path, value: Option<&JsonValue>) -> Result<(S
         match required_string(path, object, "type")?.as_str() {
             "text" => text.push_str(&required_string(path, object, "text")?),
             "toolCall" => calls.push(AgentToolCall {
-                id: ToolCallId::new(required_string(path, object, "id")?).map_err(|_| contract(path, "tool call ID cannot be empty"))?,
+                id: ToolCallId::new(required_string(path, object, "id")?)
+                    .map_err(|_| contract(path, "tool call ID cannot be empty"))?,
                 name: required_string(path, object, "name")?,
-                arguments: SerializedJson::new(object.get("arguments").map(|value| value.to_json_string().unwrap_or_else(|_| "null".into())).unwrap_or_else(|| "null".into())),
+                arguments: SerializedJson::new(
+                    object
+                        .get("arguments")
+                        .map(|value| value.to_json_string().unwrap_or_else(|_| "null".into()))
+                        .unwrap_or_else(|| "null".into()),
+                ),
             }),
             _ => {}
         }
@@ -530,11 +672,15 @@ fn decode_assistant_content(path: &Path, value: Option<&JsonValue>) -> Result<(S
 }
 
 fn decode_content(path: &Path, value: Option<&JsonValue>) -> Result<String, SessionError> {
-    let Some(value) = value else { return Err(contract(path, "message content is missing")); };
+    let Some(value) = value else {
+        return Err(contract(path, "message content is missing"));
+    };
     if let Some(text) = value.as_str() {
         return Ok(text.to_owned());
     }
-    let values = value.as_array().ok_or_else(|| contract(path, "message content must be text or an array"))?;
+    let values = value
+        .as_array()
+        .ok_or_else(|| contract(path, "message content must be text or an array"))?;
     let mut output = String::new();
     for value in values {
         if let Some(text) = value.get("text").and_then(JsonValue::as_str) {
@@ -544,27 +690,47 @@ fn decode_content(path: &Path, value: Option<&JsonValue>) -> Result<String, Sess
     Ok(output)
 }
 
-fn decode_serialized_json(value: Option<&JsonValue>) -> Result<Option<SerializedJson>, SessionError> {
+fn decode_serialized_json(
+    value: Option<&JsonValue>,
+) -> Result<Option<SerializedJson>, SessionError> {
     match value {
         None | Some(JsonValue::Null) => Ok(None),
-        Some(value) => Ok(Some(SerializedJson::new(value.to_json_string().map_err(|error| error.to_string()).unwrap_or_else(|_| "null".into())))),
+        Some(value) => Ok(Some(SerializedJson::new(
+            value
+                .to_json_string()
+                .map_err(|error| error.to_string())
+                .unwrap_or_else(|_| "null".into()),
+        ))),
     }
 }
 
 fn decode_string_array(value: Option<&JsonValue>) -> Vec<String> {
     value
         .and_then(JsonValue::as_array)
-        .map(|values| values.iter().filter_map(JsonValue::as_str).map(str::to_owned).collect())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn json_scalar_text(value: &JsonValue) -> Option<String> {
-    value.as_str().map(str::to_owned).or_else(|| value.to_json_string().ok())
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.to_json_string().ok())
 }
 
 fn decode_usage(path: &Path, value: Option<&JsonValue>) -> Result<Option<Usage>, SessionError> {
-    let Some(value) = value else { return Ok(None); };
-    if value.is_null() { return Ok(None); }
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
     let object = expect_object(path, value)?;
     Ok(Some(Usage {
         input_tokens: object.get("input").and_then(JsonValue::as_u64),
@@ -572,19 +738,39 @@ fn decode_usage(path: &Path, value: Option<&JsonValue>) -> Result<Option<Usage>,
         reasoning_tokens: None,
         cache_read_tokens: object.get("cacheRead").and_then(JsonValue::as_u64),
         cache_write_tokens: object.get("cacheWrite").and_then(JsonValue::as_u64),
-        cost: object.get("cost").and_then(|value| value.get("total")).and_then(json_scalar_text),
+        cost: object
+            .get("cost")
+            .and_then(|value| value.get("total"))
+            .and_then(json_scalar_text),
     }))
 }
 
-fn expect_object<'a>(path: &Path, value: &'a JsonValue) -> Result<&'a BTreeMap<String, JsonValue>, SessionError> {
-    value.as_object().ok_or_else(|| contract(path, "entry must be an object"))
+fn expect_object<'a>(
+    path: &Path,
+    value: &'a JsonValue,
+) -> Result<&'a BTreeMap<String, JsonValue>, SessionError> {
+    value
+        .as_object()
+        .ok_or_else(|| contract(path, "entry must be an object"))
 }
 
-fn required_string(path: &Path, object: &BTreeMap<String, JsonValue>, field: &str) -> Result<String, SessionError> {
-    object.get(field).and_then(JsonValue::as_str).map(str::to_owned).ok_or_else(|| contract(path, format!("{field} must be a string")))
+fn required_string(
+    path: &Path,
+    object: &BTreeMap<String, JsonValue>,
+    field: &str,
+) -> Result<String, SessionError> {
+    object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| contract(path, format!("{field} must be a string")))
 }
 
-fn optional_string_at(path: &Path, object: &BTreeMap<String, JsonValue>, field: &str) -> Result<Option<String>, SessionError> {
+fn optional_string_at(
+    path: &Path,
+    object: &BTreeMap<String, JsonValue>,
+    field: &str,
+) -> Result<Option<String>, SessionError> {
     match object.get(field) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(JsonValue::String(value)) => Ok(Some(value.clone())),
@@ -648,7 +834,9 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
 }
 
 fn optional_string(value: Option<&str>) -> JsonValue {
-    value.map(|value| JsonValue::String(value.into())).unwrap_or(JsonValue::Null)
+    value
+        .map(|value| JsonValue::String(value.into()))
+        .unwrap_or(JsonValue::Null)
 }
 
 fn number(value: u64) -> JsonValue {
@@ -665,7 +853,9 @@ fn validate_session_id(id: &str) -> Result<(), String> {
         || bytes.len() > 128
         || !bytes[0].is_ascii_alphanumeric()
         || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
-        || !bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err("session ID contains forbidden characters".into());
     }
@@ -674,7 +864,11 @@ fn validate_session_id(id: &str) -> Result<(), String> {
 
 fn encoded_cwd(cwd: &Path) -> String {
     let path = cwd.to_string_lossy().replace('\\', "/");
-    format!("--{}--", path.trim_start_matches('/').replace('/', "-").replace(':', "-"))
+    format!(
+        "--{}--",
+        path.trim_start_matches('/')
+            .replace(['/', ':'], "-")
+    )
 }
 
 fn entry_id() -> String {
@@ -709,15 +903,22 @@ fn new_session_id() -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 fn filename_timestamp(timestamp: &str) -> String {
-    let sanitized = timestamp.replace(':', "-").replace('.', "-");
-    if !sanitized.is_empty() && sanitized.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) {
+    let sanitized = timestamp.replace([':', '.'], "-");
+    if !sanitized.is_empty()
+        && sanitized
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
         sanitized
     } else {
-        timestamp_iso(now_ms()).replace(':', "-").replace('.', "-")
+        timestamp_iso(now_ms()).replace([':', '.'], "-")
     }
 }
 
@@ -727,7 +928,12 @@ fn timestamp_iso(milliseconds: u64) -> String {
     let days = seconds / 86_400;
     let seconds_today = seconds % 86_400;
     let (year, month, day) = civil_from_days(days as i64);
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z", seconds_today / 3_600, (seconds_today / 60) % 60, seconds_today % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        seconds_today / 3_600,
+        (seconds_today / 60) % 60,
+        seconds_today % 60
+    )
 }
 
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
@@ -747,7 +953,8 @@ fn set_private_directory(path: &Path) -> Result<(), SessionError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| io_error(path, error))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| io_error(path, error))?;
     }
     Ok(())
 }
@@ -756,17 +963,24 @@ fn set_private_file(path: &Path) -> Result<(), SessionError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| io_error(path, error))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| io_error(path, error))?;
     }
     Ok(())
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> SessionError {
-    SessionError::Io { path: path.to_path_buf(), message: error.to_string() }
+    SessionError::Io {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    }
 }
 
 fn contract(path: &Path, message: impl Into<String>) -> SessionError {
-    SessionError::Contract { path: path.to_path_buf(), message: message.into() }
+    SessionError::Contract {
+        path: path.to_path_buf(),
+        message: message.into(),
+    }
 }
 
 #[cfg(test)]
@@ -775,19 +989,61 @@ mod tests {
 
     #[test]
     fn round_trip_uses_pi_v3_jsonl_header_and_linear_message_entries() {
-        let root = std::env::temp_dir().join(format!("pi-agent-session-test-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+        let root = std::env::temp_dir().join(format!(
+            "pi-agent-session-test-{}",
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
         let store = SessionStore::new(&root).for_workspace("/tmp/project");
         let call_id = ToolCallId::new("call-1").unwrap();
-        let mut record = SessionRecord::new(Some(ModelDescriptor { provider: "local".into(), model: "demo".into(), revision: None }), ThinkingLevel::Low).with_workspace("/tmp/project");
+        let mut record = SessionRecord::new(
+            Some(ModelDescriptor {
+                provider: "local".into(),
+                model: "demo".into(),
+                revision: None,
+            }),
+            ThinkingLevel::Low,
+        )
+        .with_workspace("/tmp/project");
         record.messages = vec![
-            AgentMessage::User { id: MessageId(1), content: "hello".into() },
-            AgentMessage::Assistant { id: MessageId(2), content: "hi".into(), tool_calls: vec![AgentToolCall { id: call_id.clone(), name: "shell".into(), arguments: SerializedJson::new(r#"{"command":"pwd"}"#) }], stop_reason: Some(StopReason::ToolUse), error_message: None },
-            AgentMessage::ToolResult { id: MessageId(3), tool_call_id: call_id, tool_name: "shell".into(), content: "ok".into(), details: None, usage: None, added_tool_names: Vec::new(), terminate: false, is_error: false, failure: None },
+            AgentMessage::User {
+                id: MessageId(1),
+                content: "hello".into(),
+            },
+            AgentMessage::Assistant {
+                id: MessageId(2),
+                content: "hi".into(),
+                tool_calls: vec![AgentToolCall {
+                    id: call_id.clone(),
+                    name: "shell".into(),
+                    arguments: SerializedJson::new(r#"{"command":"pwd"}"#),
+                }],
+                stop_reason: Some(StopReason::ToolUse),
+                error_message: None,
+            },
+            AgentMessage::ToolResult {
+                id: MessageId(3),
+                tool_call_id: call_id,
+                tool_name: "shell".into(),
+                content: "ok".into(),
+                details: None,
+                usage: None,
+                added_tool_names: Vec::new(),
+                terminate: false,
+                is_error: false,
+                failure: None,
+            },
         ];
         let path = store.save(&record).unwrap();
-        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("jsonl"));
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("jsonl")
+        );
         let first = fs::read_to_string(path).unwrap();
-        assert!(first.lines().next().unwrap().contains(r#""type":"session""#));
+        assert!(first
+            .lines()
+            .next()
+            .unwrap()
+            .contains(r#""type":"session""#));
         let loaded = store.load(&record.id).unwrap();
         assert_eq!(loaded.cwd, record.cwd);
         assert_eq!(loaded.model, record.model);
@@ -797,7 +1053,10 @@ mod tests {
 
     #[test]
     fn malformed_files_are_not_offered_by_resume_listing() {
-        let root = std::env::temp_dir().join(format!("pi-agent-session-test-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+        let root = std::env::temp_dir().join(format!(
+            "pi-agent-session-test-{}",
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
         let store = SessionStore::new(&root).for_workspace("/tmp/project");
         fs::create_dir_all(store.directory()).unwrap();
         fs::write(store.directory().join("broken.jsonl"), "not json\n").unwrap();
@@ -807,7 +1066,10 @@ mod tests {
 
     #[test]
     fn loads_pi_message_timestamps_usage_and_tool_extensions() {
-        let root = std::env::temp_dir().join(format!("pi-agent-session-test-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+        let root = std::env::temp_dir().join(format!(
+            "pi-agent-session-test-{}",
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
         let store = SessionStore::new(&root).for_workspace("/tmp/project");
         fs::create_dir_all(store.directory()).unwrap();
         let id = "018f0c8e-4d3b-7abc-8def-0123456789ab";
@@ -817,15 +1079,28 @@ mod tests {
 {"type":"message","id":"00000003","parentId":"00000002","timestamp":"2025-01-01T00:00:00.003Z","message":{"role":"assistant","content":[{"type":"text","text":"I will inspect it"},{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"src/lib.rs"}}],"provider":"local","model":"demo","stopReason":"toolUse","timestamp":1735689600003}}
 {"type":"message","id":"00000004","parentId":"00000003","timestamp":"2025-01-01T00:00:00.004Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"done"}],"usage":{"input":2,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":5,"cost":{"input":0,"output":0.2,"cacheRead":0,"cacheWrite":0,"total":0.2}},"addedToolNames":["grep"],"isError":false,"timestamp":1735689600004}}
 "#;
-        fs::write(store.directory().join(format!("2025-01-01T00-00-00-000Z_{id}.jsonl")), source).unwrap();
+        fs::write(
+            store
+                .directory()
+                .join(format!("2025-01-01T00-00-00-000Z_{id}.jsonl")),
+            source,
+        )
+        .unwrap();
 
         let loaded = store.load(id).unwrap();
         assert_eq!(loaded.model.unwrap().model, "demo");
         assert_eq!(loaded.messages.len(), 3);
         match &loaded.messages[2] {
-            AgentMessage::ToolResult { added_tool_names, usage, .. } => {
+            AgentMessage::ToolResult {
+                added_tool_names,
+                usage,
+                ..
+            } => {
                 assert_eq!(added_tool_names, &["grep"]);
-                assert_eq!(usage.as_ref().and_then(|usage| usage.cost.as_deref()), Some("0.2"));
+                assert_eq!(
+                    usage.as_ref().and_then(|usage| usage.cost.as_deref()),
+                    Some("0.2")
+                );
             }
             message => panic!("expected tool result, got {message:?}"),
         }

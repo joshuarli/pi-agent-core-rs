@@ -73,8 +73,14 @@ pub enum UiStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Picker {
-    Model { filter: String, selected: usize },
-    CustomModel { provider: String, input: String },
+    Model {
+        filter: String,
+        selected: usize,
+    },
+    CustomModel {
+        provider: String,
+        input: String,
+    },
     Session {
         filter: String,
         selected: usize,
@@ -419,9 +425,17 @@ impl AppState {
                     ..
                 } => {
                     if let Some(error) = error_message {
-                        self.push_kind(None, format!("assistant error: {error}"), TranscriptKind::Error);
+                        self.push_kind(
+                            None,
+                            format!("assistant error: {error}"),
+                            TranscriptKind::Error,
+                        );
                     } else if !content.is_empty() {
-                        self.push_kind(None, format!("assistant: {content}"), TranscriptKind::Assistant);
+                        self.push_kind(
+                            None,
+                            format!("assistant: {content}"),
+                            TranscriptKind::Assistant,
+                        );
                     }
                 }
                 AgentMessage::ToolResult {

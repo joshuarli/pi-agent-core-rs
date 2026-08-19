@@ -27,10 +27,12 @@ impl AgentTool for ConfigurationTool {
         _context: ToolContext,
         _updates: ToolUpdateSink,
     ) -> ToolFuture<'a> {
-        Box::pin(std::future::ready(Err(crate::error::ToolError::Execution {
-            tool: self.name.into(),
-            message: "configuration fixture is not executable".into(),
-        })))
+        Box::pin(std::future::ready(Err(
+            crate::error::ToolError::Execution {
+                tool: self.name.into(),
+                message: "configuration fixture is not executable".into(),
+            },
+        )))
     }
 }
 
@@ -39,7 +41,10 @@ struct MarkerHooks {
 }
 
 impl HookSet for MarkerHooks {
-    fn before_tool_call(&self, _call: &ToolCall) -> Result<BeforeToolCall, crate::error::HookError> {
+    fn before_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> Result<BeforeToolCall, crate::error::HookError> {
         Ok(BeforeToolCall::Allow)
     }
 
@@ -58,10 +63,7 @@ impl HookSet for MarkerHooks {
         Ok(context)
     }
 
-    fn convert_to_llm(
-        &self,
-        _context: ContextEnvelope,
-    ) -> Result<String, crate::error::HookError> {
+    fn convert_to_llm(&self, _context: ContextEnvelope) -> Result<String, crate::error::HookError> {
         Ok(self.marker.into())
     }
 }
@@ -94,7 +96,10 @@ fn idle_configuration_replacement_is_atomic_and_preserves_agent_state() {
         agent.enqueue_steering("keep steering")?;
         agent.enqueue_follow_up("keep follow-up")?;
         let retained_messages = agent.snapshot().messages;
-        let queue_lengths = (agent.queue_snapshot().steering.len(), agent.queue_snapshot().follow_up.len());
+        let queue_lengths = (
+            agent.queue_snapshot().steering.len(),
+            agent.queue_snapshot().follow_up.len(),
+        );
 
         let mut tools = ToolRegistry::default();
         tools.insert(Arc::new(ConfigurationTool { name: "new_tool" }));
@@ -109,7 +114,10 @@ fn idle_configuration_replacement_is_atomic_and_preserves_agent_state() {
         assert_eq!(snapshot.model, Some(model));
         assert_eq!(snapshot.messages, retained_messages);
         assert_eq!(
-            (agent.queue_snapshot().steering.len(), agent.queue_snapshot().follow_up.len()),
+            (
+                agent.queue_snapshot().steering.len(),
+                agent.queue_snapshot().follow_up.len()
+            ),
             queue_lengths
         );
         assert_eq!(agent.tool_definitions()[0].name, "new_tool");

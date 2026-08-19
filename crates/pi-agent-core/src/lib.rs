@@ -14,7 +14,6 @@ pub mod default_tools;
 pub mod error;
 pub mod event;
 pub mod hooks;
-pub mod measurement;
 #[cfg(any(
     feature = "eval-runner",
     feature = "provider-commandcode",
@@ -22,6 +21,7 @@ pub mod measurement;
     feature = "provider-local"
 ))]
 mod json;
+pub mod measurement;
 pub mod profile;
 pub mod provider;
 pub mod queue;
@@ -44,8 +44,7 @@ pub use agent::{
 pub use compaction::{
     AutomaticCompactionPolicy, AutomaticCompactionReason, AutomaticCompactionRequest,
     CompactionContext, CompactionError, CompactionFuture, CompactionHandle, CompactionResult,
-    Compactor, ContextBudgetSource, OverflowRecovery, ProviderContext,
-    COMPACTION_CONTEXT_VERSION,
+    Compactor, ContextBudgetSource, OverflowRecovery, ProviderContext, COMPACTION_CONTEXT_VERSION,
 };
 pub use default_tools::{
     CodingOperations, DefaultCodingTools, LocalCodingOperations, WorkspaceRoot,

@@ -708,9 +708,7 @@ impl RunHandle {
                 self.configuration.tools.definitions(),
             )
         };
-        let provider_context = self
-            .build_provider_context(agent, context)
-            .await?;
+        let provider_context = self.build_provider_context(agent, context).await?;
         Ok(ModelRequest {
             system_prompt,
             context: provider_context.context,

@@ -1,8 +1,8 @@
 use pi_agent_core::provider::{openai::OpenAiContextHook, ProviderRegistry};
 use pi_agent_core::{Agent, AgentConfiguration, DefaultCodingTools, ThinkingLevel};
 use pi_agent_luau::LuaPolicyHookSet;
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::error::AppError;
 use super::phi::{PhiDeclaredTool, PhiExtensionFilesTool, PhiExtensionHandbookTool, PhiExtensions};
@@ -73,7 +73,10 @@ pub(super) fn compose_phi_configuration(
             }
             configuration
                 .tools
-                .insert(Arc::new(PhiDeclaredTool::from_policy(extension.name(), tool)));
+                .insert(Arc::new(PhiDeclaredTool::from_policy(
+                    extension.name(),
+                    tool,
+                )));
         }
     }
     for reserved in ["phi_extension_handbook", "phi_extension_files"] {
@@ -97,10 +100,7 @@ pub(super) fn compose_phi_configuration(
     // Wrapping in reverse preserves registry order: the first extension's decision runs first.
     let mut hooks = configuration.hooks;
     for extension in phi.extensions().iter().rev() {
-        hooks = Arc::new(LuaPolicyHookSet::new(
-            Arc::clone(extension.policy()),
-            hooks,
-        ));
+        hooks = Arc::new(LuaPolicyHookSet::new(Arc::clone(extension.policy()), hooks));
     }
     configuration.system_prompt = prompt;
     configuration.hooks = hooks;
@@ -124,31 +124,6 @@ impl ModelCandidate {
 
     pub(super) fn model_id(self) -> Option<&'static str> {
         self.model.map(|model| model.id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pi_agent_core::hooks::NoHooks;
-    use pi_agent_core::tool::ToolRegistry;
-
-    #[test]
-    fn phi_authoring_tools_and_guidance_are_present_without_an_extension_registry() {
-        let configuration = compose_phi_configuration(
-            AgentConfiguration::new("base prompt", ToolRegistry::default(), Arc::new(NoHooks)),
-            &PhiExtensions::default(),
-            Path::new("/fixture/phi"),
-        )
-        .expect("empty Phi registry composes with the host configuration");
-
-        assert!(configuration
-            .tools
-            .names()
-            .eq(["phi_extension_handbook", "phi_extension_files"]));
-        assert!(configuration
-            .system_prompt
-            .contains("call `phi_extension_handbook` before"));
     }
 }
 
@@ -212,4 +187,29 @@ pub(super) fn overlay_lines(
     }
     lines.push("↑/↓ navigate · Enter select · Esc close".into());
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pi_agent_core::hooks::NoHooks;
+    use pi_agent_core::tool::ToolRegistry;
+
+    #[test]
+    fn phi_authoring_tools_and_guidance_are_present_without_an_extension_registry() {
+        let configuration = compose_phi_configuration(
+            AgentConfiguration::new("base prompt", ToolRegistry::default(), Arc::new(NoHooks)),
+            &PhiExtensions::default(),
+            Path::new("/fixture/phi"),
+        )
+        .expect("empty Phi registry composes with the host configuration");
+
+        assert!(configuration
+            .tools
+            .names()
+            .eq(["phi_extension_handbook", "phi_extension_files"]));
+        assert!(configuration
+            .system_prompt
+            .contains("call `phi_extension_handbook` before"));
+    }
 }

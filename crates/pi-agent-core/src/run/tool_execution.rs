@@ -27,7 +27,7 @@ impl RunHandle {
                 .tools
                 .get(&assistant_call.name)
                 .is_some_and(|tool| {
-                tool.execution_mode() == crate::tool::ToolExecutionMode::Sequential
+                    tool.execution_mode() == crate::tool::ToolExecutionMode::Sequential
                 })
         });
         if has_sequential_tool {

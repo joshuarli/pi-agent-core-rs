@@ -5,7 +5,9 @@ use pi_agent_core::compaction::CompactionHandle;
 use pi_agent_core::event::AgentEventKind;
 use pi_agent_core::provider::ProviderRegistry;
 use pi_agent_core::state::AgentPhase;
-use pi_agent_core::{Agent, AgentConfiguration, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle};
+use pi_agent_core::{
+    Agent, AgentConfiguration, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle,
+};
 use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -196,8 +198,12 @@ impl App {
             .as_ref()
             .ok_or_else(|| AppError::Setup("workspace is not initialized".into()))?;
         self.session_store = Some(
-            SessionStore::new(self.phi_home.as_ref().expect("Phi home was just initialized"))
-                .for_workspace(workspace),
+            SessionStore::new(
+                self.phi_home
+                    .as_ref()
+                    .expect("Phi home was just initialized"),
+            )
+            .for_workspace(workspace),
         );
         self.current_session = Some(
             SessionRecord::new(None, self.options.thinking_level())

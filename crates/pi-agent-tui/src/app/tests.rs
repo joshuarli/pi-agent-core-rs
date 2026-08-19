@@ -189,11 +189,13 @@ fn cli_parses_and_validates_explicit_local_context_capacity() {
 
 #[test]
 fn cli_parses_explicit_phi_home() {
-    let options = CliOptions::parse(
-        ["pi-agent", "--phi-home", "/tmp/phi-test"].map(OsString::from),
-    )
-    .expect("Phi home parses");
-    assert_eq!(options.phi_home(), Some(std::path::Path::new("/tmp/phi-test")));
+    let options =
+        CliOptions::parse(["pi-agent", "--phi-home", "/tmp/phi-test"].map(OsString::from))
+            .expect("Phi home parses");
+    assert_eq!(
+        options.phi_home(),
+        Some(std::path::Path::new("/tmp/phi-test"))
+    );
     assert!(CliOptions::help_text().contains("--phi-home <path>"));
 }
 
@@ -467,7 +469,8 @@ fn cache_friendly_compaction_appends_one_instruction_to_an_exact_source_prefix()
             }),
         );
         let source = r#"[{"content":"old work","role":"user"}]"#;
-        let active = r#"[{"content":"old work","role":"user"},{"content":"retained","role":"assistant"}]"#;
+        let active =
+            r#"[{"content":"old work","role":"user"},{"content":"retained","role":"assistant"}]"#;
         let result = compactor
             .compact_automatic(
                 CompactionContext {
@@ -886,7 +889,10 @@ fn command_completion_includes_extension_reload() {
 #[test]
 fn command_completion_includes_linear_session_commands() {
     let mut app = App::new(CliOptions::default());
-    app.state.composer_mut().insert_str("/sess").expect("prefix");
+    app.state
+        .composer_mut()
+        .insert_str("/sess")
+        .expect("prefix");
     app.complete_command();
     assert_eq!(app.state.composer().text(), "/session ");
 

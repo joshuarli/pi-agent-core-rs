@@ -28,7 +28,8 @@ impl App {
             self.state.notice("session changes require an idle agent");
             return Ok(());
         }
-        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref()) else {
+        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref())
+        else {
             return Err(AppError::Setup("Phi home is not initialized".into()));
         };
         let entries = SessionStore::new(home).for_workspace(workspace).list()?;
@@ -49,7 +50,8 @@ impl App {
             self.state.notice("session changes require an idle agent");
             return Ok(());
         }
-        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref()) else {
+        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref())
+        else {
             return Err(AppError::Setup("Phi home is not initialized".into()));
         };
         let record = SessionStore::new(home).for_workspace(workspace).load(id)?;
@@ -93,15 +95,14 @@ impl App {
         self.state.clear_history();
         self.state.composer_mut().clear();
         self.state.set_snapshot(agent.snapshot());
-        self.current_session = Some(SessionRecord::new(
-            self.state.selected_model.clone(),
-            thinking_level,
-        ).with_workspace(
-            self.workspace
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        ));
+        self.current_session = Some(
+            SessionRecord::new(self.state.selected_model.clone(), thinking_level).with_workspace(
+                self.workspace
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+        );
         self.state.notice("new session");
         Ok(())
     }
@@ -133,7 +134,9 @@ impl App {
                 *selected = 0;
             }
             Picker::CustomModel { input, .. } => input.push_str(text),
-            Picker::Session { filter, selected, .. } => {
+            Picker::Session {
+                filter, selected, ..
+            } => {
                 filter.push_str(text);
                 *selected = 0;
             }
@@ -153,7 +156,9 @@ impl App {
             Picker::CustomModel { input, .. } => {
                 input.pop();
             }
-            Picker::Session { filter, selected, .. } => {
+            Picker::Session {
+                filter, selected, ..
+            } => {
                 filter.pop();
                 *selected = 0;
             }
@@ -167,7 +172,9 @@ impl App {
         let length = match picker {
             Picker::Model { filter, .. } => model_candidates(&self.registry, filter).len(),
             Picker::CustomModel { .. } => return,
-            Picker::Session { filter, entries, .. } => entries
+            Picker::Session {
+                filter, entries, ..
+            } => entries
                 .iter()
                 .filter(|entry| {
                     let model = entry
@@ -224,7 +231,11 @@ impl App {
                     }
                 }
             }
-            Picker::Session { filter, selected, entries } => {
+            Picker::Session {
+                filter,
+                selected,
+                entries,
+            } => {
                 let matches = entries
                     .iter()
                     .filter(|entry| {

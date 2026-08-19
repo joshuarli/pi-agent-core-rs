@@ -291,10 +291,7 @@ async fn summarize(
     Ok((summary, usage))
 }
 
-fn source_context_fits(
-    source: &ProviderContext,
-    request: &AutomaticCompactionRequest,
-) -> bool {
+fn source_context_fits(source: &ProviderContext, request: &AutomaticCompactionRequest) -> bool {
     if let Some(active_context) = &source.active_context {
         if !is_exact_message_prefix(&source.context, active_context) {
             return false;
@@ -334,8 +331,9 @@ fn is_exact_message_prefix(source: &str, active: &str) -> bool {
 }
 
 fn append_update_instruction(context: &str) -> Result<String, CompactionError> {
-    let mut value = JsonValue::parse(context)
-        .map_err(|error| CompactionError::failed(format!("active provider context is not JSON: {error}")))?;
+    let mut value = JsonValue::parse(context).map_err(|error| {
+        CompactionError::failed(format!("active provider context is not JSON: {error}"))
+    })?;
     let JsonValue::Array(messages) = &mut value else {
         return Err(CompactionError::failed(
             "active provider context is not a message array",

@@ -8,7 +8,7 @@
 
 use pi_agent_core::error::ToolError;
 use pi_agent_core::tool::{
-    AgentTool, AgentToolResult, ToolCall, ToolExecutionMode, ToolContext, ToolFuture,
+    AgentTool, AgentToolResult, ToolCall, ToolContext, ToolExecutionMode, ToolFuture,
     ToolUpdateSink,
 };
 use pi_agent_luau::bundle::{Bundle, BundleManifest, BUNDLE_ABI_VERSION};
@@ -42,11 +42,29 @@ pub enum PhiLoadError {
 impl std::fmt::Display for PhiLoadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io { path, message } => write!(formatter, "Phi I/O failed at {}: {message}", path.display()),
-            Self::Json { path, message } => write!(formatter, "invalid Phi JSON at {}: {message}", path.display()),
-            Self::Contract { path, message } => write!(formatter, "invalid Phi contract at {}: {message}", path.display()),
-            Self::Bundle { path, message } => write!(formatter, "invalid Phi bundle at {}: {message}", path.display()),
-            Self::Policy { path, message } => write!(formatter, "Phi policy failed at {}: {message}", path.display()),
+            Self::Io { path, message } => {
+                write!(formatter, "Phi I/O failed at {}: {message}", path.display())
+            }
+            Self::Json { path, message } => write!(
+                formatter,
+                "invalid Phi JSON at {}: {message}",
+                path.display()
+            ),
+            Self::Contract { path, message } => write!(
+                formatter,
+                "invalid Phi contract at {}: {message}",
+                path.display()
+            ),
+            Self::Bundle { path, message } => write!(
+                formatter,
+                "invalid Phi bundle at {}: {message}",
+                path.display()
+            ),
+            Self::Policy { path, message } => write!(
+                formatter,
+                "Phi policy failed at {}: {message}",
+                path.display()
+            ),
         }
     }
 }
@@ -136,21 +154,26 @@ impl PhiExtensions {
         let mut extensions = Vec::with_capacity(entries.len());
         for entry in entries {
             let root_path = contained_path(&home_root, &entry.path).map_err(|message| {
-                contract_error(&registry_path, format!("extension {:?}: {message}", entry.name))
+                contract_error(
+                    &registry_path,
+                    format!("extension {:?}: {message}", entry.name),
+                )
             })?;
-            let root_metadata = fs::symlink_metadata(&root_path)
-                .map_err(|error| io_error(&root_path, error))?;
+            let root_metadata =
+                fs::symlink_metadata(&root_path).map_err(|error| io_error(&root_path, error))?;
             if root_metadata.file_type().is_symlink() {
                 return Err(contract_error(
                     &root_path,
                     "symlinked extension roots are not allowed",
                 ));
             }
-            let extension_root = canonical_directory(&root_path, true).map_err(|error| {
-                prefix_error(error, format!("extension {:?}: ", entry.name))
-            })?;
+            let extension_root = canonical_directory(&root_path, true)
+                .map_err(|error| prefix_error(error, format!("extension {:?}: ", entry.name)))?;
             ensure_contained(&home_root, &extension_root).map_err(|message| {
-                contract_error(&registry_path, format!("extension {:?}: {message}", entry.name))
+                contract_error(
+                    &registry_path,
+                    format!("extension {:?}: {message}", entry.name),
+                )
             })?;
             let manifest_path = contained_path(
                 &extension_root,
@@ -210,7 +233,12 @@ pub fn resolve_phi_home(override_path: Option<&Path>) -> Result<PathBuf, PhiLoad
     }
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or_else(|| contract_error(Path::new("~/.phi"), "could not resolve the user home directory"))?;
+        .ok_or_else(|| {
+            contract_error(
+                Path::new("~/.phi"),
+                "could not resolve the user home directory",
+            )
+        })?;
     Ok(PathBuf::from(home).join(".phi"))
 }
 
@@ -285,7 +313,9 @@ impl AgentTool for PhiExtensionHandbookTool {
 
     fn schema(&self) -> &JsonValue {
         static SCHEMA: std::sync::OnceLock<JsonValue> = std::sync::OnceLock::new();
-        SCHEMA.get_or_init(|| JsonValue::object([(String::from("type"), JsonValue::String("object".into()))]))
+        SCHEMA.get_or_init(|| {
+            JsonValue::object([(String::from("type"), JsonValue::String("object".into()))])
+        })
     }
 
     fn execute<'a>(
@@ -358,14 +388,22 @@ impl AgentTool for PhiExtensionFilesTool {
                             "path",
                             JsonValue::object([
                                 ("type", JsonValue::String("string".into())),
-                                ("description", JsonValue::String("Path relative to the Phi extensions root.".into())),
+                                (
+                                    "description",
+                                    JsonValue::String(
+                                        "Path relative to the Phi extensions root.".into(),
+                                    ),
+                                ),
                             ]),
                         ),
                         (
                             "content",
                             JsonValue::object([
                                 ("type", JsonValue::String("string".into())),
-                                ("description", JsonValue::String("UTF-8 draft source for write_draft.".into())),
+                                (
+                                    "description",
+                                    JsonValue::String("UTF-8 draft source for write_draft.".into()),
+                                ),
                             ]),
                         ),
                     ]),
@@ -440,11 +478,18 @@ impl PhiExtensionFilesTool {
             });
         }
         let mut files = Vec::new();
-        let canonical_root = fs::canonicalize(&self.root)
-            .map_err(|error| tool_io(self.name(), error))?;
+        let canonical_root =
+            fs::canonicalize(&self.root).map_err(|error| tool_io(self.name(), error))?;
         collect_files(&canonical_root, &directory, &mut files)?;
         files.sort();
-        Ok(result_ok(call, if files.is_empty() { "No Phi extension files".into() } else { files.join("\n") }))
+        Ok(result_ok(
+            call,
+            if files.is_empty() {
+                "No Phi extension files".into()
+            } else {
+                files.join("\n")
+            },
+        ))
     }
 
     fn read(&self, call: &ToolCall, relative: &str) -> Result<AgentToolResult, ToolError> {
@@ -539,14 +584,16 @@ impl PhiExtensionFilesTool {
     }
 
     fn resolve_existing(&self, relative: &str) -> Result<PathBuf, ToolError> {
-        let lexical = contained_path(&self.root, relative).map_err(|message| invalid_tool_args(message))?;
+        let lexical =
+            contained_path(&self.root, relative).map_err(invalid_tool_args)?;
         let path = fs::canonicalize(&lexical).map_err(|error| tool_io(self.name(), error))?;
         ensure_contained_canonical(&self.root, &path)?;
         Ok(path)
     }
 
     fn resolve_for_write(&self, relative: &str) -> Result<PathBuf, ToolError> {
-        let path = contained_path(&self.root, relative).map_err(|message| invalid_tool_args(message))?;
+        let path =
+            contained_path(&self.root, relative).map_err(invalid_tool_args)?;
         if path == self.root {
             return Err(invalid_tool_args("a file path is required"));
         }
@@ -562,16 +609,16 @@ fn collect_files(root: &Path, directory: &Path, output: &mut Vec<String>) -> Res
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| tool_io("phi_extension_files", error))?;
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| tool_io("phi_extension_files", error))?;
         if metadata.file_type().is_symlink() {
             continue;
         }
         if metadata.is_dir() {
             collect_files(root, &path, output)?;
         } else if metadata.is_file() {
-            let canonical = fs::canonicalize(&path)
-                .map_err(|error| tool_io("phi_extension_files", error))?;
+            let canonical =
+                fs::canonicalize(&path).map_err(|error| tool_io("phi_extension_files", error))?;
             ensure_contained_canonical(root, &canonical)?;
             let relative = canonical
                 .strip_prefix(root)
@@ -661,7 +708,8 @@ fn load_extension(
             format!("unsupported extension manifest version {manifest_version}; expected 1"),
         ));
     }
-    let name = optional_string(manifest_path, object, "name")?.unwrap_or_else(|| registry_name.to_owned());
+    let name =
+        optional_string(manifest_path, object, "name")?.unwrap_or_else(|| registry_name.to_owned());
     validate_name(manifest_path, "extension name", &name)?;
     if name != registry_name {
         return Err(contract_error(
@@ -772,7 +820,9 @@ fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>
                 let name = Path::new(path_value)
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .ok_or_else(|| contract_error(path, format!("extensions[{index}] path has no name")))?;
+                    .ok_or_else(|| {
+                        contract_error(path, format!("extensions[{index}] path has no name"))
+                    })?;
                 validate_name(path, "extension name", name)?;
                 result.push(RegistryEntry {
                     name: name.to_owned(),
@@ -783,7 +833,9 @@ fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>
             JsonValue::Object(object) => {
                 let root = optional_string(path, object, "path")?
                     .or(optional_string(path, object, "root")?)
-                    .ok_or_else(|| contract_error(path, format!("extensions[{index}] requires path")))?;
+                    .ok_or_else(|| {
+                        contract_error(path, format!("extensions[{index}] requires path"))
+                    })?;
                 let name = optional_string(path, object, "name")?
                     .or(optional_string(path, object, "id")?)
                     .or_else(|| {
@@ -792,7 +844,9 @@ fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>
                             .and_then(|name| name.to_str())
                             .map(str::to_owned)
                     })
-                    .ok_or_else(|| contract_error(path, format!("extensions[{index}] requires name")))?;
+                    .ok_or_else(|| {
+                        contract_error(path, format!("extensions[{index}] requires name"))
+                    })?;
                 validate_name(path, "extension name", &name)?;
                 let manifest = optional_string(path, object, "manifest")?;
                 result.push(RegistryEntry {
@@ -801,7 +855,12 @@ fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>
                     manifest,
                 });
             }
-            _ => return Err(contract_error(path, format!("extensions[{index}] must be a string or object"))),
+            _ => {
+                return Err(contract_error(
+                    path,
+                    format!("extensions[{index}] must be a string or object"),
+                ))
+            }
         }
     }
     Ok(result)
@@ -814,7 +873,10 @@ fn parse_json(path: &Path, source: &str) -> Result<JsonValue, PhiLoadError> {
     })
 }
 
-fn expect_object<'a>(path: &Path, value: &'a JsonValue) -> Result<&'a std::collections::BTreeMap<String, JsonValue>, PhiLoadError> {
+fn expect_object<'a>(
+    path: &Path,
+    value: &'a JsonValue,
+) -> Result<&'a std::collections::BTreeMap<String, JsonValue>, PhiLoadError> {
     value
         .as_object()
         .ok_or_else(|| contract_error(path, "root must be a JSON object"))
@@ -865,7 +927,10 @@ fn optional_string(
     }
 }
 
-fn optional_u64(object: &std::collections::BTreeMap<String, JsonValue>, field: &str) -> Option<u64> {
+fn optional_u64(
+    object: &std::collections::BTreeMap<String, JsonValue>,
+    field: &str,
+) -> Option<u64> {
     object.get(field).and_then(JsonValue::as_u64)
 }
 
@@ -875,15 +940,25 @@ fn validate_name(path: &Path, field: &str, value: &str) -> Result<(), PhiLoadErr
         || value == ".."
         || value.contains('/')
         || value.contains('\\')
-        || value.bytes().any(|byte| byte == 0 || byte.is_ascii_control())
+        || value
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
     {
-        return Err(contract_error(path, format!("{field} is not a safe deterministic name")));
+        return Err(contract_error(
+            path,
+            format!("{field} is not a safe deterministic name"),
+        ));
     }
     Ok(())
 }
 
 fn contained_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
-    if relative.is_empty() || relative.contains('\\') || relative.bytes().any(|byte| byte == 0 || byte.is_ascii_control()) {
+    if relative.is_empty()
+        || relative.contains('\\')
+        || relative
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
         return Err("path is empty or contains an invalid character".into());
     }
     let path = Path::new(relative);
@@ -895,7 +970,9 @@ fn contained_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
             Component::Normal(_) => {}
             Component::CurDir => return Err("`.` path segments are not allowed".into()),
             Component::ParentDir => return Err("path traversal is not allowed".into()),
-            Component::RootDir | Component::Prefix(_) => return Err("absolute paths are not allowed".into()),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("absolute paths are not allowed".into())
+            }
         }
     }
     Ok(root.join(path))
@@ -904,7 +981,9 @@ fn contained_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
 fn canonical_directory(path: &Path, required: bool) -> Result<PathBuf, PhiLoadError> {
     match fs::canonicalize(path) {
         Ok(path) => Ok(path),
-        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => {
+            Ok(path.to_path_buf())
+        }
         Err(error) => Err(io_error(path, error)),
     }
 }
@@ -912,14 +991,19 @@ fn canonical_directory(path: &Path, required: bool) -> Result<PathBuf, PhiLoadEr
 fn read_contained_file(root: &Path, path: &Path) -> Result<String, PhiLoadError> {
     let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
     if metadata.file_type().is_symlink() {
-        return Err(contract_error(path, "symlinked extension files are not allowed"));
+        return Err(contract_error(
+            path,
+            "symlinked extension files are not allowed",
+        ));
     }
     if !metadata.is_file() {
-        return Err(contract_error(path, "extension source must be a regular file"));
+        return Err(contract_error(
+            path,
+            "extension source must be a regular file",
+        ));
     }
     let canonical = fs::canonicalize(path).map_err(|error| io_error(path, error))?;
-    ensure_contained(root, &canonical)
-        .map_err(|message| contract_error(path, message))?;
+    ensure_contained(root, &canonical).map_err(|message| contract_error(path, message))?;
     fs::read_to_string(&canonical).map_err(|error| io_error(path, error))
 }
 
@@ -930,8 +1014,10 @@ fn ensure_contained(root: &Path, path: &Path) -> Result<(), String> {
 }
 
 fn ensure_contained_canonical(root: &Path, path: &Path) -> Result<(), ToolError> {
-    let canonical_root = fs::canonicalize(root).map_err(|error| tool_io("phi_extension_files", error))?;
-    let canonical_path = fs::canonicalize(path).map_err(|error| tool_io("phi_extension_files", error))?;
+    let canonical_root =
+        fs::canonicalize(root).map_err(|error| tool_io("phi_extension_files", error))?;
+    let canonical_path =
+        fs::canonicalize(path).map_err(|error| tool_io("phi_extension_files", error))?;
     canonical_path
         .strip_prefix(canonical_root)
         .map(|_| ())
@@ -964,11 +1050,26 @@ fn bundle_error(path: &Path, message: impl Into<String>) -> PhiLoadError {
 
 fn prefix_error(error: PhiLoadError, prefix: String) -> PhiLoadError {
     match error {
-        PhiLoadError::Io { path, message } => PhiLoadError::Io { path, message: prefix + &message },
-        PhiLoadError::Json { path, message } => PhiLoadError::Json { path, message: prefix + &message },
-        PhiLoadError::Contract { path, message } => PhiLoadError::Contract { path, message: prefix + &message },
-        PhiLoadError::Bundle { path, message } => PhiLoadError::Bundle { path, message: prefix + &message },
-        PhiLoadError::Policy { path, message } => PhiLoadError::Policy { path, message: prefix + &message },
+        PhiLoadError::Io { path, message } => PhiLoadError::Io {
+            path,
+            message: prefix + &message,
+        },
+        PhiLoadError::Json { path, message } => PhiLoadError::Json {
+            path,
+            message: prefix + &message,
+        },
+        PhiLoadError::Contract { path, message } => PhiLoadError::Contract {
+            path,
+            message: prefix + &message,
+        },
+        PhiLoadError::Bundle { path, message } => PhiLoadError::Bundle {
+            path,
+            message: prefix + &message,
+        },
+        PhiLoadError::Policy { path, message } => PhiLoadError::Policy {
+            path,
+            message: prefix + &message,
+        },
     }
 }
 
@@ -1048,7 +1149,9 @@ mod tests {
     #[test]
     fn missing_registry_is_empty_and_registry_order_is_preserved() {
         let home = TestHome::new();
-        assert!(PhiExtensions::load(home.path()).expect("missing registry is empty").is_empty());
+        assert!(PhiExtensions::load(home.path())
+            .expect("missing registry is empty")
+            .is_empty());
 
         let first = home.path().join("extensions/first");
         let second = home.path().join("extensions/second");
@@ -1085,7 +1188,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["second", "first"]
         );
-        assert_eq!(loaded.extensions()[0].policy().system_prompt_append(), "second");
+        assert_eq!(
+            loaded.extensions()[0].policy().system_prompt_append(),
+            "second"
+        );
     }
 
     #[test]
@@ -1098,8 +1204,11 @@ mod tests {
             Err(PhiLoadError::Contract { .. })
         ));
 
-        fs::write(home.path().join(REGISTRY_FILE), r#"{"version":2,"extensions":[]}"#)
-            .expect("registry should be rewritten");
+        fs::write(
+            home.path().join(REGISTRY_FILE),
+            r#"{"version":2,"extensions":[]}"#,
+        )
+        .expect("registry should be rewritten");
         assert!(matches!(
             PhiExtensions::load(home.path()),
             Err(PhiLoadError::Contract { .. })
@@ -1176,7 +1285,10 @@ mod tests {
             smol::block_on(result),
             Err(ToolError::Blocked { .. })
         ));
-        assert_eq!(fs::read_to_string(target).expect("target remains"), "do not replace");
+        assert_eq!(
+            fs::read_to_string(target).expect("target remains"),
+            "do not replace"
+        );
 
         let outside_directory = home.path().join("outside-directory");
         fs::create_dir_all(&outside_directory).expect("outside directory");

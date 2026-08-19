@@ -9,8 +9,8 @@ use crate::composer::Composer;
 use crate::grid::{Cell, Grid, Rect, Style};
 use crossterm::style::Color;
 use hi_lite::{Highlighter, Kind, Language};
-use pi_agent_protocol::JsonValue;
 use pi_agent_core::provider::ProviderRegistry;
+use pi_agent_protocol::JsonValue;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RenderLine {
@@ -417,14 +417,16 @@ fn rail_lines(text: &str, width: u16) -> Vec<RenderLine> {
     let budget = width.saturating_sub(2);
     wrap_raw_text(text, budget)
         .into_iter()
-        .map(|line| RenderLine::plain(
-            format!("┃ {line}"),
-            Style {
-                foreground: Some(Color::White),
-                bold: true,
-                ..Style::default()
-            },
-        ))
+        .map(|line| {
+            RenderLine::plain(
+                format!("┃ {line}"),
+                Style {
+                    foreground: Some(Color::White),
+                    bold: true,
+                    ..Style::default()
+                },
+            )
+        })
         .collect()
 }
 
@@ -463,11 +465,7 @@ fn tool_lines(
         bold: state == ToolState::Failed,
         ..Style::default()
     };
-    let mut output = wrap_lines(
-        &label,
-        width,
-        style,
-    );
+    let mut output = wrap_lines(&label, width, style);
     // Keep a multiline result readable without letting its first line hide the
     // lifecycle card. Standard tools can return source files, command output,
     // or search matches; each continuation line gets a low-contrast body rail.
@@ -522,9 +520,9 @@ fn tool_argument_summary(name: &str, payload: &str) -> Option<String> {
     let object = JsonValue::parse(payload).ok()?.as_object()?.clone();
     let value = |key: &str| object.get(key).and_then(JsonValue::as_str);
     match name {
-        "bash" | "shell" => value("command").map(|command| {
-            format!("$ {}", truncate_display(command.trim(), 72))
-        }),
+        "bash" | "shell" => {
+            value("command").map(|command| format!("$ {}", truncate_display(command.trim(), 72)))
+        }
         "read" => value("path").map(|path| {
             let range = match (json_u64(&object, "offset"), json_u64(&object, "limit")) {
                 (Some(offset), Some(limit)) => format!(
@@ -545,7 +543,11 @@ fn tool_argument_summary(name: &str, payload: &str) -> Option<String> {
                 .get("edits")
                 .and_then(JsonValue::as_array)
                 .map_or(0, |edits| edits.len());
-            let noun = if count == 1 { "replacement" } else { "replacements" };
+            let noun = if count == 1 {
+                "replacement"
+            } else {
+                "replacements"
+            };
             format!("{} ({count} {noun})", truncate_display(path, 56))
         }),
         "grep" => value("pattern").map(|pattern| {
@@ -561,7 +563,11 @@ fn tool_argument_summary(name: &str, payload: &str) -> Option<String> {
         }),
         "find" => value("pattern").map(|pattern| {
             let location = value("path").map_or(".", |path| path);
-            format!("{} in {}", truncate_display(pattern, 44), truncate_display(location, 24))
+            format!(
+                "{} in {}",
+                truncate_display(pattern, 44),
+                truncate_display(location, 24)
+            )
         }),
         "ls" => Some(value("path").map_or_else(|| ".".into(), |path| truncate_display(path, 72))),
         _ => None,
@@ -635,9 +641,9 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                 );
                 code_is_complete = !code_is_diff
                     || style_diffs
-                    || raw_lines[index + 1..].iter().any(|line| {
-                        line.trim_start().starts_with("```")
-                    });
+                    || raw_lines[index + 1..]
+                        .iter()
+                        .any(|line| line.trim_start().starts_with("```"));
                 code_highlighter = Language::from_name(language_name).map(Highlighter::new);
                 in_code = true;
                 let label = if info.is_empty() { "code" } else { info };
@@ -696,12 +702,8 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
             continue;
         }
 
-        let highlighted = highlighted_line(
-            raw,
-            &mut markdown,
-            &mut markdown_scratch,
-            Style::default(),
-        );
+        let highlighted =
+            highlighted_line(raw, &mut markdown, &mut markdown_scratch, Style::default());
         if is_table_header(
             raw_lines.get(index).copied(),
             raw_lines.get(index + 1).copied(),
@@ -841,15 +843,16 @@ fn wrap_styled_line(line: &RenderLine, width: u16, preserve_indentation: bool) -
         } else {
             end
         };
-        let (chunk, next_start) = if cut > start
-            && cut < characters.len()
-            && characters[cut].0.is_whitespace()
-        {
-            (&characters[start..cut], cut + 1)
-        } else {
-            (&characters[start..cut], cut)
-        };
-        let text = chunk.iter().map(|(character, _)| *character).collect::<String>();
+        let (chunk, next_start) =
+            if cut > start && cut < characters.len() && characters[cut].0.is_whitespace() {
+                (&characters[start..cut], cut + 1)
+            } else {
+                (&characters[start..cut], cut)
+            };
+        let text = chunk
+            .iter()
+            .map(|(character, _)| *character)
+            .collect::<String>();
         let styles = chunk.iter().map(|(_, style)| *style).collect();
         output.push(RenderLine::styled(text, line.style, styles));
         start = next_start.max(start + 1);
@@ -871,7 +874,7 @@ fn code_lines(line: &RenderLine, width: u16) -> Vec<RenderLine> {
     }
     chunks
         .into_iter()
-        .map(|chunk| prepend_code_rail(chunk))
+        .map(prepend_code_rail)
         .collect()
 }
 
@@ -999,10 +1002,7 @@ fn render_table(rows: &[&str], width: u16) -> Vec<RenderLine> {
             })
             .collect::<Vec<_>>()
             .join("│");
-        output.push(RenderLine::plain(
-            format!("│{content}│"),
-            Style::default(),
-        ));
+        output.push(RenderLine::plain(format!("│{content}│"), Style::default()));
         if row_index == 0 {
             output.push(RenderLine::plain(
                 border('├', '┼', '┤'),
@@ -1233,7 +1233,10 @@ mod tests {
     #[test]
     fn markdown_ordered_lists_and_quotes_get_bounded_structure() {
         let lines = markdown_lines("1. first\n2. second\n> quoted", 40, true);
-        let text = lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>();
+        let text = lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(text, ["1 first", "2 second", "│ quoted"]);
     }
 

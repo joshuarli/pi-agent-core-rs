@@ -42,7 +42,9 @@ pub fn measure_prompt_cacheability(
     let current_tools = tool_definition_bytes(current);
     let current_domain = cache_domain_fingerprint(current, &current_tools);
     let same_domain = previous
-        .map(|request| cache_domain_fingerprint(request, &tool_definition_bytes(request)) == current_domain)
+        .map(|request| {
+            cache_domain_fingerprint(request, &tool_definition_bytes(request)) == current_domain
+        })
         .unwrap_or(false);
     let common_context_prefix_bytes = previous
         .filter(|_| same_domain)
@@ -74,7 +76,11 @@ pub fn measure_prompt_cacheability(
 
 fn cache_domain_fingerprint(request: &ModelRequest, tools: &[u8]) -> u64 {
     let mut bytes = Vec::with_capacity(
-        request.system_prompt.len().saturating_add(tools.len()).saturating_add(64),
+        request
+            .system_prompt
+            .len()
+            .saturating_add(tools.len())
+            .saturating_add(64),
     );
     bytes.extend_from_slice(request.system_prompt.as_bytes());
     bytes.push(0);
@@ -159,8 +165,14 @@ mod tests {
         let previous = request("[one]");
         let current = request("[one]{\"role\":\"user\"}");
         let measurement = measure_prompt_cacheability(Some(&previous), &current);
-        assert_eq!(measurement.common_context_prefix_bytes, previous.context.len());
-        assert_eq!(measurement.common_context_prefix_ratio_millionths, 1_000_000);
+        assert_eq!(
+            measurement.common_context_prefix_bytes,
+            previous.context.len()
+        );
+        assert_eq!(
+            measurement.common_context_prefix_ratio_millionths,
+            1_000_000
+        );
         assert!(!measurement.cache_domain_changed);
     }
 
