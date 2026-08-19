@@ -105,7 +105,7 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "model readiness",
-            |screen| screen.contains("openrouter/openai/gpt-5.6-luna"),
+            |screen| screen.contains("𝒑i-agent") && screen.contains("yolo · gpt-5.6-luna"),
         )
         .expect("model selection should render");
     let active = terminal.terminal_state();
@@ -130,7 +130,7 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
             "narrow redraw",
             |screen| {
                 screen.size() == Size::new(40, 10).expect("constant narrow terminal size")
-                    && screen.contains("openrouter/openai/gpt-5.6-luna")
+                    && screen.contains("yolo · gpt-5.6-luna")
             },
         )
         .expect("application remains rendered after terminal resize");
@@ -138,15 +138,25 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
     terminal
         .send_text(
             terminal.deadline(Duration::from_secs(3)),
-            "stream offline response\r",
+            "stream offline response",
         )
-        .expect("send streaming command");
+        .expect("send streaming prompt");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "typed prompt",
+            |screen| screen.contains("stream offline response"),
+        )
+        .expect("typed prompt should render");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Enter)
+        .expect("submit streaming command");
     fixture.wait_for_first_delta();
     terminal
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "first released streaming token",
-            |screen| screen.contains("assistant: first"),
+            |screen| screen.contains("first"),
         )
         .expect("first token should render before fixture settlement");
     terminal
@@ -162,16 +172,141 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "stream completion",
-            |screen| screen.contains("assistant: first second"),
+            |screen| screen.contains("first") && screen.contains("second"),
         )
         .expect("complete response should render");
     terminal
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "idle after completion",
-            |screen| screen.contains("openrouter/openai/gpt-5.6-luna | idle"),
+            |screen| screen.contains("yolo · gpt-5.6-luna"),
         )
         .expect("application should become idle");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
+        .expect("send clean interrupt");
+    assert_eq!(
+        terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .expect("wait for pi-agent exit"),
+        ExitStatus::Code(0)
+    );
+    terminal
+        .assert_terminal_restored(&baseline)
+        .expect("normal exit restores applicable terminal modes");
+    terminal
+        .finish(terminal.deadline(Duration::from_secs(3)))
+        .expect("reap pi-agent");
+}
+
+#[test]
+fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
+    let scenario = Scenario::new("native composer interaction")
+        .expect("valid scenario label")
+        .command(
+            CommandSpec::new(env!("CARGO_BIN_EXE_pi-agent"))
+                .args(["--provider", "local", "--model", "Laguna-XS-2.1-5bit"]),
+        )
+        .size(Size::new(80, 16).expect("constant terminal size"))
+        .environment(TestEnv::hermetic().expect("create hermetic test environment"))
+        .protocol_profile(ProtocolProfile::xterm_minimal_v1());
+    let mut terminal =
+        PtyTest::spawn(scenario).expect("real pi-agent binary should start in a PTY");
+    let baseline = terminal.terminal_baseline();
+
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "local model readiness",
+            |screen| {
+                screen.contains("𝒑i-agent")
+                    && screen.contains("yolo · Laguna-XS-2.1-5bit")
+                    && screen.row(1).is_some_and(|row| row.starts_with("┃"))
+            },
+        )
+        .expect("local model selection should render");
+
+    terminal
+        .send_bytes(
+            terminal.deadline(Duration::from_secs(3)),
+            b"\x1b[200~first line\n  second line\x1b[201~",
+        )
+        .expect("send bracketed multiline paste");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "multiline composer",
+            |screen| screen.contains("first line") && screen.contains("second line"),
+        )
+        .expect("multiline paste should remain visible in the composer");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
+        .expect("clear multiline composer");
+
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "/model")
+        .expect("send model command");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Enter)
+        .expect("open model selector");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "cross-provider model selector",
+            |screen| {
+                screen.contains("Models")
+                    && screen.contains("OpenRouter · openai/gpt-5.6-luna")
+                    && screen.contains("Local OpenAI-compatible server · Laguna-XS-2.1-5bit")
+            },
+        )
+        .expect("model selector should show compiled models across providers");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Escape)
+        .expect("close model selector");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "model selector closed",
+            |screen| !screen.contains("Models"),
+        )
+        .expect("Esc should close the model selector");
+
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "/he")
+        .expect("send command prefix");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Tab)
+        .expect("complete command prefix");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "command completion",
+            |screen| screen.contains("/help"),
+        )
+        .expect("Tab should complete the command");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Enter)
+        .expect("submit help command");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "help output",
+            |screen| screen.contains("keys: Enter submit"),
+        )
+        .expect("help command should render its key summary");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Up)
+        .expect("recall command history");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "history recall",
+            |screen| screen.contains("/help"),
+        )
+        .expect("Up should restore the submitted command");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
+        .expect("clear recalled command");
     terminal
         .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
         .expect("send clean interrupt");

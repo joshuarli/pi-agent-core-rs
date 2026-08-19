@@ -8,7 +8,7 @@ use pi_agent_core::{Agent, AgentEvent, ModelDescriptor};
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
-use super::host::{missing_credential, model_candidates, overlay_lines, provider_candidates};
+use super::host::{model_candidates, overlay_lines};
 use super::support::format_usage;
 
 /// One display row derived from a core event, never a second source of state.
@@ -18,6 +18,44 @@ pub struct TranscriptLine {
     pub sequence: Option<u64>,
     /// Raw, deliberately unrendered text for the v0 terminal projection.
     pub text: String,
+    /// Semantic presentation class retained alongside the event text.
+    pub kind: TranscriptKind,
+}
+
+/// Presentation classes used by the terminal renderer. Core semantics remain
+/// in [`AgentEvent`]; this is only the host's stable visual projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TranscriptKind {
+    /// Startup identity and help hint.
+    Welcome,
+    /// A submitted user prompt.
+    User,
+    /// Incrementally streamed assistant text.
+    Assistant,
+    /// A generic tool lifecycle row.
+    Tool {
+        /// Model-visible tool name.
+        name: String,
+        /// Current lifecycle phase.
+        state: ToolState,
+    },
+    /// Informational host/core notice.
+    Notice,
+    /// Error or cancellation notice.
+    Error,
+}
+
+/// Generic tool lifecycle state for compact rendering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolState {
+    /// Tool has been admitted and started.
+    Started,
+    /// Tool has emitted an update.
+    Progress,
+    /// Tool completed successfully.
+    Completed,
+    /// Tool completed with an error.
+    Failed,
 }
 
 /// Presentation-only status for the fixed status line.
@@ -34,12 +72,7 @@ pub enum UiStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Picker {
-    Provider {
-        filter: String,
-        selected: usize,
-    },
     Model {
-        provider: String,
         filter: String,
         selected: usize,
     },
@@ -76,6 +109,12 @@ pub struct AppState {
     pub(super) context_estimate: Option<ContextEstimate>,
     /// Read-only projection of the two queues the core owns and drains.
     pub(super) queued_prompts: Vec<QueuedPrompt>,
+    /// In-memory prompt history for the current terminal invocation.
+    pub(super) history: Vec<String>,
+    /// Current history cursor; `None` means the live composer draft.
+    pub(super) history_index: Option<usize>,
+    /// Draft saved when history navigation first leaves the live composer.
+    pub(super) history_draft: Option<String>,
 }
 
 /// Context-policy information carried by the core event stream for footer projection.
@@ -117,7 +156,11 @@ impl AppState {
             AgentEventKind::AgentStart => self.status = UiStatus::Active,
             AgentEventKind::MessageStart { message } => {
                 if let pi_agent_core::Message::User { content, .. } = message {
-                    self.push(sequence, format!("you: {content}"));
+                    self.push_kind(
+                        sequence,
+                        format!("you: {content}"),
+                        TranscriptKind::User,
+                    );
                 }
             }
             AgentEventKind::MessageUpdate {
@@ -132,7 +175,11 @@ impl AppState {
                             line.text.push_str(delta);
                         }
                     } else {
-                        self.push(sequence, format!("assistant: {delta}"));
+                        self.push_kind(
+                            sequence,
+                            format!("assistant: {delta}"),
+                            TranscriptKind::Assistant,
+                        );
                         self.streaming_line = self.transcript.len().checked_sub(1);
                     }
                 }
@@ -146,9 +193,17 @@ impl AppState {
                 {
                     if self.streaming_line.is_none() {
                         if let Some(error) = error_message {
-                            self.push(sequence, format!("assistant error: {error}"));
+                            self.push_kind(
+                                sequence,
+                                format!("assistant error: {error}"),
+                                TranscriptKind::Error,
+                            );
                         } else {
-                            self.push(sequence, format!("assistant: {content}"));
+                            self.push_kind(
+                                sequence,
+                                format!("assistant: {content}"),
+                                TranscriptKind::Assistant,
+                            );
                         }
                     }
                     self.streaming_line = None;
@@ -159,9 +214,13 @@ impl AppState {
                 tool_name,
                 arguments,
             } => {
-                self.push(
+                self.push_kind(
                     sequence,
                     format!("tool {tool_name} — started: {}", arguments.as_str()),
+                    TranscriptKind::Tool {
+                        name: tool_name.clone(),
+                        state: ToolState::Started,
+                    },
                 );
                 let index = self.transcript.len().saturating_sub(1);
                 self.active_tool_lines.insert(tool_call_id.clone(), index);
@@ -175,6 +234,8 @@ impl AppState {
                     tool_call_id,
                     sequence,
                     format!("tool {tool_name} — progress: {}", update.content),
+                    ToolState::Progress,
+                    tool_name,
                 );
             }
             AgentEventKind::ToolExecutionEnd {
@@ -192,12 +253,19 @@ impl AppState {
                     tool_call_id,
                     sequence,
                     format!("tool {tool_name} — {label}: {}", result.content),
+                    if result.is_error {
+                        ToolState::Failed
+                    } else {
+                        ToolState::Completed
+                    },
+                    tool_name,
                 );
                 self.active_tool_lines.remove(tool_call_id);
             }
-            AgentEventKind::ModelTurnUsage { accounting } => self.push(
+            AgentEventKind::ModelTurnUsage { accounting } => self.push_kind(
                 sequence,
                 format!("cost: {}", format_usage(&accounting.usage)),
+                TranscriptKind::Notice,
             ),
             AgentEventKind::CompactionStart {
                 source_message_count,
@@ -395,20 +463,17 @@ impl AppState {
     pub(crate) fn footer_lines(&self, registry: &ProviderRegistry) -> [String; 2] {
         let selected = self.selected_model.as_ref();
         let model = selected
-            .map(|model| format!("{}/{}", model.provider, model.model))
+            .map(|model| compact_model_label(&model.model))
             .unwrap_or_else(|| "provider/model unknown".into());
-        let run_state = match &self.status {
-            UiStatus::Idle => "idle".to_owned(),
-            UiStatus::Active => "working".to_owned(),
-            UiStatus::Notice(ref notice) => format!("notice: {notice}"),
+        let hint = if self.composer.text().starts_with('/') {
+            "commands: /help · /model · /cost · /compact · /clear · /quit".into()
+        } else {
+            match &self.status {
+                UiStatus::Idle => format!("yolo · {model}"),
+                UiStatus::Active => format!("⏺ Asking · yolo · {model}"),
+                UiStatus::Notice(ref notice) => format!("yolo · {model} · {notice}"),
+            }
         };
-        let usage = self
-            .last_snapshot
-            .as_ref()
-            .map(|snapshot| &snapshot.accounting.aggregate);
-        let usage = usage
-            .map(super::support::format_footer_usage)
-            .unwrap_or_else(|| super::support::format_unknown_footer_usage().into());
         let capacity = self
             .selected_context_window
             .map(NonZeroU64::get)
@@ -442,7 +507,23 @@ impl AppState {
                     .unwrap_or_else(|| "unknown".into())
             ),
         };
-        [format!("{model} | {run_state} | {usage}"), context]
+        let telemetry = self
+            .last_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.accounting.aggregate)
+            .filter(|usage| {
+                usage.input_tokens.is_some()
+                    || usage.output_tokens.is_some()
+                    || usage.reasoning_tokens.is_some()
+                    || usage.cache_read_tokens.is_some()
+                    || usage.cache_write_tokens.is_some()
+                    || usage.cost.is_some()
+            })
+            .map(super::support::format_footer_usage);
+        let context = telemetry
+            .map(|usage| format!("{context}; {usage}"))
+            .unwrap_or(context);
+        [hint, context]
     }
 
     pub(crate) fn queued_lines(&self) -> Vec<String> {
@@ -467,26 +548,24 @@ impl AppState {
 
     /// Return v0 picker lines for the renderer, if an overlay is active.
     pub fn picker_lines(&self, registry: &ProviderRegistry) -> Option<Vec<String>> {
+        self.picker_lines_visible(registry, usize::MAX)
+    }
+
+    pub(crate) fn picker_lines_visible(
+        &self,
+        registry: &ProviderRegistry,
+        max_rows: usize,
+    ) -> Option<Vec<String>> {
         let picker = self.picker.as_ref()?;
         Some(match picker {
-            Picker::Provider { filter, selected } => {
-                let candidates = provider_candidates(registry, filter);
+            Picker::Model { filter, selected } => {
+                let candidates = model_candidates(registry, filter);
                 let display = candidates
                     .iter()
-                    .map(|provider| match missing_credential(provider) {
-                        Some(reason) => format!("{provider} ({reason})"),
-                        None => provider.clone(),
-                    })
+                    .copied()
+                    .map(|candidate| candidate.label())
                     .collect::<Vec<_>>();
-                overlay_lines("provider", filter, &display, *selected)
-            }
-            Picker::Model {
-                provider,
-                filter,
-                selected,
-            } => {
-                let candidates = model_candidates(registry, provider, filter);
-                overlay_lines("model", filter, &candidates, *selected)
+                overlay_lines("Models", filter, &display, *selected, max_rows)
             }
             Picker::CustomModel { provider, input } => vec![
                 format!("custom model for {provider}"),
@@ -497,18 +576,44 @@ impl AppState {
     }
 
     pub(super) fn push(&mut self, sequence: Option<u64>, text: String) {
-        self.transcript.push(TranscriptLine { sequence, text });
+        self.push_kind(sequence, text, TranscriptKind::Notice);
     }
 
-    fn update_tool_line(&mut self, tool_call_id: &ToolCallId, sequence: Option<u64>, text: String) {
+    fn push_kind(&mut self, sequence: Option<u64>, text: String, kind: TranscriptKind) {
+        self.transcript.push(TranscriptLine {
+            sequence,
+            text,
+            kind,
+        });
+    }
+
+    fn update_tool_line(
+        &mut self,
+        tool_call_id: &ToolCallId,
+        sequence: Option<u64>,
+        text: String,
+        state: ToolState,
+        tool_name: &str,
+    ) {
         if let Some(index) = self.active_tool_lines.get(tool_call_id).copied() {
             if let Some(line) = self.transcript.get_mut(index) {
                 line.sequence = sequence;
                 line.text = text;
+                line.kind = TranscriptKind::Tool {
+                    name: tool_name.to_owned(),
+                    state,
+                };
                 return;
             }
         }
-        self.push(sequence, text);
+        self.push_kind(
+            sequence,
+            text,
+            TranscriptKind::Tool {
+                name: tool_name.to_owned(),
+                state,
+            },
+        );
         let index = self.transcript.len().saturating_sub(1);
         self.active_tool_lines.insert(tool_call_id.clone(), index);
     }
@@ -519,6 +624,63 @@ impl AppState {
 
     pub(super) fn local_line(&mut self, text: impl Into<String>) {
         self.push(None, text.into());
+    }
+
+    pub(super) fn welcome_line(&mut self) {
+        self.push_kind(
+            None,
+            format!(
+                "𝒑i-agent v{} · Run /help for commands",
+                env!("CARGO_PKG_VERSION")
+            ),
+            TranscriptKind::Welcome,
+        );
+    }
+
+    pub(super) fn record_history(&mut self, prompt: &str) {
+        if prompt.trim().is_empty() {
+            return;
+        }
+        if self
+            .history
+            .last()
+            .map_or(true, |previous| previous != prompt)
+        {
+            self.history.push(prompt.to_owned());
+        }
+        self.history_index = None;
+        self.history_draft = None;
+    }
+
+    pub(super) fn begin_history_navigation(&mut self) {
+        if self.history_index.is_none() {
+            self.history_draft = Some(self.composer.text().to_owned());
+        }
+    }
+
+    pub(super) fn history_previous(&mut self) -> Option<String> {
+        if self.history.is_empty() {
+            return None;
+        }
+        let index = self
+            .history_index
+            .unwrap_or(self.history.len())
+            .saturating_sub(1);
+        self.history_index = Some(index);
+        self.history.get(index).cloned()
+    }
+
+    pub(super) fn history_next(&mut self) -> Option<String> {
+        let Some(index) = self.history_index else {
+            return None;
+        };
+        let next = index + 1;
+        if next >= self.history.len() {
+            self.history_index = None;
+            return Some(self.history_draft.take().unwrap_or_default());
+        }
+        self.history_index = Some(next);
+        self.history.get(next).cloned()
     }
 
     pub(super) fn clear_transcript(&mut self) {
@@ -574,4 +736,10 @@ fn format_context_percent(tokens: Option<u64>, capacity: Option<u64>) -> String 
         }
         _ => "unknown".into(),
     }
+}
+
+fn compact_model_label(model: &str) -> String {
+    let bare = model.rsplit('/').next().unwrap_or(model);
+    bare.strip_prefix("claude-")
+        .map_or_else(|| bare.to_owned(), |name| name.replace("opus-", "opus ").replace("sonnet-", "sonnet ").replace("haiku-", "haiku "))
 }

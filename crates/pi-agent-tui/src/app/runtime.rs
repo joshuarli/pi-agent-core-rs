@@ -128,10 +128,11 @@ impl App {
         let builder = builder.compactor(compactor_capability);
         self.compactor = Some(compactor);
         self.attach_agent(builder.build());
+        self.state.welcome_line();
 
         match (self.options.provider(), self.options.model()) {
-            (None, None) => self.open_provider_picker(),
-            (Some(provider), None) => self.open_model_picker(os_text(provider, "--provider")?)?,
+            (None, None) => self.open_model_picker(),
+            (Some(_provider), None) => self.open_model_picker(),
             (Some(provider), Some(model)) => {
                 self.select_model(os_text(provider, "--provider")?, os_text(model, "--model")?)?
             }

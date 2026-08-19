@@ -30,8 +30,8 @@ manual compaction when configured, and edit the prompt in `$EDITOR`.
 
 It does not persist sessions, discover a Pi installation, read a TUI
 configuration file, or become a general terminal framework. The normal screen
-is intentionally only a transcript, one-line composer, and status line; a
-picker is a temporary overlay.
+is intentionally only a transcript, a compact multiline composer, and a
+status line; a picker is a temporary overlay.
 
 ## Ownership and explicit inputs
 
@@ -51,9 +51,10 @@ streams only assistant text to stdout, and exits; it requires both
 `medium`, `high`, `xhigh`, or `max`.
 
 `--cwd` is the explicit workspace authority passed to the default coding-tool
-bundle. With no provider/model pair, the host opens the compiled picker rather
-than guessing a model. The host may read documented credential environment
-variables, but it must never log them or move credential discovery into core.
+bundle. With no provider/model pair, the host opens the cross-provider model
+selector rather than guessing a model. The host may read documented credential
+environment variables, but it must never log them or move credential discovery
+into core.
 No preferences, keys, model choices, themes, keymaps, or sessions are
 persisted.
 
@@ -145,13 +146,15 @@ AgentEvent -> AppState projection -> Grid<Cell> -> frame diff -> Crossterm
 status presentation, and transient notices. It must not own model, provider,
 accounting, tool, compaction, or conversation semantics.
 
-The v0 renderer displays incrementally delivered assistant text with bounded
-plain-text, heading/list, fenced-code, and error treatment. It renders tool
-calls generically as one lifecycle activity from their name, serialized
-arguments, progress, and settled result/error rather than type-specific widgets.
-`PageUp`, `PageDown`, and `End` provide basic scroll/follow behavior. Markdown
-parsing, syntax highlighting, rich text, and a general layout tree are not
-required for this boundary.
+The renderer displays incrementally delivered assistant text with bounded
+plain-text, heading/list, fenced-code, error, and Unicode Markdown-table
+treatment. Tables use box-drawing borders and display-width-aware cell
+padding. It renders tool calls generically as one lifecycle activity from
+their name, serialized arguments, progress, and settled result/error rather
+than type-specific widgets. `PageUp` and `PageDown` provide basic
+scroll/follow behavior. Code and diff syntax highlighting deliberately remain
+outside this host so a shared highlighter can be introduced without changing
+the transcript contract.
 
 The fixed footer keeps provider/model, run state, provider-reported token and
 cache counters, exact cost, and context status visible. Every unavailable
@@ -176,13 +179,14 @@ retain the fixed OpenRouter endpoint and never read that test input.
 
 ## Interaction and terminal lifecycle
 
-The native composer supports insertion, left/right, Home/End, backspace/delete,
-paste, submission, and `Ctrl+G`. It intentionally has no multiline editing,
-history, word motions, or completion. `$EDITOR` supplies multiline editing:
-the host creates a private temporary file, suspends raw/alternate-screen state,
-parses and invokes `$EDITOR` without a shell, reads replacement text, restores
-the terminal, and removes the file on recoverable paths. An editor failure
-preserves the existing composer text.
+The native composer supports insertion, multiline paste, Shift+Enter, left/right,
+Home/End, word motions (`Alt+B`/`Alt+F`), backspace/delete, prompt history
+(`Up`/`Down`), command completion (`Tab`), submission, and `Ctrl+G`. Long
+multiline input follows the cursor within the bounded composer region. `$EDITOR`
+remains available for larger edits: the host creates a private temporary file,
+suspends raw/alternate-screen state, parses and invokes `$EDITOR` without a
+shell, reads replacement text, restores the terminal, and removes the file on
+recoverable paths. An editor failure preserves the existing composer text.
 
 `TerminalGuard` owns raw mode, alternate screen, cursor visibility, and
 bracketed paste. Restoration is a correctness property for ordinary exit,
@@ -194,16 +198,16 @@ The direct commands are intentionally not a plugin framework:
 
 ```text
 /help      show keybindings and commands
-/provider  open the compiled provider picker
-/model     open the compiled model picker
+/model     open the compiled cross-provider model selector
 /cost      print per-turn and aggregate reported accounting
 /compact   invoke the configured manual compactor
 /clear     reset the idle linear conversation
 /quit      exit after structured cancellation and settlement
 ```
 
-Pickers use arrow keys, literal substring filtering, Enter, and Escape. They
-show only compiled static entries plus an explicit custom-model path. An
+The model selector uses arrow keys, literal substring filtering across provider
+and model names, Enter, and Escape. It shows every compiled catalog model in a
+single list, plus explicit custom-model rows where an adapter allows them. An
 unavailable credential remains explainable rather than being guessed or
 silently substituted.
 

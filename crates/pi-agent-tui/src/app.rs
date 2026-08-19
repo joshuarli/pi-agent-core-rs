@@ -22,5 +22,5 @@ pub use cli::{CliCommand, CliError, CliOptions};
 pub use error::AppError;
 pub use host::build_host_agent;
 pub use runtime::App;
-pub use state::{AppState, TranscriptLine, UiStatus};
+pub use state::{AppState, ToolState, TranscriptKind, TranscriptLine, UiStatus};
 pub use support::format_usage;

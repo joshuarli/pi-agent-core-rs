@@ -19,7 +19,7 @@ coding loop that makes the core's actual state visible.
 | --- | --- | --- |
 | **P0 — core/critical** | End-to-end response streaming; live assistant/tool lifecycle; cancellation and error visibility; persistent provider-reported usage/cache/cost; minimal Markdown/code/error rendering; steering/follow-up queue semantics; terminal correctness | Without these, a run looks stalled, accounting is hidden, prompts can be lost, or the terminal can be left unusable. |
 | **P0/P1 — critical for long sessions** | Context indication and overflow guardrails are P0; the TUI's provider-backed automatic compaction and retry are enabled for OpenRouter catalog models with source-backed capacity | A short demo can work without this; a coding session cannot safely grow without it. |
-| **P1 — valuable after the loop** | Rich Markdown/tool rendering, persistent linear sessions/resume, prompt history, search/copy, native editor improvements, richer selectors, retry/recovery affordances, approved local estimates | These improve continuity and throughput but do not fix the basic live-run contract. |
+| **P1 — valuable after the loop** | Persistent linear sessions/resume, search/copy, richer selectors, retry/recovery affordances, approved local estimates | These improve continuity and throughput but do not fix the basic live-run contract. |
 | **P2 — defer** | Advanced terminal polish, image paste, fork/clone/tree, export/import/share, hotkeys beyond `Ctrl+G`, broad provider coverage and dynamic catalogs | They are substantial surfaces with separate contracts and are not required to make the current host useful. |
 
 ### Minimum pleasant release
@@ -30,8 +30,8 @@ The first release stops at a small, coherent surface:
 - Real incremental response delivery through one reference provider path, with
   generic tool lifecycle, cancellation, and error visibility.
 - Basic block/code/error rendering, not a full document renderer.
-- `Ctrl+G` → `$EDITOR`, `Ctrl+C`, one discoverable queue action, and the existing
-  explicit provider/model picker.
+- `Ctrl+G` → `$EDITOR`, `Ctrl+C`, one discoverable queue action, and the
+  cross-provider `/model` selector.
 - Provider-reported usage, cache read/write, exact cost, and known context
   status; unknown values remain unknown.
 
@@ -240,9 +240,10 @@ Remove the interaction traps that interrupt a real edit/run/review cycle.
    next turn. Show queued prompts, their delivery mode, and their eventual
    transcript placement. The exact Pi hotkey is optional; a discoverable command
    or minimal key is sufficient initially.
-2. Keep `Ctrl+G` → `$EDITOR` as the supported multiline path. Treat native
-   multiline editing, history, completion, kill/yank, and grapheme-perfect
-   cursor movement as later editor work rather than a P0 gate.
+2. Keep `Ctrl+G` → `$EDITOR` as the supported large-edit path. The native
+   composer now covers multiline paste/Shift+Enter, history, word motions, and
+   command completion; kill/yank and grapheme-perfect cursor movement remain
+   later editor work.
 3. Make active/idle command behavior explicit: no accidental `/clear`, model
    replacement, or quit during a running operation; explain why an operation is
    unavailable.
@@ -273,10 +274,8 @@ Add features that make repeated work pleasant after the live loop is solid.
 
 - Persist and resume **linear** sessions with an explicit, versioned privacy and
   redaction contract; add `/new` and a minimal session picker.
-- Prompt history, command completion, search, copy, new-output markers, and
-  improved scrolling.
-- Better model/provider pickers over the compiled catalog, plus clear retry and
-  recovery affordances.
+- Search, copy, new-output markers, and richer scrolling affordances.
+- Better catalog loading, filtering, and recovery affordances around `/model`.
 - Richer accounting history and clearly labelled local estimates only if a
   pricing source and staleness policy are approved.
 - Full Markdown parsing, syntax highlighting, type-specific tool cards,

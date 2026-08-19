@@ -60,22 +60,11 @@ pub(super) fn format_footer_usage(usage: &Usage) -> String {
     )
 }
 
-pub(super) const fn format_unknown_footer_usage() -> &'static str {
-    "in unknown out unknown reasoning unknown cache-read unknown cache-write unknown cost unknown"
-}
-
 pub(super) fn composer_cursor(state: &AppState, width: u16, height: u16) -> Option<(u16, u16)> {
-    let layout = render::layout(width, height);
-    if layout.composer.height == 0 || state.picker.is_some() || state.composer().is_multiline() {
+    if state.picker.is_some() {
         return None;
     }
-    let cursor = state.composer().text()[..state.composer().cursor()]
-        .chars()
-        .count() as u16;
-    Some((
-        2u16.saturating_add(cursor).min(width.saturating_sub(1)),
-        layout.composer.y,
-    ))
+    render::composer_cursor_position(state, width, height)
 }
 
 /// Format today's UTC civil date without adding a date/time dependency.

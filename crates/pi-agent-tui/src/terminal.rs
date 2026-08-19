@@ -7,7 +7,7 @@ use crossterm::queue;
 use crossterm::style::{
     Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
 };
-use crossterm::terminal::{self};
+use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{cursor, terminal::EnterAlternateScreen, terminal::LeaveAlternateScreen};
 use std::fmt;
 use std::io::{self, stdout, Stdout, Write};
@@ -158,7 +158,13 @@ impl TerminalGuard {
         if diff.changes.is_empty() && self.cursor_position == cursor_position {
             return Ok(());
         }
+        if diff.full_redraw {
+            queue!(self.output, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        }
         for change in &diff.changes {
+            if diff.full_redraw && change.cell == crate::grid::Cell::blank() {
+                continue;
+            }
             queue!(self.output, cursor::MoveTo(change.x, change.y))?;
             apply_style(&mut self.output, change.cell.style)?;
             queue!(self.output, Print(change.cell.symbol))?;

@@ -18,9 +18,7 @@ impl App {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(terminal, key),
             Event::Paste(text) if self.state.picker.is_none() => {
-                if let Err(error) = self.state.composer_mut().insert_str(&text) {
-                    self.state.notice(error.to_string());
-                }
+                self.state.composer_mut().insert_str_multiline(&text);
                 Ok(())
             }
             Event::Paste(text) => self.picker_insert(&text),
@@ -49,6 +47,7 @@ impl App {
             return Ok(());
         }
         match key.code {
+            KeyCode::Tab => self.complete_command(),
             KeyCode::Char(character)
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
             {
@@ -61,10 +60,39 @@ impl App {
             KeyCode::Left => self.state.composer_mut().move_left(),
             KeyCode::Right => self.state.composer_mut().move_right(),
             KeyCode::Home => self.state.composer_mut().home(),
-            KeyCode::End => self.state.follow_end(),
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.state.follow_end()
+            }
+            KeyCode::End => self.state.composer_mut().end(),
+            KeyCode::Up if self.state.composer().is_multiline() => {
+                self.state.composer_mut().move_line_up()
+            }
+            KeyCode::Down if self.state.composer().is_multiline() => {
+                self.state.composer_mut().move_line_down()
+            }
+            KeyCode::Up => {
+                self.state.begin_history_navigation();
+                if let Some(history) = self.state.history_previous() {
+                    self.state.composer_mut().replace_from_editor(history);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(history) = self.state.history_next() {
+                    self.state.composer_mut().replace_from_editor(history);
+                }
+            }
             KeyCode::PageUp => self.state.page_up(5),
             KeyCode::PageDown => self.state.page_down(5),
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.state.composer_mut().insert_newline()
+            }
             KeyCode::Enter => self.submit_composer()?,
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.state.composer_mut().move_word_left()
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.state.composer_mut().move_word_right()
+            }
             _ => {}
         }
         Ok(())
@@ -89,14 +117,15 @@ impl App {
         if input.trim().is_empty() {
             return Ok(());
         }
+        self.state.record_history(&input);
         if input.starts_with('/') {
             self.dispatch_command(&input)
         } else {
             let agent = self.agent_or_setup()?.clone();
             match agent.snapshot().phase {
                 AgentPhase::Idle if !agent.has_model_provider() => {
-                    self.state.notice("select a provider and model first");
-                    self.open_provider_picker();
+                    self.state.notice("select a model first");
+                    self.open_model_picker();
                 }
                 AgentPhase::Idle => match agent.start_prompt(input.clone()) {
                     Ok(run) => {
@@ -118,11 +147,39 @@ impl App {
         }
     }
 
+    pub(super) fn complete_command(&mut self) {
+        let input = self.state.composer().text().to_owned();
+        let Some(prefix) = input.split_whitespace().next() else {
+            return;
+        };
+        if !prefix.starts_with('/') || input.chars().any(char::is_whitespace) {
+            return;
+        }
+        const COMMANDS: &[&str] = &[
+            "/help",
+            "/model",
+            "/cost",
+            "/compact",
+            "/steer",
+            "/followup",
+            "/clear",
+            "/quit",
+        ];
+        let Some(command) = COMMANDS
+            .iter()
+            .copied()
+            .find(|command| command.starts_with(prefix))
+        else {
+            return;
+        };
+        self.state.composer_mut().replace_from_editor(format!("{command} "));
+    }
+
     pub(super) fn dispatch_command(&mut self, input: &str) -> Result<(), AppError> {
         let mut words = input.split_whitespace();
         let command = words.next().unwrap_or_default();
         if self.agent_is_active()
-            && matches!(command, "/provider" | "/model" | "/compact" | "/clear")
+            && matches!(command, "/model" | "/compact" | "/clear")
         {
             self.state
                 .notice(format!("{command} is unavailable while a run is active"));
@@ -131,17 +188,14 @@ impl App {
         match command {
             "/help" => {
                 self.state.local_line(
-                    "keys: Enter submit, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, PgUp/PgDn/End scroll; commands: /provider /model /cost /compact /steer <prompt> /followup <prompt> /clear /quit",
+                    "keys: Enter submit, Shift+Enter newline, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, Alt+B/Alt+F words, Up/Down history, Tab command completion, PgUp/PgDn scroll, Ctrl+End follow; commands: /model /cost /compact /steer <prompt> /followup <prompt> /clear /quit",
                 );
             }
-            "/provider" => self.open_provider_picker(),
             "/model" => {
                 if let (Some(provider), Some(model)) = (words.next(), words.next()) {
                     self.select_model(provider.to_owned(), model.to_owned())?;
-                } else if let Some(provider) = self.selected_provider() {
-                    self.open_model_picker(provider)?;
                 } else {
-                    self.open_provider_picker();
+                    self.open_model_picker();
                 }
             }
             "/cost" => self.show_cost(),

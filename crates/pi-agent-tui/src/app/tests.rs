@@ -517,8 +517,6 @@ fn headless_host_agent_sends_openai_compatible_context() {
 
 #[test]
 fn local_provider_is_selectable_without_a_credential() {
-    assert_eq!(super::host::missing_credential("local"), None);
-
     let workspace = std::env::current_dir().expect("test workspace");
     let tools = DefaultCodingTools::new(workspace).expect("default tools");
     let agent = build_host_agent(tools)
@@ -598,7 +596,7 @@ fn active_commands_refuse_without_replacing_or_compacting_the_agent() {
     let mut app = App::new(CliOptions::default());
     app.attach_agent(agent.clone());
 
-    for command in ["/provider", "/model", "/compact", "/clear"] {
+    for command in ["/model", "/compact", "/clear"] {
         app.dispatch_command(command).expect("command is handled");
         assert!(matches!(
             app.state().status(),
@@ -661,4 +659,28 @@ fn provider_failure_restores_the_submitted_prompt_for_an_explicit_resubmit() {
         app.state().status(),
         UiStatus::Notice(notice) if notice.contains("prompt restored for explicit re-submit")
     ));
+}
+
+#[test]
+fn prompt_history_returns_to_the_live_draft_after_navigation() {
+    let mut state = AppState::new();
+    state.record_history("first prompt");
+    state.record_history("second prompt");
+    state.record_history("second prompt");
+
+    assert_eq!(state.history_previous().as_deref(), Some("second prompt"));
+    assert_eq!(state.history_previous().as_deref(), Some("first prompt"));
+    assert_eq!(state.history_next().as_deref(), Some("second prompt"));
+    assert_eq!(state.history_next().as_deref(), Some(""));
+    assert_eq!(state.history_next(), None);
+}
+
+#[test]
+fn command_completion_expands_a_slash_prefix_without_submitting_it() {
+    let mut app = App::new(CliOptions::default());
+    app.state.composer_mut().insert_str("/hel").expect("prefix");
+
+    app.complete_command();
+
+    assert_eq!(app.state.composer().text(), "/help ");
 }

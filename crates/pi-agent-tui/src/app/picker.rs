@@ -7,39 +7,21 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use super::error::AppError;
-use super::host::{missing_credential, model_candidates, provider_candidates};
+use super::host::model_candidates;
 use super::runtime::App;
 use super::state::Picker;
 use super::support::utc_date;
 
 impl App {
-    pub(super) fn open_provider_picker(&mut self) {
-        if self.agent_is_active() {
-            self.state.notice("provider changes require an idle agent");
-            return;
-        }
-        self.state.picker = Some(Picker::Provider {
-            filter: String::new(),
-            selected: 0,
-        });
-    }
-
-    pub(super) fn open_model_picker(&mut self, provider: String) -> Result<(), AppError> {
+    pub(super) fn open_model_picker(&mut self) {
         if self.agent_is_active() {
             self.state.notice("model changes require an idle agent");
-            return Ok(());
-        }
-        if self.registry.provider(&provider).is_none() {
-            return Err(AppError::Setup(format!(
-                "provider {provider:?} is not compiled in"
-            )));
+            return;
         }
         self.state.picker = Some(Picker::Model {
-            provider,
             filter: String::new(),
             selected: 0,
         });
-        Ok(())
     }
 
     pub(super) fn handle_picker_key(&mut self, key: KeyEvent) -> Result<(), AppError> {
@@ -64,10 +46,7 @@ impl App {
             return Ok(());
         };
         match picker {
-            Picker::Provider { filter, selected }
-            | Picker::Model {
-                filter, selected, ..
-            } => {
+            Picker::Model { filter, selected } => {
                 filter.push_str(text);
                 *selected = 0;
             }
@@ -81,10 +60,7 @@ impl App {
             return;
         };
         match picker {
-            Picker::Provider { filter, selected }
-            | Picker::Model {
-                filter, selected, ..
-            } => {
+            Picker::Model { filter, selected } => {
                 filter.pop();
                 *selected = 0;
             }
@@ -99,14 +75,11 @@ impl App {
             return;
         };
         let length = match picker {
-            Picker::Provider { filter, .. } => provider_candidates(&self.registry, filter).len(),
-            Picker::Model {
-                provider, filter, ..
-            } => model_candidates(&self.registry, provider, filter).len(),
+            Picker::Model { filter, .. } => model_candidates(&self.registry, filter).len(),
             Picker::CustomModel { .. } => return,
         };
         let selected = match picker {
-            Picker::Provider { selected, .. } | Picker::Model { selected, .. } => selected,
+            Picker::Model { selected, .. } => selected,
             Picker::CustomModel { .. } => return,
         };
         if length != 0 {
@@ -119,30 +92,21 @@ impl App {
             return Ok(());
         };
         match picker {
-            Picker::Provider { filter, selected } => {
-                let candidates = provider_candidates(&self.registry, &filter);
-                if let Some(provider) = candidates.get(selected) {
-                    if let Some(reason) = missing_credential(provider) {
-                        self.state.notice(reason);
+            Picker::Model { filter, selected } => {
+                let candidates = model_candidates(&self.registry, &filter);
+                if let Some(candidate) = candidates.get(selected).copied() {
+                    if let Some(model) = candidate.model_id() {
+                        if let Err(error) =
+                            self.select_model(candidate.provider.to_owned(), model.to_owned())
+                        {
+                            self.state.notice(error.to_string());
+                            self.state.picker = Some(Picker::Model { filter, selected });
+                        }
                     } else {
-                        self.open_model_picker(provider.clone())?;
-                    }
-                }
-            }
-            Picker::Model {
-                provider,
-                filter,
-                selected,
-            } => {
-                let candidates = model_candidates(&self.registry, &provider, &filter);
-                if let Some(model) = candidates.get(selected) {
-                    if model == "<custom model>" {
                         self.state.picker = Some(Picker::CustomModel {
-                            provider,
+                            provider: candidate.provider.to_owned(),
                             input: String::new(),
                         });
-                    } else {
-                        self.select_model(provider, model.clone())?;
                     }
                 }
             }
@@ -150,7 +114,10 @@ impl App {
                 if input.trim().is_empty() {
                     self.state.notice("custom model ID cannot be empty");
                 } else {
-                    self.select_model(provider, input)?;
+                    if let Err(error) = self.select_model(provider.clone(), input.clone()) {
+                        self.state.notice(error.to_string());
+                        self.state.picker = Some(Picker::CustomModel { provider, input });
+                    }
                 }
             }
         }
@@ -202,7 +169,7 @@ impl App {
         self.state.context_estimate = None;
         self.state.picker = None;
         self.state.set_snapshot(self.agent_or_setup()?.snapshot());
-        self.state.notice(format!("selected {provider}/{model}"));
+        self.state.notice("model selected");
         Ok(())
     }
 
@@ -273,12 +240,6 @@ impl App {
             .map_err(Into::into)
     }
 
-    pub(super) fn selected_provider(&self) -> Option<String> {
-        self.state
-            .selected_model
-            .as_ref()
-            .map(|model| model.provider.clone())
-    }
 }
 
 fn automatic_compaction_policy(context_window: NonZeroU64) -> AutomaticCompactionPolicy {

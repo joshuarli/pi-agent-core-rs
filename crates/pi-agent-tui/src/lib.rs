@@ -13,4 +13,7 @@ pub mod grid;
 pub mod render;
 pub mod terminal;
 
-pub use app::{build_host_agent, App, AppError, AppState, CliCommand, CliOptions};
+pub use app::{
+    build_host_agent, App, AppError, AppState, CliCommand, CliOptions, ToolState, TranscriptKind,
+    TranscriptLine,
+};

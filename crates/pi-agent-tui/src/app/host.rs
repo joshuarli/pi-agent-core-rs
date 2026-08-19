@@ -26,56 +26,57 @@ pub(super) fn build_host_agent_with_thinking(
         .map_err(|error| AppError::Setup(error.to_string()))
 }
 
-pub(super) fn provider_candidates(registry: &ProviderRegistry, filter: &str) -> Vec<String> {
-    let filter = filter.to_ascii_lowercase();
-    registry
-        .providers()
-        .iter()
-        .filter(|entry| {
-            entry.id.to_ascii_lowercase().contains(&filter)
-                || entry.display_name.to_ascii_lowercase().contains(&filter)
-        })
-        .map(|entry| entry.id.to_owned())
-        .collect()
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ModelCandidate {
+    pub(super) provider: &'static str,
+    pub(super) provider_name: &'static str,
+    pub(super) model: Option<pi_agent_core::provider::ModelDescriptor>,
 }
 
-pub(super) fn missing_credential(provider: &str) -> Option<String> {
-    let variable = match provider {
-        "openrouter" => "OPENROUTER_API_KEY",
-        "command-code" => "COMMANDCODE_API_KEY",
-        // Local OpenAI-compatible servers are reached through an explicit host URL and do not
-        // have a credential boundary in this TUI.
-        "local" => return None,
-        _ => return Some("provider is not compiled in".into()),
-    };
-    std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .is_none()
-        .then(|| format!("{variable} is unavailable"))
+impl ModelCandidate {
+    pub(super) fn label(self) -> String {
+        match self.model {
+            Some(model) => format!("{} · {}", self.provider_name, model.id),
+            None => format!("{} · custom model…", self.provider_name),
+        }
+    }
+
+    pub(super) fn model_id(self) -> Option<&'static str> {
+        self.model.map(|model| model.id)
+    }
 }
 
 pub(super) fn model_candidates(
     registry: &ProviderRegistry,
-    provider: &str,
     filter: &str,
-) -> Vec<String> {
+) -> Vec<ModelCandidate> {
     let filter = filter.to_ascii_lowercase();
-    let mut candidates = registry
-        .provider(provider)
-        .into_iter()
-        .flat_map(|entry| entry.models.iter())
-        .filter(|model| {
-            model.id.to_ascii_lowercase().contains(&filter)
+    let mut candidates = Vec::new();
+    for entry in registry.providers() {
+        for model in entry.models {
+            if model.id.to_ascii_lowercase().contains(&filter)
                 || model.display_name.to_ascii_lowercase().contains(&filter)
-        })
-        .map(|model| model.id.to_owned())
-        .collect::<Vec<_>>();
-    if registry
-        .provider(provider)
-        .is_some_and(|entry| entry.allows_custom_model())
-        && "custom model".contains(&filter)
-    {
-        candidates.push("<custom model>".into());
+                || entry.id.to_ascii_lowercase().contains(&filter)
+                || entry.display_name.to_ascii_lowercase().contains(&filter)
+            {
+                candidates.push(ModelCandidate {
+                    provider: entry.id,
+                    provider_name: entry.display_name,
+                    model: Some(*model),
+                });
+            }
+        }
+        if entry.allows_custom_model()
+            && ("custom model".contains(&filter)
+                || entry.id.to_ascii_lowercase().contains(&filter)
+                || entry.display_name.to_ascii_lowercase().contains(&filter))
+        {
+            candidates.push(ModelCandidate {
+                provider: entry.id,
+                provider_name: entry.display_name,
+                model: None,
+            });
+        }
     }
     candidates
 }
@@ -85,15 +86,27 @@ pub(super) fn overlay_lines(
     filter: &str,
     candidates: &[String],
     selected: usize,
+    max_rows: usize,
 ) -> Vec<String> {
-    let mut lines = vec![format!("{title} picker: {filter}")];
-    if candidates.is_empty() {
-        lines.push("(no matching compiled entries)".into());
+    let mut lines = vec![if filter.is_empty() {
+        format!("{title} {} · Type to filter", candidates.len())
     } else {
-        lines.extend(candidates.iter().enumerate().map(|(index, candidate)| {
-            format!("{} {candidate}", if index == selected { '>' } else { ' ' })
-        }));
+        format!("{title} {} · {filter}", candidates.len())
+    }];
+    if candidates.is_empty() {
+        lines.push("  No matching models".into());
+    } else {
+        let visible = max_rows.saturating_sub(2).max(1).min(candidates.len());
+        let start = selected
+            .saturating_sub(visible.saturating_sub(1))
+            .min(candidates.len().saturating_sub(visible));
+        lines.extend(candidates[start..start + visible].iter().enumerate().map(
+            |(offset, candidate)| {
+                let index = start + offset;
+                format!("{} {candidate}", if index == selected { '❯' } else { ' ' })
+            },
+        ));
     }
-    lines.push("Enter selects; Esc cancels".into());
+    lines.push("↑/↓ navigate · Enter select · Esc close".into());
     lines
 }
