@@ -4,7 +4,7 @@
 //! work to the caller-owned executor.  Dropping an unfinished handle requests cancellation and
 //! settles the agent as cancelled, ensuring an abandoned run cannot leave the agent busy.
 
-use crate::agent::AgentInner;
+use crate::agent::{AgentConfiguration, AgentInner};
 use crate::error::CoreError;
 use crate::event::{
     AgentEvent, AgentEventKind, AutomaticCompactionOutcome, EventSequence,
@@ -190,6 +190,8 @@ pub struct RunHandle {
     /// reports this suffix, matching Pi continuation semantics.
     pub(crate) message_start_index: usize,
     pub(crate) skip_initial_steering: bool,
+    /// Immutable prompt/tool/hook configuration captured when this run claimed the agent.
+    pub(crate) configuration: Arc<AgentConfiguration>,
     pub(crate) policy: Mutex<RunPolicyState>,
 }
 
@@ -631,7 +633,8 @@ impl RunHandle {
                 context,
                 model,
                 thinking_level,
-            } = agent
+            } = self
+                .configuration
                 .hooks
                 .prepare_next_turn_async(current_context.clone(), self.cancellation.clone())
                 .await?;
@@ -642,7 +645,8 @@ impl RunHandle {
             if let Some(thinking_level) = thinking_level {
                 thinking_override = Some(thinking_level);
             }
-            if agent
+            if self
+                .configuration
                 .hooks
                 .should_stop_after_turn_async(&prepared_context, self.cancellation.clone())
                 .await?
@@ -698,20 +702,22 @@ impl RunHandle {
                     messages: state.messages.clone(),
                     host_messages: state.host_messages.clone(),
                 }),
-                state.system_prompt.clone(),
+                self.configuration.system_prompt.clone(),
                 model_override.cloned().or_else(|| state.model.clone()),
                 thinking_override.unwrap_or(state.thinking_level),
-                agent.tools.definitions(),
+                self.configuration.tools.definitions(),
             )
         };
         let projected_context = project_model_context(context, &agent.tool_result_projection);
-        let transformed = agent
+        let transformed = self
+            .configuration
             .hooks
             .transform_context_async(projected_context, self.cancellation.clone())
             .await?;
         let request = ModelRequest {
             system_prompt,
-            context: agent
+            context: self
+                .configuration
                 .hooks
                 .convert_to_llm_async(transformed, self.cancellation.clone())
                 .await?,

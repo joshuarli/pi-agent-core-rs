@@ -491,6 +491,13 @@ impl Agent {
         if let AgentPhase::Running(active) | AgentPhase::Cancelling(active) = state.phase {
             return Err(CoreError::ActiveRun { run_id: active });
         }
+        let configuration = Arc::clone(
+            &*self
+                .inner
+                .configuration
+                .read()
+                .expect("agent configuration lock poisoned"),
+        );
         state.phase = AgentPhase::Running(run_id);
         state.last_error = None;
         state.partial_response = None;
@@ -522,6 +529,7 @@ impl Agent {
                 initial_messages: Vec::new(),
                 message_start_index: 0,
                 skip_initial_steering: true,
+                configuration,
                 policy: Mutex::new(crate::run::RunPolicyState::default()),
             },
             compactor,

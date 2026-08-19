@@ -28,8 +28,12 @@ pub(crate) struct AgentInner {
     pub(crate) queues: Mutex<AgentQueues>,
     /// Current run ownership marker.
     pub(crate) active_run: Mutex<Option<ActiveRun>>,
-    /// Host capabilities and policy.
-    pub(crate) tools: ToolRegistry,
+    /// Prompt, executable capabilities, and policy hooks selected for future runs.
+    ///
+    /// The lock is always acquired after the agent state lock. A run clones the
+    /// `Arc` while holding both locks, then uses that immutable snapshot for its
+    /// entire lifetime.
+    pub(crate) configuration: RwLock<Arc<AgentConfiguration>>,
     /// Drain policy for messages that steer an active run.
     pub(crate) steering_mode: Mutex<QueueMode>,
     /// Drain policy for messages that run only at the idle boundary.
@@ -44,8 +48,6 @@ pub(crate) struct AgentInner {
     pub(crate) tool_result_projection: crate::tool::ToolResultProjectionPolicy,
     /// Immutable circuit-breaker policy; streak state is allocated per run.
     pub(crate) tool_failure_circuit_breaker: crate::tool::ToolFailureCircuitBreaker,
-    /// Hooks are held for the run loop boundary.
-    pub(crate) hooks: Arc<dyn HookSet>,
     /// Awaited observers in registration order.
     pub(crate) observers: Mutex<Vec<ObserverRegistration>>,
     /// Monotonic process-local observer registrations.
@@ -104,6 +106,54 @@ pub(crate) struct ActiveRun {
 #[derive(Clone)]
 pub struct Agent {
     pub(crate) inner: Arc<AgentInner>,
+}
+
+/// Prompt and host policy used by each newly started run.
+///
+/// An [`Agent`] owns one configuration for future runs. [`Agent::replace_configuration`]
+/// swaps all three fields together while the agent is idle; an active run retains
+/// the immutable snapshot it captured when ownership was reserved.
+pub struct AgentConfiguration {
+    /// System instructions sent with each model request.
+    pub system_prompt: String,
+    /// Ordered executable capabilities exposed to the model and tool scheduler.
+    pub tools: ToolRegistry,
+    /// Host policy hooks used at context and tool lifecycle boundaries.
+    pub hooks: Arc<dyn HookSet>,
+}
+
+impl AgentConfiguration {
+    /// Construct a prompt, tool registry, and hook set for future runs.
+    pub fn new(
+        system_prompt: impl Into<String>,
+        tools: ToolRegistry,
+        hooks: Arc<dyn HookSet>,
+    ) -> Self {
+        Self {
+            system_prompt: system_prompt.into(),
+            tools,
+            hooks,
+        }
+    }
+}
+
+impl Clone for AgentConfiguration {
+    fn clone(&self) -> Self {
+        Self {
+            system_prompt: self.system_prompt.clone(),
+            tools: self.tools.clone(),
+            hooks: Arc::clone(&self.hooks),
+        }
+    }
+}
+
+impl std::fmt::Debug for AgentConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfiguration")
+            .field("system_prompt", &self.system_prompt)
+            .field("tools", &self.tools)
+            .finish_non_exhaustive()
+    }
 }
 
 /// An owned registration for an awaited lifecycle observer.
@@ -270,7 +320,7 @@ impl Agent {
 
     /// Return prompt definitions for the currently registered capabilities.
     pub fn tool_definitions(&self) -> Vec<crate::tool::ToolDefinition> {
-        self.inner.tools.definitions()
+        self.configuration_snapshot().tools.definitions()
     }
 
     /// Whether an explicit model provider was configured.
@@ -314,6 +364,35 @@ impl Agent {
         }
     }
 
+    /// Atomically replace the prompt, tools, and hooks used by future runs while idle.
+    ///
+    /// The retained transcript, selected model/provider, reasoning level, and
+    /// explicit queues are unchanged. Active and cancelling agents reject the
+    /// replacement with [`CoreError::ActiveRun`], leaving their live run's
+    /// immutable configuration untouched.
+    pub fn replace_configuration(
+        &self,
+        configuration: AgentConfiguration,
+    ) -> Result<(), CoreError> {
+        let mut state = self.inner.state.lock().expect("agent state mutex poisoned");
+        if let AgentPhase::Running(run_id) | AgentPhase::Cancelling(run_id) = state.phase {
+            return Err(CoreError::ActiveRun { run_id });
+        }
+        let mut current = self
+            .inner
+            .configuration
+            .write()
+            .expect("agent configuration lock poisoned");
+        state.system_prompt = configuration.system_prompt.clone();
+        *current = Arc::new(configuration);
+        Ok(())
+    }
+
+    /// Return an owned copy of the prompt, tools, and hooks used by future runs.
+    pub fn configuration(&self) -> AgentConfiguration {
+        (*self.configuration_snapshot()).clone()
+    }
+
     /// Replace the automatic-compaction policy while the agent is idle.
     ///
     /// Hosts that select a model after constructing an agent can install the
@@ -351,7 +430,7 @@ impl Agent {
 
     /// Clone the host policy handle used at the run-loop boundary.
     pub fn hooks(&self) -> Arc<dyn HookSet> {
-        Arc::clone(&self.inner.hooks)
+        Arc::clone(&self.configuration_snapshot().hooks)
     }
 
     /// Register an awaited lifecycle observer.
@@ -547,6 +626,13 @@ impl Agent {
         state.partial_response = None;
         state.is_streaming = false;
         state.pending_tool_calls.clear();
+        let configuration = Arc::clone(
+            &*self
+                .inner
+                .configuration
+                .read()
+                .expect("agent configuration lock poisoned"),
+        );
         drop(state);
         let run_state = Arc::new(Mutex::new(crate::state::RunState::created(run_id)));
         let cancellation = CancellationToken::new();
@@ -566,8 +652,20 @@ impl Agent {
             initial_messages,
             message_start_index,
             skip_initial_steering,
+            configuration,
             policy: Mutex::new(crate::run::RunPolicyState::default()),
         })
+    }
+
+    fn configuration_snapshot(&self) -> Arc<AgentConfiguration> {
+        let _state = self.inner.state.lock().expect("agent state mutex poisoned");
+        Arc::clone(
+            &*self
+                .inner
+                .configuration
+                .read()
+                .expect("agent configuration lock poisoned"),
+        )
     }
 
     /// Queue steering input for the next eligible active-turn drain point.

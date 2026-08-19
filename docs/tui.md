@@ -28,10 +28,12 @@ profile, render the lossless core event stream, submit or steer prompts, cancel
 work, show generic tool activity, display provider-reported accounting, invoke
 manual compaction when configured, and edit the prompt in `$EDITOR`.
 
-It does not persist sessions, discover a Pi installation, read a TUI
-configuration file, or become a general terminal framework. The normal screen
-is intentionally only a transcript, a compact multiline composer, and a
-status line; a picker is a temporary overlay.
+It does not persist sessions, discover a Pi installation, or become a general
+terminal framework. Its sole persistent application input is the optional Phi
+extension home described below; it does not read a Pi installation or a
+general TUI configuration file. The normal screen is intentionally only a
+transcript, a compact multiline composer, and a status line; a picker is a
+temporary overlay.
 
 ## Ownership and explicit inputs
 
@@ -39,7 +41,7 @@ The command line is deliberately narrow:
 
 ```text
 pi-agent [--provider <id>] [--model <id>] [--local-base-url <url>]
-         [--local-context-window <tokens>] [--cwd <path>]
+         [--local-context-window <tokens>] [--cwd <path>] [--phi-home <path>]
 pi-agent [-h | --help]
 pi-agent --provider <id> --model <id> [--thinking <level>] -p <message>
 ```
@@ -58,11 +60,43 @@ into core.
 No preferences, keys, model choices, themes, keymaps, or sessions are
 persisted.
 
+## Phi extension home
+
+The terminal host resolves `~/.phi` only at its application boundary; use
+`--phi-home <path>` to select another root. Neither `pi-agent-core` nor
+`pi-agent-luau` discovers a home directory. A missing `extensions.json` is an
+empty registry. Otherwise, its `extensions` array is the authoritative load
+order:
+
+```json
+{
+  "version": 1,
+  "extensions": [
+    {"name": "example", "path": "extensions/example"}
+  ]
+}
+```
+
+Each entry contains `manifest.json` and the manifest's explicit Luau module
+list. The host reads those files into a closed bundle and rejects malformed,
+duplicate, escaping, or symlinked source records. Every extension has zero
+effect authority: declared tools are visible but fail closed until a future
+host capability binding is separately designed and granted.
+
+The model receives `phi_extension_handbook` and `phi_extension_files`.
+The latter can list, read, write drafts, and validate files below
+`<phi-home>/extensions`; it cannot modify `extensions.json`, activate a new
+extension, or grant capability authority. The host reloads registered bundles
+only after a run has settled, so a model's draft affects the next run at the
+earliest. `/reload-extensions` performs the same idle-only reload explicitly.
+A failed reload retains the previous prompt, tool registry, and hook snapshot.
+
 For a reproducible provider check without terminal state, use the headless
 probe. It assembles the same default profile and OpenAI-compatible context
 hook as `pi-agent`, then drives one OpenRouter prompt and prints the assistant
-text. The probe does not read `.env`; source that file explicitly at the shell
-boundary:
+text. It deliberately does not load Phi extensions, so an operator's
+`~/.phi` sources cannot change the provider smoke check. The probe does not
+read `.env`; source that file explicitly at the shell boundary:
 
 ```bash
 set -a
@@ -201,6 +235,7 @@ The direct commands are intentionally not a plugin framework:
 /model     open the compiled cross-provider model selector
 /cost      print per-turn and aggregate reported accounting
 /compact   invoke the configured manual compactor
+/reload-extensions  reload the idle Phi extension snapshot
 /clear     reset the idle linear conversation
 /quit      exit after structured cancellation and settlement
 ```
@@ -273,7 +308,7 @@ agent loop, hidden session store, or ambient configuration system.
 | --- | --- |
 | Transcript | Markdown rendering, restrained highlighting, code-block horizontal handling, richer generic tool hints, search/copy, new-output markers, refined scrolling |
 | Composer and commands | Multiline native editing, grapheme/wide-cell correctness, word movement, history, paste presentation, richer editor integration, completion, and a narrow explicit command registry |
-| Extensions | Capability-scoped Luau-defined commands only; no automatic extension discovery, package manager, or marketplace |
+| Extensions | Capability-scoped bindings for declared Luau tools; no package manager, marketplace, or automatic authority grant |
 | Providers | Authorized cached remote model discovery, catalog update tooling, richer metadata, and explicit user-managed authentication flows |
 | Accounting | Budgets, warnings, richer history, and clearly labelled local estimates where they are ever justified |
 | Context | Automatic compaction policy, context-window recovery, previews, and configurable compactor policies |
@@ -282,7 +317,7 @@ agent loop, hidden session store, or ambient configuration system.
 The following remain out of scope unless a separate proposal establishes their
 authority and contract: session trees/branches/bookmarks, subagents or
 worktrees, plan-mode UX, approval/sandbox/policy bypass UI, MCP management,
-extension or package discovery, configuration/theme/keymap files, browser or
+extension package discovery, configuration/theme/keymap files, browser or
 web-search UI, image paste/rendering, embedded editors, git UI, dashboards,
 tabs, and multiple chat panes.
 

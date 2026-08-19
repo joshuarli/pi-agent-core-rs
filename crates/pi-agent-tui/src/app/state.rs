@@ -456,7 +456,8 @@ impl AppState {
             .map(|model| compact_model_label(&model.model))
             .unwrap_or_else(|| "provider/model unknown".into());
         let hint = if self.composer.text().starts_with('/') {
-            "commands: /help · /model · /cost · /compact · /clear · /quit".into()
+            "commands: /help · /model · /cost · /compact · /reload-extensions · /clear · /quit"
+                .into()
         } else {
             match &self.status {
                 UiStatus::Idle => format!("yolo · {model}"),

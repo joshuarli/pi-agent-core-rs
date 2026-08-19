@@ -573,6 +573,8 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "pi-agent-core",
+ "pi-agent-luau",
+ "pi-agent-protocol",
  "ptytest",
  "smol",
 ]

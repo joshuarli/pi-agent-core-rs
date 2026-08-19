@@ -156,6 +156,16 @@ fn cli_parses_and_validates_explicit_local_context_capacity() {
 }
 
 #[test]
+fn cli_parses_explicit_phi_home() {
+    let options = CliOptions::parse(
+        ["pi-agent", "--phi-home", "/tmp/phi-test"].map(OsString::from),
+    )
+    .expect("Phi home parses");
+    assert_eq!(options.phi_home(), Some(std::path::Path::new("/tmp/phi-test")));
+    assert!(CliOptions::help_text().contains("--phi-home <path>"));
+}
+
+#[test]
 fn event_projection_keeps_streaming_text_as_one_raw_line() {
     let mut state = AppState::new();
     let message = Message::Assistant {
@@ -587,7 +597,7 @@ fn active_commands_refuse_without_replacing_or_compacting_the_agent() {
     let mut app = App::new(CliOptions::default());
     app.attach_agent(agent.clone());
 
-    for command in ["/model", "/compact", "/clear"] {
+    for command in ["/model", "/compact", "/reload-extensions", "/clear"] {
         app.dispatch_command(command).expect("command is handled");
         assert!(matches!(
             app.state().status(),
@@ -674,4 +684,17 @@ fn command_completion_expands_a_slash_prefix_without_submitting_it() {
     app.complete_command();
 
     assert_eq!(app.state.composer().text(), "/help ");
+}
+
+#[test]
+fn command_completion_includes_extension_reload() {
+    let mut app = App::new(CliOptions::default());
+    app.state
+        .composer_mut()
+        .insert_str("/reload-e")
+        .expect("prefix");
+
+    app.complete_command();
+
+    assert_eq!(app.state.composer().text(), "/reload-extensions ");
 }

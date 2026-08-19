@@ -1,8 +1,21 @@
 use pi_agent_core::provider::{openai::OpenAiContextHook, ProviderRegistry};
-use pi_agent_core::{Agent, DefaultCodingTools, ThinkingLevel};
+use pi_agent_core::{Agent, AgentConfiguration, DefaultCodingTools, ThinkingLevel};
+use pi_agent_luau::LuaPolicyHookSet;
 use std::sync::Arc;
+use std::path::Path;
 
 use super::error::AppError;
+use super::phi::{PhiDeclaredTool, PhiExtensionFilesTool, PhiExtensionHandbookTool, PhiExtensions};
+
+const PHI_AUTHORING_PROMPT: &str = r#"
+Phi extensions
+
+When the user asks to create or modify a Phi extension, call `phi_extension_handbook` before
+writing source. Use `phi_extension_files` only for Phi extension files. Its writes are drafts:
+they cannot change the extension registry, activate a new extension, or grant authority. Phi
+extensions are reloaded only after a run has settled, so the current run keeps its original tools,
+prompt, and hooks.
+"#;
 
 /// Build the agent shared by the interactive host and its headless tests.
 ///
@@ -26,6 +39,74 @@ pub(super) fn build_host_agent_with_thinking(
         .map_err(|error| AppError::Setup(error.to_string()))
 }
 
+/// Compose the TUI's trusted host configuration with loaded Phi declarations.
+///
+/// This operation is intentionally separate from `AgentBuilder`: it can be applied with the
+/// core's idle-only `Agent::replace_configuration` API when a host reloads Phi files. No
+/// capability binding is created for a declaration or handler source.
+pub(super) fn compose_phi_configuration(
+    mut configuration: AgentConfiguration,
+    phi: &PhiExtensions,
+    phi_home: &Path,
+) -> Result<AgentConfiguration, AppError> {
+    let mut seen = configuration
+        .tools
+        .names()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut prompt = configuration.system_prompt;
+    for extension in phi.extensions() {
+        let append = extension.policy().system_prompt_append();
+        if !append.is_empty() {
+            if !prompt.is_empty() {
+                prompt.push('\n');
+            }
+            prompt.push_str(append);
+        }
+        for tool in extension.policy().tools() {
+            if !seen.insert(tool.name.clone()) {
+                return Err(AppError::Setup(format!(
+                    "Phi extension {:?} duplicates tool {:?}",
+                    extension.name(),
+                    tool.name
+                )));
+            }
+            configuration
+                .tools
+                .insert(Arc::new(PhiDeclaredTool::from_policy(extension.name(), tool)));
+        }
+    }
+    for reserved in ["phi_extension_handbook", "phi_extension_files"] {
+        if !seen.insert(reserved.to_owned()) {
+            return Err(AppError::Setup(format!(
+                "Phi extension tool name is reserved: {reserved:?}"
+            )));
+        }
+    }
+    if !prompt.is_empty() {
+        prompt.push('\n');
+    }
+    prompt.push_str(PHI_AUTHORING_PROMPT.trim());
+    configuration
+        .tools
+        .insert(Arc::new(PhiExtensionHandbookTool));
+    configuration
+        .tools
+        .insert(Arc::new(PhiExtensionFilesTool::new(phi_home)));
+
+    // Wrapping in reverse preserves registry order: the first extension's decision runs first.
+    let mut hooks = configuration.hooks;
+    for extension in phi.extensions().iter().rev() {
+        hooks = Arc::new(LuaPolicyHookSet::new(
+            Arc::clone(extension.policy()),
+            hooks,
+        ));
+    }
+    configuration.system_prompt = prompt;
+    configuration.hooks = hooks;
+    Ok(configuration)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ModelCandidate {
     pub(super) provider: &'static str,
@@ -43,6 +124,31 @@ impl ModelCandidate {
 
     pub(super) fn model_id(self) -> Option<&'static str> {
         self.model.map(|model| model.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pi_agent_core::hooks::NoHooks;
+    use pi_agent_core::tool::ToolRegistry;
+
+    #[test]
+    fn phi_authoring_tools_and_guidance_are_present_without_an_extension_registry() {
+        let configuration = compose_phi_configuration(
+            AgentConfiguration::new("base prompt", ToolRegistry::default(), Arc::new(NoHooks)),
+            &PhiExtensions::default(),
+            Path::new("/fixture/phi"),
+        )
+        .expect("empty Phi registry composes with the host configuration");
+
+        assert!(configuration
+            .tools
+            .names()
+            .eq(["phi_extension_handbook", "phi_extension_files"]));
+        assert!(configuration
+            .system_prompt
+            .contains("call `phi_extension_handbook` before"));
     }
 }
 

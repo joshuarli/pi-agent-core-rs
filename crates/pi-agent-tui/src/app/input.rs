@@ -160,6 +160,7 @@ impl App {
             "/model",
             "/cost",
             "/compact",
+            "/reload-extensions",
             "/steer",
             "/followup",
             "/clear",
@@ -180,7 +181,9 @@ impl App {
     pub(super) fn dispatch_command(&mut self, input: &str) -> Result<(), AppError> {
         let mut words = input.split_whitespace();
         let command = words.next().unwrap_or_default();
-        if self.agent_is_active() && matches!(command, "/model" | "/compact" | "/clear") {
+        if self.agent_is_active()
+            && matches!(command, "/model" | "/compact" | "/clear" | "/reload-extensions")
+        {
             self.state
                 .notice(format!("{command} is unavailable while a run is active"));
             return Ok(());
@@ -188,7 +191,7 @@ impl App {
         match command {
             "/help" => {
                 self.state.local_line(
-                    "keys: Enter submit, Shift+Enter newline, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, Alt+B/Alt+F words, Up/Down history, Tab command completion, PgUp/PgDn scroll, Ctrl+End follow; commands: /model /cost /compact /steer <prompt> /followup <prompt> /clear /quit",
+                    "keys: Enter submit, Shift+Enter newline, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, Alt+B/Alt+F words, Up/Down history, Tab command completion, PgUp/PgDn scroll, Ctrl+End follow; commands: /model /cost /compact /reload-extensions /steer <prompt> /followup <prompt> /clear /quit",
                 );
             }
             "/model" => {
@@ -215,6 +218,13 @@ impl App {
                         .state
                         .notice("manual compaction is unavailable for this provider/model"),
                     Err(error) => self.state.notice(error.to_string()),
+                }
+            }
+            "/reload-extensions" => {
+                if let Err(error) = self.reload_phi_extensions() {
+                    self.state.notice(format!(
+                        "Phi extensions were not reloaded; the previous snapshot remains active: {error}"
+                    ));
                 }
             }
             "/clear" => {

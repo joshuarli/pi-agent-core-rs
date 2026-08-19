@@ -27,6 +27,8 @@ pi-agent-core = { path = "../pi-agent-core", features = [
     "provider-openrouter",
     "provider-local",
 ] }
+pi-agent-luau = { path = "../pi-agent-luau" }
+pi-agent-protocol = { path = "../pi-agent-protocol" }
 smol = { workspace = true }
 
 [dev-dependencies]

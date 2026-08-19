@@ -23,9 +23,12 @@ impl RunHandle {
         tool_calls: &[AgentToolCall],
     ) -> Result<ToolBatchOutcome, CoreError> {
         let has_sequential_tool = tool_calls.iter().any(|assistant_call| {
-            agent.tools.get(&assistant_call.name).is_some_and(|tool| {
+            self.configuration
+                .tools
+                .get(&assistant_call.name)
+                .is_some_and(|tool| {
                 tool.execution_mode() == crate::tool::ToolExecutionMode::Sequential
-            })
+                })
         });
         if has_sequential_tool {
             self.execute_tool_calls_sequential(agent, tool_calls).await
@@ -319,7 +322,7 @@ impl RunHandle {
         agent: &AgentInner,
         call: &ToolCall,
     ) -> Result<PreparedToolCall, CoreError> {
-        let Some(tool) = agent.tools.get(&call.name).cloned() else {
+        let Some(tool) = self.configuration.tools.get(&call.name).cloned() else {
             return Ok(PreparedToolCall::Immediate {
                 result: error_tool_result(call, format!("Tool {} not found", call.name)),
                 terminate: false,
@@ -332,7 +335,8 @@ impl RunHandle {
             });
         }
         let context = self.current_context(agent)?;
-        match agent
+        match self
+            .configuration
             .hooks
             .before_tool_call_async(call, context, self.cancellation.clone())
             .await
@@ -411,7 +415,8 @@ impl RunHandle {
             Err(error) => error_tool_result_from_error(call, error),
         };
         let context = self.current_context(agent)?;
-        let terminate = match agent
+        let terminate = match self
+            .configuration
             .hooks
             .after_tool_call_async(call, &result, context, self.cancellation.clone())
             .await

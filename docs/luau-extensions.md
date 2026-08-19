@@ -169,6 +169,129 @@ thread.
 Tool handlers already use the core scheduler and should normally be preferred
 for model-visible effects.
 
+## Phi minimal extension host
+
+The minimal Phi host is an embedding convention around this crate, not an
+ambient resource layer in `pi-agent-luau`. Phi may own a user-facing
+extension registry, but Rust still receives explicit source records, a closed
+bundle, and explicit capability bindings.
+
+### Host-only `~/.phi` ownership
+
+`~/.phi` belongs to the Phi host if that host elects to use it. The core,
+`pi-agent-luau`, and a policy VM must never discover, read, write, watch, or
+interpret that directory. A host may choose a different root, an in-memory
+registry, or no persistent registry at all. Path permissions, file formats,
+symlink handling, atomic writes, and user approval are host responsibilities.
+
+Reading a file from `~/.phi` is therefore an input step performed by Phi. The
+host converts the selected bytes into an explicit source registry before
+calling the bundle API; it does not pass a path or a promise of ambient
+discovery across the boundary.
+
+### Explicit source registry and order
+
+Before evaluating extensions, Phi constructs an ordered source registry. Each
+record has a stable extension/source identity, a canonical module path, and
+the exact source bytes (plus the entry module and any host trust metadata
+needed by the host). The registry order is part of the input and must be
+stable across runs. Duplicate identities or module paths, an absent entry
+module, and an order that cannot be reproduced are load errors.
+
+There is no directory walk, implicit alphabetical order, search-path fallback,
+or last-writer-wins replacement. Adding, removing, or reordering an extension
+is an explicit host operation. The registry is also the source of composition
+order and must be included in any host-level snapshot or review record.
+
+Each registry entry is converted to a closed `bundle::Bundle` from those
+records. The loader accepts only `./...` and `../...` imports that resolve to a
+declared module inside that entry's bundle. Bare package names, absolute or
+drive paths, undeclared virtual modules, missing modules, and cycles are
+rejected. A fresh VM receives a fresh module cache. The loader never consults
+`~/.phi`, the current directory, environment variables, a package registry,
+the network, or the host filesystem. Bundle source hashes are deterministic
+content identities; they are not signatures or cryptographic trust proofs.
+
+### Extension composition
+
+Composition happens in the host after each extension has independently passed
+bundle, declaration, and resource-limit validation. It is deterministic and
+has no implicit authority transfer:
+
+1. `system_prompt_append` values are concatenated in source-registry order.
+   The host supplies the separator and must preserve the resulting order.
+2. Tool names are a single model-facing namespace. A duplicate name is a
+   composition error; an extension cannot replace or silently wrap another
+   extension's declaration or handler.
+3. A missing `before_tool_call` hook abstains. Present hooks run in registry
+   order; the first `terminate` or `block` result wins. A call is allowed only
+   when no hook blocks or terminates it.
+4. A handler remains owned by the tool declaration that supplied it and runs
+   with that declaration's fresh VM and limits. Extensions do not share Lua
+   globals, module caches, coroutines, or mutable declaration tables.
+
+The host must reject an invalid composed declaration before exposing it to a
+model. Composition is not a second policy language: it cannot rewrite core
+state, scheduler order, cancellation, tool results, or event settlement.
+
+### Zero default effect authority
+
+The default Phi host starts with zero effect authority. A declaration, prompt
+suffix, tool schema, handler source, capability-shaped yield, or capability
+manifest entry is data and never an effect. Authority has two separate parts:
+
+- a `CapabilityManifest` grants an exact operation to a selected policy; and
+- a `CapabilityBindings` entry supplies the Rust implementation that can carry
+  out that operation.
+
+Both are required. A manifest without a binding is inert, and a binding that
+is not explicitly granted is unreachable. Composition does not union grants,
+inherit authority from another extension, or turn a model-visible tool into a
+capability. Phi must choose and install each grant and binding explicitly;
+otherwise the request fails closed. Credentials and other effectful state
+remain in the host and never enter source text or the policy VM.
+
+### Trusted dynamic extensions: handbook and authoring tool
+
+“Dynamic” means that Phi selected new source records at a host-defined
+boundary; it does not mean that an extension can install itself or approve its
+own authority. A Phi distribution that supports trusted dynamic extensions
+should provide a host handbook and an authoring tool. The handbook should
+define the registry record, canonical module and bundle rules, composition
+order, resource budgets, grant review, source identity, reload lifecycle, and
+the distinction between trusted host diagnostics and model-visible data.
+
+The authoring tool may scaffold a closed bundle, validate imports and
+declarations, canonicalize the registry order, calculate a review identity,
+and show the exact capability-grant diff. It may write host-owned state only
+after an explicit operator action. It must not silently install, execute,
+approve, or grant an extension. Neither the handbook nor the tool expands the
+crate ABI or creates a package marketplace, remote loader, or ambient module.
+
+If a host binds grants to source, it must treat the current bundle source hash
+as an identity/checkpoint only: the implementation deliberately uses a
+non-cryptographic deterministic hash. A source-sensitive trust decision needs
+an independently defined cryptographic digest of the canonical source,
+manifest, entry module, and registry order, plus an explicit trust record.
+Changing any of those inputs must invalidate or re-review the grant; matching
+an extension name or path is not sufficient.
+
+### Idle-only immutable reload snapshots
+
+Reload is an idle-only host transaction. `Idle` means that the Agent has no
+active run and its terminal observers have settled. If a reload is requested
+while a run is active, Phi rejects or defers the request; it never mutates the
+policy underneath that run.
+
+To reload, Phi builds and validates a complete candidate snapshot containing
+the explicit source registry, its ordered closed bundles, the composed
+declaration, and the separately selected grants/bindings. Only after every
+part succeeds does the host atomically replace the current snapshot. A failed
+reload leaves the previous snapshot untouched. A run captures one immutable
+snapshot at start, including its authority selection, and all later turns in
+that run use it. The next run sees the newly accepted snapshot. There is no
+in-place module-cache mutation, partial reload, or mid-run source/grant swap.
+
 ## Limits and review checklist
 
 Policies and handlers have host-selected finite source, memory, and Luau
@@ -190,3 +313,16 @@ means a handler cannot leak a coroutine or mutable global into another call.
 For crate ownership and benchmark/test evidence see
 [architecture](architecture.md), [verification](verification.md), and
 [V1](../V1.md).
+
+### Phi v1 limitations
+
+The minimal host design does not make `~/.phi` a repository-wide convention or
+add it to the Luau crate. V1 has no ambient extension discovery, package
+registry, marketplace, remote source loader, signature/trust store, automatic
+grant approval, or active-run hot reload. It also has no cross-extension
+mutable state, implicit dependency graph, session persistence, TUI/approval
+surface, agent spawning, or world authority in the policy plane. Those are
+host/application work for a separately specified contract. The durable V1
+guarantees remain closed host-supplied bundles, fresh isolated VMs, finite
+budgets, explicit grants and bindings, and Rust ownership of mechanism and
+effects.

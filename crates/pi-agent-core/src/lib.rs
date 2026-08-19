@@ -37,7 +37,8 @@ pub mod trace;
 mod tests;
 
 pub use agent::{
-    Agent, AgentBuilder, EventSubscription, LosslessEventSubscription, ObserverSubscription,
+    Agent, AgentBuilder, AgentConfiguration, EventSubscription, LosslessEventSubscription,
+    ObserverSubscription,
 };
 pub use compaction::{
     AutomaticCompactionPolicy, AutomaticCompactionReason, AutomaticCompactionRequest,

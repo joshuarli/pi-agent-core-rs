@@ -1,6 +1,6 @@
 //! Agent configuration builder.
 
-use super::{Agent, AgentInner, IdleNotifier, ObserverRegistration};
+use super::{Agent, AgentConfiguration, AgentInner, IdleNotifier, ObserverRegistration};
 use crate::default_tools::DefaultCodingTools;
 use crate::event::EventObserver;
 use crate::hooks::{HookSet, NoHooks};
@@ -201,12 +201,17 @@ impl AgentBuilder {
         state.model = self.model;
         state.thinking_level = self.thinking_level;
         state.host_messages = self.host_messages;
+        let system_prompt = state.system_prompt.clone();
         Agent {
             inner: Arc::new(AgentInner {
                 state: Mutex::new(state),
                 queues: Mutex::new(AgentQueues::default()),
                 active_run: Mutex::new(None),
-                tools: self.tools,
+                configuration: RwLock::new(Arc::new(AgentConfiguration::new(
+                    system_prompt,
+                    self.tools,
+                    self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),
+                ))),
                 steering_mode: Mutex::new(self.steering_mode),
                 follow_up_mode: Mutex::new(self.follow_up_mode),
                 provider: RwLock::new(self.provider),
@@ -214,7 +219,6 @@ impl AgentBuilder {
                 automatic_compaction: RwLock::new(self.automatic_compaction),
                 tool_result_projection: self.tool_result_projection,
                 tool_failure_circuit_breaker: self.tool_failure_circuit_breaker,
-                hooks: self.hooks.unwrap_or_else(|| Arc::new(NoHooks)),
                 observers: Mutex::new(
                     self.observers
                         .into_iter()

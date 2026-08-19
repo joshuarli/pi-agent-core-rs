@@ -5,6 +5,7 @@ use pi_agent_core::CoreError;
 use std::fmt;
 
 use super::cli::CliError;
+use super::phi::PhiLoadError;
 
 /// Local application failures. Provider and core failures retain their typed source.
 #[derive(Debug)]
@@ -19,6 +20,8 @@ pub enum AppError {
     Setup(String),
     /// Registry model resolution or adapter construction failed.
     Registry(RegistryError),
+    /// Phi extension discovery or authoring boundary failed.
+    Phi(PhiLoadError),
     /// A core state-machine operation failed.
     Core(CoreError),
 }
@@ -31,6 +34,7 @@ impl fmt::Display for AppError {
             Self::Editor(error) => error.fmt(formatter),
             Self::Setup(message) => formatter.write_str(message),
             Self::Registry(error) => error.fmt(formatter),
+            Self::Phi(error) => error.fmt(formatter),
             Self::Core(error) => error.fmt(formatter),
         }
     }
@@ -43,6 +47,7 @@ impl std::error::Error for AppError {
             Self::Terminal(error) => Some(error),
             Self::Editor(error) => Some(error),
             Self::Registry(error) => Some(error),
+            Self::Phi(error) => Some(error),
             Self::Core(error) => Some(error),
             Self::Setup(_) => None,
         }
@@ -70,6 +75,12 @@ impl From<EditorError> for AppError {
 impl From<RegistryError> for AppError {
     fn from(error: RegistryError) -> Self {
         Self::Registry(error)
+    }
+}
+
+impl From<PhiLoadError> for AppError {
+    fn from(error: PhiLoadError) -> Self {
+        Self::Phi(error)
     }
 }
 

@@ -1,4 +1,151 @@
 use super::super::*;
+use crate::agent::AgentConfiguration;
+use crate::tool::ToolRegistry;
+
+struct ConfigurationTool {
+    name: &'static str,
+}
+
+impl AgentTool for ConfigurationTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "configuration reload fixture"
+    }
+
+    fn schema(&self) -> &pi_agent_protocol::JsonValue {
+        static SCHEMA: std::sync::OnceLock<pi_agent_protocol::JsonValue> =
+            std::sync::OnceLock::new();
+        SCHEMA.get_or_init(|| pi_agent_protocol::JsonValue::parse(r#"{"type":"object"}"#).unwrap())
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _call: ToolCall,
+        _context: ToolContext,
+        _updates: ToolUpdateSink,
+    ) -> ToolFuture<'a> {
+        Box::pin(std::future::ready(Err(crate::error::ToolError::Execution {
+            tool: self.name.into(),
+            message: "configuration fixture is not executable".into(),
+        })))
+    }
+}
+
+struct MarkerHooks {
+    marker: &'static str,
+}
+
+impl HookSet for MarkerHooks {
+    fn before_tool_call(&self, _call: &ToolCall) -> Result<BeforeToolCall, crate::error::HookError> {
+        Ok(BeforeToolCall::Allow)
+    }
+
+    fn after_tool_call(
+        &self,
+        _call: &ToolCall,
+        _result: &AgentToolResult,
+    ) -> Result<AfterToolCall, crate::error::HookError> {
+        Ok(AfterToolCall::default())
+    }
+
+    fn transform_context(
+        &self,
+        context: ContextEnvelope,
+    ) -> Result<ContextEnvelope, crate::error::HookError> {
+        Ok(context)
+    }
+
+    fn convert_to_llm(
+        &self,
+        _context: ContextEnvelope,
+    ) -> Result<String, crate::error::HookError> {
+        Ok(self.marker.into())
+    }
+}
+
+#[test]
+fn idle_configuration_replacement_is_atomic_and_preserves_agent_state() {
+    smol::block_on(async {
+        let provider = Arc::new(ScriptedProvider::new([
+            ModelStream {
+                events: vec![ModelStreamEvent::End(StopReason::Stop)],
+            },
+            ModelStream {
+                events: vec![ModelStreamEvent::End(StopReason::Stop)],
+            },
+        ]));
+        let model = ModelDescriptor {
+            provider: "fixture".into(),
+            model: "fixed-model".into(),
+            revision: None,
+        };
+        let agent = Agent::builder()
+            .system_prompt("old prompt")
+            .model(model.clone())
+            .model_provider(provider.clone())
+            .tool(Arc::new(ConfigurationTool { name: "old_tool" }))
+            .hooks(Arc::new(MarkerHooks { marker: "old hook" }))
+            .build();
+
+        agent.start_prompt("first")?.drive().await?;
+        agent.enqueue_steering("keep steering")?;
+        agent.enqueue_follow_up("keep follow-up")?;
+        let retained_messages = agent.snapshot().messages;
+        let queue_lengths = (agent.queue_snapshot().steering.len(), agent.queue_snapshot().follow_up.len());
+
+        let mut tools = ToolRegistry::default();
+        tools.insert(Arc::new(ConfigurationTool { name: "new_tool" }));
+        agent.replace_configuration(AgentConfiguration::new(
+            "new prompt",
+            tools,
+            Arc::new(MarkerHooks { marker: "new hook" }),
+        ))?;
+
+        let snapshot = agent.snapshot();
+        assert_eq!(snapshot.system_prompt, "new prompt");
+        assert_eq!(snapshot.model, Some(model));
+        assert_eq!(snapshot.messages, retained_messages);
+        assert_eq!(
+            (agent.queue_snapshot().steering.len(), agent.queue_snapshot().follow_up.len()),
+            queue_lengths
+        );
+        assert_eq!(agent.tool_definitions()[0].name, "new_tool");
+
+        // Drain the preserved queues so the second request remains a single-turn
+        // check of the newly installed prompt, tool registry, and hook set.
+        agent.clear_all_queues();
+        agent.start_prompt("second")?.drive().await?;
+        let requests = provider.requests();
+        assert_eq!(requests[0].system_prompt, "old prompt");
+        assert_eq!(requests[0].tools[0].name, "old_tool");
+        assert_eq!(requests[0].context, "old hook");
+        assert_eq!(requests[1].system_prompt, "new prompt");
+        assert_eq!(requests[1].tools[0].name, "new_tool");
+        assert_eq!(requests[1].context, "new hook");
+
+        Ok::<(), CoreError>(())
+    })
+    .expect("idle configuration replacement must preserve state and affect the next run");
+}
+
+#[test]
+fn configuration_replacement_is_rejected_for_an_active_run() {
+    let agent = Agent::builder().build();
+    let active = agent.start_prompt("active").expect("run starts");
+    let error = agent
+        .replace_configuration(AgentConfiguration::new(
+            "replacement",
+            ToolRegistry::default(),
+            Arc::new(crate::hooks::NoHooks),
+        ))
+        .expect_err("active run owns its configuration snapshot");
+    assert!(matches!(error, CoreError::ActiveRun { .. }));
+    assert_eq!(agent.snapshot().system_prompt, "");
+    active.abort().expect("created run aborts cleanly");
+}
 
 #[test]
 fn idle_provider_replacement_preserves_history_and_changes_the_next_request() {
