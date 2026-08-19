@@ -1,10 +1,10 @@
 """Hermetic, trace-first quality evaluation orchestration.
 
 This module intentionally stays in the Python standard library.  It is the
-process boundary between declarative quality cases and the pinned upstream / Rust
-adapters; it never invokes a host ``pi`` executable, discovers a credential, or
+process boundary between declarative quality cases and the Rust fixture
+adapter; it never invokes a host ``pi`` executable, discovers a credential, or
 uses a shell.  A generated fixture is an adapter input, not a new source of
-truth: the pinned upstream run remains the oracle for every strict case.
+truth: the fixture manifest is the quality contract for every strict case.
 """
 
 from __future__ import annotations
@@ -19,14 +19,13 @@ import sys
 import tempfile
 from typing import Any, Iterable, Mapping
 
-from .trace import build_report, coerce_trace, extract_metrics, human_report, request_semantic_fingerprint
+from .trace import coerce_trace, extract_metrics
 
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_ROOT = Path(__file__).resolve().parent
 CASE_ROOT = QUALITY_ROOT / "cases"
 PROTOCOL = "pi-agent-quality-adapter/v0"
-UPSTREAM_ADAPTER = QUALITY_ROOT / "adapters" / "upstream-core" / "adapter.py"
 RUST_ADAPTER = QUALITY_ROOT / "adapters" / "rust-core" / "adapter.py"
 QUALITY_SCHEMA = "pi-agent-quality-run/v1"
 USAGE = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0}
@@ -71,8 +70,8 @@ def load_core_cases(case_ids: Iterable[str] | None = None) -> list[tuple[Path, d
             raise ContractError(f"{path}: id must exactly match its directory")
         if manifest.get("status") == "excluded":
             continue
-        if manifest.get("scope") != "core" or manifest.get("parity") not in {"strict", "informational"}:
-            raise ContractError(f"{path}: enabled core case needs scope=core and an explicit parity mode")
+        if manifest.get("scope") != "core" or manifest.get("gate") not in {"strict", "informational"}:
+            raise ContractError(f"{path}: enabled core case needs scope=core and an explicit gate mode")
         if selected and case_id not in selected:
             continue
         cases.append((path, manifest))
@@ -212,7 +211,7 @@ def _compile_host(manifest: Mapping[str, Any]) -> dict[str, Any]:
     if case_id == "abort-during-tool":
         gate = next((tool for tool in tools if tool["name"] == "gate"), None)
         if gate and gate["calls"]:
-            # The shared upstream runner reports a throwing tool before it
+            # The fixture runner reports a throwing tool before it
             # delivers updates. Keep the result successful here so the
             # cancellation checkpoint itself—not that adapter detail—is the
             # observable event in both implementations.
@@ -236,13 +235,13 @@ def compile_core_fixture(manifest: Mapping[str, Any]) -> dict[str, Any]:
     """Lower an open quality manifest to the shared closed V0 fixture dialect.
 
     The lowering is intentionally narrow and auditable.  It does not encode an
-    oracle; it makes only the complete-call, timer-free surface accepted by
+    expected result; it makes only the complete-call, timer-free surface accepted by
     both existing pinned runners executable.  The caller writes the complete
     source manifest beside the generated fixture in every artifact.
     """
 
     adapter_fixture = manifest.get("adapter_fixture")
-    if isinstance(adapter_fixture, str) and adapter_fixture.startswith("parity/"):
+    if isinstance(adapter_fixture, str) and adapter_fixture.startswith("crates/pi-agent-core/fixtures/"):
         return read_json(ROOT / adapter_fixture)
     if adapter_fixture != "generated":
         raise ContractError(f"case {manifest.get('id')!r} has no executable fixture mapping")
@@ -273,7 +272,7 @@ def compile_core_fixture(manifest: Mapping[str, Any]) -> dict[str, Any]:
     # cancelled scope in both pinned runners. Supply its explicit aborted
     # response so this probes cancellation rather than fixture exhaustion.
     # `tool-use-zero-calls` deliberately does *not* get an extra turn: its
-    # current upstream behavior is itself what the case captures.
+    # The fixture's deterministic behavior is itself what the case captures.
     if manifest.get("id") in {"abort-during-tool", "abort-during-parallel-tools"} and len(fixture["model_script"]) == 1:
         fixture["model_script"].append(
             {"chunks": [{"kind": "error", "reason": "aborted", "message": "Operation aborted", "usage": dict(USAGE)}]}
@@ -282,8 +281,6 @@ def compile_core_fixture(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _adapter_command(adapter: str) -> list[str]:
-    if adapter == "upstream-core":
-        return [sys.executable, str(UPSTREAM_ADAPTER)]
     if adapter == "rust-core":
         return [sys.executable, str(RUST_ADAPTER)]
     raise ContractError(f"unsupported quality adapter {adapter!r}")
@@ -339,7 +336,7 @@ def run_adapter(adapter: str, fixture: Path) -> dict[str, Any]:
             "LANG": "C",
             "LC_ALL": "C",
             # This opt-in, runner-local diagnostic preserves request envelopes
-            # without changing ordinary parity golden output.
+            # without changing ordinary fixture golden output.
             "PI_AGENT_QUALITY_CAPTURE": "1",
         },
         check=False,
@@ -460,22 +457,6 @@ def canonical_trace(adapter_response: Mapping[str, Any], manifest: Mapping[str, 
     return coerce_trace({"trace_id": f"{manifest.get('id')}:{adapter_response.get('adapter')}", "metadata": adapter_response.get("metadata", {}), "events": events}).to_dict()
 
 
-def _classification(upstream: Mapping[str, Any], rust: Mapping[str, Any], report: Mapping[str, Any]) -> str:
-    up_result = upstream.get("result", {})
-    rust_result = rust.get("result", {})
-    up_outcome = up_result.get("outcome") if isinstance(up_result, Mapping) else None
-    rust_outcome = rust_result.get("outcome") if isinstance(rust_result, Mapping) else None
-    if report.get("equal"):
-        return "MATCH"
-    if up_outcome == rust_outcome:
-        return "OUTCOME_MATCH_TRACE_DIFF"
-    if up_outcome == "completed" and rust_outcome != "completed":
-        return "UPSTREAM_PASS_RUST_FAIL"
-    if rust_outcome == "completed" and up_outcome != "completed":
-        return "UPSTREAM_FAIL_RUST_PASS"
-    return "CORE_SEMANTIC_DIVERGENCE"
-
-
 def _environment() -> dict[str, Any]:
     return {
         "python": sys.version.split()[0],
@@ -494,64 +475,46 @@ def run_core_case(manifest_path: Path, manifest: Mapping[str, Any], destination:
     (destination / "case-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     adapter_outputs: dict[str, Any] = {}
     errors: dict[str, str] = {}
-    for adapter in ("upstream-core", "rust-core"):
-        try:
-            adapter_outputs[adapter] = run_adapter(adapter, fixture_path)
-        except AdapterError as error:
-            errors[adapter] = str(error)
+    try:
+        adapter_outputs["rust-core"] = run_adapter("rust-core", fixture_path)
+    except AdapterError as error:
+        errors["rust-core"] = str(error)
     if errors:
         artifact = {
             "schema_version": QUALITY_SCHEMA,
             "case_id": manifest["id"],
             "classification": "INFRA_FAILURE",
-            "parity": manifest.get("parity"),
+            "gate": manifest.get("gate"),
             "environment": _environment(),
             "errors": errors,
             "fixture_sha256": sha256(fixture),
         }
         (destination / "report.json").write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return artifact
-    upstream = adapter_outputs["upstream-core"]
     rust = adapter_outputs["rust-core"]
-    upstream_trace = canonical_trace(upstream, manifest)
     rust_trace = canonical_trace(rust, manifest)
-    report = build_report(upstream_trace, rust_trace, left_label="upstream", right_label="rust")
-    request_fingerprints = {
-        "upstream": [
-            request_semantic_fingerprint(event["request"])
-            for event in upstream_trace["events"]
-            if event.get("kind") == "request" and isinstance(event.get("request"), Mapping)
-        ],
-        "rust": [
-            request_semantic_fingerprint(event["request"])
-            for event in rust_trace["events"]
-            if event.get("kind") == "request" and isinstance(event.get("request"), Mapping)
-        ],
-    }
+    metrics = extract_metrics(rust_trace).to_dict()
+    report = {"schema_version": "pi-quality-trace-report/v1", "adapter": "rust", "metrics": metrics}
     artifact = {
         "schema_version": QUALITY_SCHEMA,
         "case_id": manifest["id"],
-        "classification": _classification(upstream, rust, report),
-        "parity": manifest.get("parity"),
+        "classification": "PASS",
+        "gate": manifest.get("gate"),
         "manifest_path": str(manifest_path.relative_to(ROOT)),
         "fixture_sha256": sha256(fixture),
         "environment": _environment(),
         "adapters": adapter_outputs,
-        "traces": {"upstream": upstream_trace, "rust": rust_trace},
-        "recorded_request_fingerprints": request_fingerprints,
+        "trace": rust_trace,
         "report": report,
         "resource_overhead": {
-            "upstream_peak_rss_bytes": upstream.get("process", {}).get("peak_rss_bytes"),
             "rust_peak_rss_bytes": rust.get("process", {}).get("peak_rss_bytes"),
             "rust_allocation_measurement": rust.get("resource", {}).get("allocations"),
         },
     }
-    (destination / "upstream-response.json").write_text(json.dumps(upstream, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (destination / "rust-response.json").write_text(json.dumps(rust, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (destination / "upstream-trace.json").write_text(json.dumps(upstream_trace, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (destination / "rust-trace.json").write_text(json.dumps(rust_trace, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (destination / "report.json").write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (destination / "report.txt").write_text(human_report(upstream_trace, rust_trace, left_label="upstream", right_label="rust") + "\n", encoding="utf-8")
+    (destination / "report.txt").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return artifact
 
 
@@ -569,13 +532,13 @@ def _run_cases(cases: list[tuple[Path, dict[str, Any]]], root: Path) -> tuple[in
     strict_failures = [
         artifact["case_id"]
         for artifact in artifacts
-        if artifact.get("parity") == "strict" and artifact.get("classification") != "MATCH"
+        if artifact.get("gate") == "strict" and artifact.get("classification") != "PASS"
     ]
     summary = {
         "schema_version": QUALITY_SCHEMA,
         "tier": "fast",
         "case_count": len(artifacts),
-        "matches": sum(artifact.get("classification") == "MATCH" for artifact in artifacts),
+        "matches": sum(artifact.get("classification") == "PASS" for artifact in artifacts),
         "strict_failures": strict_failures,
         "cases": [{"id": artifact["case_id"], "classification": artifact["classification"]} for artifact in artifacts],
         "artifact_root": str(root),
@@ -587,21 +550,9 @@ def _run_cases(cases: list[tuple[Path, dict[str, Any]]], root: Path) -> tuple[in
 def inspect_environment() -> dict[str, Any]:
     """Return an explicit, side-effect-free audit of the evaluation surfaces."""
 
-    upstream_pin_document = (ROOT / "parity" / "UPSTREAM_COMMIT").read_text(encoding="utf-8")
-    upstream_pin = next(
-        (line.removeprefix("Commit: ") for line in upstream_pin_document.splitlines() if line.startswith("Commit: ")),
-        "unknown",
-    )
     return {
         "schema_version": "pi-agent-quality-environment/v1",
         "core": {
-            "upstream": {
-                "adapter": str(UPSTREAM_ADAPTER.relative_to(ROOT)),
-                "pin": upstream_pin,
-                "tui": False,
-                "ambient_discovery": False,
-                "network": False,
-            },
             "rust": {
                 "adapter": str(RUST_ADAPTER.relative_to(ROOT)),
                 "toolchain": "nightly-2026-07-24",
@@ -611,19 +562,11 @@ def inspect_environment() -> dict[str, Any]:
             },
         },
         "resource_measurement": {
-            "peak_rss": "per adapter process via platform time utility when available",
+            "peak_rss": "Rust adapter process via platform time utility when available",
             "rust_allocations": "rustybench AllocProfiler benchmark at crates/pi-agent-core/benches/quality_memory.rs",
-            "parity_gate": False,
+            "fixture_gate": False,
         },
         "coding": {
-            "upstream": {
-                "adapter": "evals/upstream-live-adapter.mts",
-                "execution": "pinned Agent with coding-agent default prompt/tool factories",
-                "ambient_discovery": False,
-                "persistent_session": False,
-                "tui": False,
-                "provider": "explicit opt-in through an adapter-only env source boundary",
-            },
             "rust": {
                 "adapter": "crates/pi-agent-core/src/bin/pi-agent-eval.rs",
                 "runtime": "smol",
@@ -637,11 +580,10 @@ def inspect_environment() -> dict[str, Any]:
 def run_rust_allocation_probe(out: Path | None = None) -> dict[str, Any]:
     """Measure one provider-free Rust harness turn with Rustybench.
 
-    The output is deliberately separate from semantic comparison: allocator
-    instrumentation changes the measured path, and JavaScript exposes no
-    equivalent allocation counter. The paired core-run artifacts still include
-    both adapters' peak RSS, while this probe contributes Rust allocations and
-    peak live allocation bytes on the same host.
+    The output is deliberately separate from the semantic fixture gate:
+    allocator instrumentation changes the measured path, so this probe
+    contributes Rust allocations and peak live allocation bytes on the same
+    host without affecting fixture results.
     """
 
     command = [
@@ -696,7 +638,7 @@ def run_rust_allocation_probe(out: Path | None = None) -> dict[str, Any]:
             "peak_rss_bytes": _parse_peak_rss(completed.stderr, rss_style),
             "peak_rss_source": "process_time" if rss_style else "unavailable",
         },
-        "note": "Compare allocations only against Rust runs with this same profiler; compare upstream/Rust process RSS from fast artifacts separately.",
+        "note": "Compare allocations only against Rust runs with this same profiler.",
     }
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)

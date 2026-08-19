@@ -13,7 +13,7 @@ must:
 * use the fixture's scripted model stream and deterministic host responses;
 * use an explicit workspace/capability root supplied by the fixture;
 * return a settled result for success, model error, tool error, or cancellation;
-* normalize before writing output, following normalization.md.
+* normalize before writing output, following [`normalization.md`](normalization.md).
 
 It must not read ambient HOME, cwd, environment configuration, session files, .pi resources,
 skills, extensions, prompt templates, clocks, or network services. It must not mutate the fixture
@@ -25,15 +25,15 @@ error or cancellation. A model/tool error is data, not a harness failure.
 
 ## Rust runner
 
-The pi-agent-parity executable calls the Rust agent library directly and supplies the scripted
+The pi-agent-fixtures executable calls the Rust agent library directly and supplies the scripted
 model stream, tool definitions, and explicit capabilities. It uses Miniserde to read the fixture
 and a caller-owned Smol block_on only as the executable's test driver; the core library owns
 neither an executor nor filesystem capability.
 
 Run one fixture from the repository root:
 
-    cargo +nightly-2026-07-24 run -p pi-agent-core --features parity-runner \
-      --bin pi-agent-parity -- parity/fixtures/declarative/single-turn-text.json
+    cargo +nightly-2026-07-24 run -p pi-agent-core --features fixture-runner \
+      --bin pi-agent-fixtures -- crates/pi-agent-core/fixtures/declarative/single-turn-text.json
 
 The runner supports queued actions, text, tool continuation, deterministic
 cancel_after: text_delta, post-cancellation reuse, parallel and sequential tool batches,
@@ -56,16 +56,9 @@ change.
 
 Run the complete corpus from any working directory:
 
-    ./parity/run-rust.sh
+    ./crates/pi-agent-core/fixtures/run.sh
 
 The command builds the Rust adapter with the pinned nightly toolchain, runs every JSON fixture
-under fixtures/declarative/, canonicalizes both sides with jq -S -c, and compares the result
-with fixtures/expected/. Temporary output is removed on exit, and the checked-in fixture tree
+under `declarative/`, canonicalizes both sides with jq -S -c, and compares the result
+with `expected/`. Temporary output is removed on exit, and the checked-in fixture tree
 is never written.
-
-## Recorded evidence
-
-Recorded fixtures are consumed only by their explicit provider-free replay adapter. They are
-useful when an external endpoint is unavailable or a response is intentionally frozen, but they
-do not grant the runner network access. Existing captures must remain immutable unless a separate
-migration artifact is requested.

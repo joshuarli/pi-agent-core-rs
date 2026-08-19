@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test both quality adapter process boundaries without a provider."""
+"""Smoke-test the Rust quality adapter process boundary without a provider."""
 
 from __future__ import annotations
 
@@ -7,11 +7,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-FIXTURE = "parity/fixtures/declarative/single-turn-text.json"
+FIXTURE = "crates/pi-agent-core/fixtures/declarative/single-turn-text.json"
 QUALITY_FIXTURE = "evals/quality/cases/core/unknown-tool/manifest.json"
 
 
@@ -38,14 +39,6 @@ class AdapterProtocolTest(unittest.TestCase):
         self.assertIsInstance(response, dict)
         return completed.returncode, response, completed.stderr
 
-    def test_upstream_direct_declarative_fixture(self) -> None:
-        status, response, _ = self.run_adapter("upstream-core", FIXTURE)
-        self.assertEqual(status, 0)
-        self.assertEqual(response["protocol"], "pi-agent-quality-adapter/v0")
-        self.assertEqual(response["adapter"], "upstream-core")
-        self.assertEqual(response["metadata"]["commit"], "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf")
-        self.assertEqual(response["result"]["fixture_id"], "single-turn-text")
-
     def test_rust_direct_declarative_fixture(self) -> None:
         status, response, _ = self.run_adapter("rust-core", FIXTURE)
         self.assertEqual(status, 0)
@@ -54,13 +47,16 @@ class AdapterProtocolTest(unittest.TestCase):
         self.assertEqual(response["metadata"]["toolchain"], "nightly-2026-07-24")
         self.assertEqual(response["result"]["fixture_id"], "single-turn-text")
 
-    def test_quality_emit_translation_reaches_both_runners(self) -> None:
-        for name in ("upstream-core", "rust-core"):
-            status, response, _ = self.run_adapter(name, QUALITY_FIXTURE)
-            self.assertEqual(status, 0, name)
-            self.assertEqual(response["metadata"]["input_kind"], "quality_core_case")
-            self.assertEqual(response["metadata"]["translation"], "quality_core_case.emit_to_declarative_parity_fixture.chunks")
-            self.assertEqual(response["result"]["fixture_id"], "unknown-tool")
+    def test_quality_case_is_lowered_before_runner_invocation(self) -> None:
+        from evals.quality.suite import compile_core_fixture
+
+        fixture = compile_core_fixture(json.loads((ROOT / QUALITY_FIXTURE).read_text()))
+        with tempfile.TemporaryDirectory(prefix="pi-quality-fixture-") as temporary:
+            path = Path(temporary) / "fixture.json"
+            path.write_text(json.dumps(fixture))
+            status, response, _ = self.run_adapter("rust-core", str(path))
+        self.assertEqual(status, 0)
+        self.assertEqual(response["result"]["fixture_id"], "unknown-tool-continues")
 
 
 if __name__ == "__main__":

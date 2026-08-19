@@ -8,16 +8,13 @@
     "issue": 5177,
     "issue_url": "https://github.com/earendil-works/pi/issues/5177",
     "source_note": "The issue is reduced to structured core cancellation; interactive Escape/Ctrl-C and TUI state are excluded.",
-    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
-    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
     "role": "scenario_inspiration",
     "historical_behavior_is_oracle": false
   },
   "scope": "core",
-  "parity": "strict",
-  "oracle": {
-    "kind": "current_pinned_upstream_capture",
-    "historical_issue_expectation": "not_an_oracle"
+  "gate": "strict",
+  "contract": {
+    "kind": "rust_fixture_runner"
   },
   "adapter_fixture": "generated",
   "execution": {

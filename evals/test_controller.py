@@ -26,23 +26,6 @@ class ControllerContractTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual({item["baseline_id"] for item in first}, {"upstream", "rust"})
 
-    def test_live_deepseek_manifest_sources_env_at_the_adapter_boundary(self) -> None:
-        config = controller.load_baselines(controller.ROOT / "baselines.deepseek-v0.json")
-        self.assertEqual(config["comparison"]["model"], "deepseek/deepseek-v4-flash-0731")
-        for baseline in config["baselines"]:
-            self.assertEqual(baseline["command"][:2], ["bash", "-c"])
-            self.assertNotIn("vault", baseline["command"])
-            self.assertNotIn("OPENROUTER_API_KEY", baseline["command"])
-            self.assertNotIn("pi", {Path(part).name for part in baseline["command"]})
-
-    def test_poolside_manifest_sources_env_only_at_the_adapter_boundary(self) -> None:
-        config = controller.load_baselines(controller.ROOT / "baselines.poolside-v0.json")
-        self.assertEqual(config["comparison"]["model"], "poolside/laguna-xs-2.1:free")
-        for baseline in config["baselines"]:
-            self.assertEqual(baseline["command"][:2], ["bash", "-c"])
-            self.assertNotIn("vault", baseline["command"])
-            self.assertNotIn("OPENROUTER_API_KEY", baseline["command"])
-
     def test_task_selection_is_explicit_and_rejects_unknown_ids(self) -> None:
         tasks = controller.load_tasks(controller.TASKS)
         self.assertEqual([task["task_id"] for task in controller.select_tasks(tasks, ["ready-v0"])], ["ready-v0"])
@@ -51,7 +34,7 @@ class ControllerContractTests(unittest.TestCase):
 
     def test_interval_task_declares_the_exact_active_profile_tool_schemas(self) -> None:
         task = controller.load_tasks(controller.TASKS)[0]
-        profile = controller.read_json(controller.ROOT.parent / "parity" / "profile" / "default-profile.json")
+        profile = controller.read_json(controller.ROOT.parent / "crates" / "pi-agent-core" / "profile" / "default-profile.json")
         task_schemas = {capability["name"]: capability["schema"] for capability in task["capabilities"]}
         profile_schemas = {tool["name"]: tool["parameters"] for tool in profile["active_tools"]}
         self.assertEqual(task_schemas, profile_schemas)

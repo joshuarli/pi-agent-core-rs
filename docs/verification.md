@@ -1,9 +1,9 @@
 # Verification and completed contract evidence
 
 V0 is complete. Its implementation is the pure Rust agent kernel, pinned
-default coding profile, deterministic in-process Pi subset parity corpus,
-structured cancellation, optional trace observer, and comparative coding
-evaluation. The optional Luau extension layer is separately verified without
+default coding profile, deterministic in-process fixture corpus, structured
+cancellation, optional trace observer, and Rust coding evaluation. The optional
+Luau extension layer is separately verified without
 changing the core's provider-, executor-, or world-agnostic boundary.
 
 ## Required local checks
@@ -17,8 +17,10 @@ git diff --check
 ```
 
 For a profile or contract change, also run the Rust fixture check in
-[`parity/README.md`](../parity/README.md) and the profile tests described in
-[`parity/profile/README.md`](../parity/profile/README.md). A new supported
+[`crates/pi-agent-core/fixtures/README.md`](../crates/pi-agent-core/fixtures/README.md)
+and the profile tests described in
+[`crates/pi-agent-core/profile/README.md`](../crates/pi-agent-core/profile/README.md).
+A new supported
 behavior requires a deterministic fixture before implementation.
 
 For the trace-first quality gate, run:
@@ -29,8 +31,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality resources
 ```
 
 The live three-Express-task check is manual and requires explicit provider
-authorization. Its hermetic adapter, cache procedure, full validator, replay,
-and resource interpretation are documented in
+authorization. Its Rust adapter, cache procedure, full validator, and resource
+interpretation are documented in
 [`evals/quality/README.md`](../evals/quality/README.md).
 
 For prompt-cacheability and compaction-prefix evidence, run the deterministic fixture described
@@ -39,7 +41,8 @@ provider-reported cache usage remains the authoritative hit/write measurement.
 
 ## Completion evidence
 
-- The parity corpus runs the Rust runner against checked-in canonical goldens.
+- The core fixture corpus runs the Rust runner against checked-in canonical
+  results.
   It covers streams, tool updates/errors, hooks, queues, observer settlement,
   cancellation, reuse, default profile bytes and tool behavior.
 - The core has no Pi CLI/runtime dependency, no ambient configuration/session
@@ -53,10 +56,10 @@ provider-reported cache usage remains the authoritative hit/write measurement.
   and transactional failure behavior. `tests/circuit_breaker.rs` pins fatal and
   repeated retryable capability failures, while `tests/tool_projection.rs`
   pins raw-versus-model-facing result curation. These cases are also the local
-  compaction parity surface to compare against Pi's compaction split and
-  overflow-recovery fixtures without importing Pi session storage semantics.
-- The final coding gate ran on 2026-08-14 with the explicit, credential-injected
-  provider manifest. The provider-specific report is intentionally ignored; the
+  compaction contract surface; they preserve the canonical in-memory transcript
+  without importing session-storage semantics.
+- The Rust coding tier is provider-opt-in, uses an explicit credential source
+  boundary, and writes provider-specific reports outside the repository. The
   controller contract lives in [`evals/README.md`](../evals/README.md).
 
 ## Luau extension evidence
@@ -97,4 +100,4 @@ intentionally detached world workers are not reaped by the agent host.
 
 Re-run this acceptance after changing the Runebench host, profile binding,
 world policy, or process-cancellation boundary. It is not a substitute for the
-deterministic core parity suite.
+deterministic core fixture suite.

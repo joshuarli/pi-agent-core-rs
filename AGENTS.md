@@ -4,7 +4,9 @@ This repository is a headless Rust agent execution microkernel with a pinned
 Pi default coding profile. It is not Pi's CLI, session system, or an ambient
 project configuration layer; it also contains a small, repository-owned
 terminal host in `crates/pi-agent-tui`. Rust owns mechanism; optional Luau owns
-policy; embeddings own model transport and world capabilities.
+policy; embeddings own model transport and world capabilities. The pinned
+`PiDefaultCodingProfile` and its capture are owned by `crates/pi-agent-core`;
+hosts own operation adapters and may supply a sterile profile.
 
 Start with [docs/overview.md](docs/overview.md). The main routes are:
 
@@ -20,7 +22,8 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
 - [Terminal host](docs/tui.md) for the repository-owned `pi-agent` TUI.
 - [Quality evaluation](docs/quality-evaluation.md) and
   [verification](docs/verification.md) for compatibility and quality evidence.
-- [fixture format](parity/fixture-format.md) and [parity guide](parity/README.md)
+- [fixture format](crates/pi-agent-core/fixtures/fixture-format.md) and
+  [fixture guide](crates/pi-agent-core/fixtures/README.md)
   for fixture-based compatibility work.
 - [Luau extensions](docs/luau-extensions.md) for the optional capability-scoped
   policy plane.

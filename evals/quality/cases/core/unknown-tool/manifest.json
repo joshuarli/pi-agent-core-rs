@@ -7,18 +7,15 @@
     "repository": "https://github.com/earendil-works/pi.git",
     "issue": null,
     "source_note": "Synthetic separation of the unknown-name validation path required by the quality-suite contract; no issue report is treated as an expected-output specification.",
-    "upstream_commit_tested": "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf",
-    "upstream_package": "@earendil-works/pi-agent-core@0.84.1",
     "role": "scenario_inspiration",
     "historical_behavior_is_oracle": false
   },
   "scope": "core",
-  "parity": "strict",
-  "oracle": {
-    "kind": "current_pinned_upstream_capture",
-    "historical_issue_expectation": "not_an_oracle"
+  "gate": "strict",
+  "contract": {
+    "kind": "rust_fixture_runner"
   },
-  "adapter_fixture": "parity/fixtures/declarative/unknown-tool-continues.json",
+  "adapter_fixture": "crates/pi-agent-core/fixtures/declarative/unknown-tool-continues.json",
   "execution": {
     "deterministic": true,
     "network": false,

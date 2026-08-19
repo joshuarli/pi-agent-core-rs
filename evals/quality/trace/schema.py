@@ -4,7 +4,7 @@ The quality harness deliberately keeps this layer independent of a runtime
 crate.  A trace is an ordered list of records.  Each record has a sequence
 number, a stable ``kind`` discriminator, and an otherwise extensible object of
 fields.  Unknown fields are retained: the quality artifact must not silently
-discard a new tool or provider field before a parity diff can see it.
+discard a new tool or provider field before a fixture comparison can see it.
 """
 
 from __future__ import annotations

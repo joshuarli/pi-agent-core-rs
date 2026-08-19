@@ -2,9 +2,9 @@
 set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-fixture_dir="$repo_root/parity/fixtures/declarative"
-expected_dir="$repo_root/parity/fixtures/expected"
+repo_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
+fixture_dir="$script_dir/declarative"
+expected_dir="$script_dir/expected"
 rust_toolchain="nightly-2026-07-24"
 
 command -v jq >/dev/null 2>&1 || {
@@ -12,8 +12,8 @@ command -v jq >/dev/null 2>&1 || {
   exit 2
 }
 
-cargo "+$rust_toolchain" build -q -p pi-agent-core --features parity-runner --bin pi-agent-parity
-rust_runner="$repo_root/target/debug/pi-agent-parity"
+cargo "+$rust_toolchain" build -q -p pi-agent-core --features fixture-runner --bin pi-agent-fixtures
+rust_runner="$repo_root/target/debug/pi-agent-fixtures"
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pi-rust-fixtures.XXXXXX")
 trap 'rm -rf "$temp_dir"' EXIT

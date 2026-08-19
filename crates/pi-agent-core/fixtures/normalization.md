@@ -2,7 +2,7 @@
 
 The Rust runner emits one JSON object with `kind: "canonical_parity_result"`. The fixture check compares
 these objects, never raw provider or Rust event JSON. This keeps provider wire format and runtime
-bookkeeping outside the parity contract while retaining observable agent behavior.
+bookkeeping outside the fixture contract while retaining observable agent behavior.
 
 ## Canonical result shape
 
@@ -92,7 +92,7 @@ Apply these rules in this order:
    path separators to `/`. Do not redact arbitrary text that merely resembles a path.
 7. Keep usage values exactly as reported. A reported zero is `0`; an unavailable counter is
    `null` only where the provider genuinely did not supply it. Never infer token counts from a
-   tokenizer in the parity adapter.
+   tokenizer in the fixture adapter.
 8. By default, join adjacent `message_update` text deltas for the same message before assigning
    `seq`. This makes provider chunk boundaries non-semantic. A fixture may opt into exact stream
    boundaries with `stream_comparison: "exact"`; then each declared update remains observable.
@@ -102,18 +102,3 @@ Normalization is not a license to hide behavior. Provider error codes, stop reas
 tool arguments, tool-result error flags, message content, usage, cancellation outcome, and event
 ordering remain observable. If a value is nondeterministic but semantically important, the fixture
 must provide a deterministic substitute or the contract must explicitly classify it.
-
-## Recorded captures
-
-The OpenRouter artifact uses `kind: "recorded_pi_sdk_terminal_response"` and is preserved as
-immutable provider evidence. Its `events` and `assistant` fields are recording data. A recorded
-adapter maps them without modifying
-the capture:
-
-* `events` become canonical lifecycle events; a recorded `role: "toolResult"` is normalized to
-  the canonical `tool_result` spelling.
-* `assistant.api` and `assistant.stop_reason` become `last_response.api` and `stop_reason`.
-* `assistant.error_message` becomes `error.message`. Retryability is absent rather than inferred
-  from prose or an HTTP status.
-* The capture's redaction list remains authoritative; no secret, authorization header, session ID,
-  cwd, or timestamp may be restored.

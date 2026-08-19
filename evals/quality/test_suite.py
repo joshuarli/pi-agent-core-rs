@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from .replay import replay_artifact
 from .suite import compile_core_fixture, load_core_cases, run_fast
 
 
@@ -20,18 +19,14 @@ class QualitySuiteTest(unittest.TestCase):
             for turn in fixture["model_script"]:
                 self.assertIn(turn["chunks"][-1]["kind"], {"done", "error"})
 
-    def test_known_shared_fixture_runs_as_an_exact_pair(self) -> None:
+    def test_known_fixture_runs_through_the_rust_runner(self) -> None:
         with tempfile.TemporaryDirectory(prefix="pi-agent-quality-test-") as temporary:
             status, summary = run_fast(case_ids=["unknown-tool"], out=Path(temporary))
             self.assertEqual(status, 0, summary)
             self.assertEqual(summary["matches"], 1)
             artifact = Path(temporary) / "unknown-tool"
             self.assertTrue((artifact / "report.json").is_file())
-            self.assertTrue((artifact / "upstream-trace.json").is_file())
             self.assertTrue((artifact / "rust-trace.json").is_file())
-            replay = replay_artifact(artifact / "report.json")
-            self.assertTrue(replay["replayed"])
-            self.assertEqual(replay["request_fingerprints"]["upstream"], replay["request_fingerprints"]["rust"])
 
 
 if __name__ == "__main__":

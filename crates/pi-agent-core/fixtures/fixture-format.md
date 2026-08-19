@@ -211,7 +211,7 @@ Assertions are intentionally a small projection of the canonical result. They ma
 `<type>:<role>` (for example, `message_start:user`), while other events use their `type` alone.
 Missing assertion fields mean “do not assert this field”; they do not mean “ignore a required
 canonical result field.” For a complete golden result, put the full canonical result in
-`fixtures/expected/<id>.json`.
+`expected/<id>.json`.
 
 Canonical output contains `request_trace` only for fixtures using `setup.context_hooks`. Each
 entry contains the converted context plus the request model and thinking level, so a later-turn
@@ -219,13 +219,6 @@ replacement cannot be masked by matching terminal text alone.
 
 ## Fixture classes
 
-Do not mix these classes:
-
-* **Declarative** fixtures are provider-free inputs and are safe to execute repeatedly.
-* **Expected** fixtures are checked-in canonical outputs for a declarative fixture.
-* **Recorded** fixtures preserve an external capture, including provider errors and unavailable
-  endpoints. Their original shape is evidence and is not rewritten in place.
-
-The existing OpenRouter capture under `fixtures/recorded/openrouter/` is therefore intentionally
-not a declarative fixture and must not be edited to fit this format. A recorded adapter maps its
-stable semantic fields into the canonical result shape described next.
+Declarative fixtures are provider-free inputs and are safe to execute repeatedly. Expected
+fixtures are checked-in canonical outputs for a declarative fixture. External provider captures
+and replay artifacts are outside this format and must not be edited to fit it.

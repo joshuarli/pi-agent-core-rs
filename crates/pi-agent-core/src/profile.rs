@@ -12,7 +12,7 @@ use std::path::Path;
 
 const PINNED_DEFAULT_PROFILE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../parity/profile/default-profile.json"
+    "/profile/default-profile.json"
 ));
 
 /// Prompt and ordered tool specification for one agent profile.

@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-parity-runner = ["dep:smol"]
+fixture-runner = ["dep:smol"]
 provider-commandcode = ["dep:ureq"]
 provider-openrouter = ["dep:ureq"]
 # Test-only endpoint injection for an offline HTTP/1.1 OpenRouter fixture. This feature is never
@@ -39,9 +39,9 @@ smol = { workspace = true }
 rustybench = "=0.1.0"
 
 [[bin]]
-name = "pi-agent-parity"
-path = "src/bin/pi-agent-parity.rs"
-required-features = ["parity-runner"]
+name = "pi-agent-fixtures"
+path = "src/bin/pi-agent-fixtures.rs"
+required-features = ["fixture-runner"]
 
 [[bin]]
 name = "pi-agent-eval"

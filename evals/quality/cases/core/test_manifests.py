@@ -1,7 +1,8 @@
 """Contract checks for the deterministic core quality-case manifests.
 
 This test intentionally validates only the declarative case inventory and its
-provenance. It does not execute an adapter or claim an upstream result.
+historical scenario provenance. It does not execute an adapter or claim an
+external result.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 REPOSITORY = "https://github.com/earendil-works/pi.git"
-UPSTREAM_COMMIT = "9d2ec7ffabe927bfad2214c1cee25b6632a78dcf"
 ENABLED_CASES = {
     "malformed-empty-tool-name",
     "unknown-tool",
@@ -53,13 +53,12 @@ class CoreCaseManifestTest(unittest.TestCase):
         for case_id, manifest in self._manifests().items():
             source = manifest["source"]
             self.assertEqual(source["repository"], REPOSITORY, case_id)
-            self.assertEqual(source["upstream_commit_tested"], UPSTREAM_COMMIT, case_id)
             self.assertEqual(source["role"], "scenario_inspiration", case_id)
             self.assertIs(source["historical_behavior_is_oracle"], False, case_id)
             self.assertIn("adapter_fixture", manifest, case_id)
 
             mapping = manifest["adapter_fixture"]
-            if mapping.startswith("parity/"):
+            if mapping.startswith("crates/pi-agent-core/fixtures/"):
                 self.assertTrue((ROOT.parents[3] / mapping).is_file(), mapping)
             elif manifest.get("status") == "excluded":
                 self.assertEqual(mapping, "excluded", case_id)
@@ -70,9 +69,8 @@ class CoreCaseManifestTest(unittest.TestCase):
         for case_id in ENABLED_CASES:
             manifest = self._manifests()[case_id]
             self.assertEqual(manifest["scope"], "core", case_id)
-            self.assertEqual(manifest["parity"], "strict", case_id)
-            self.assertEqual(manifest["oracle"]["kind"], "current_pinned_upstream_capture", case_id)
-            self.assertEqual(manifest["oracle"]["historical_issue_expectation"], "not_an_oracle", case_id)
+            self.assertEqual(manifest["gate"], "strict", case_id)
+            self.assertEqual(manifest["contract"]["kind"], "rust_fixture_runner", case_id)
             self.assertTrue(manifest["execution"]["deterministic"], case_id)
             self.assertTrue(manifest["model_script"], case_id)
             self.assertIn("setup", manifest, case_id)

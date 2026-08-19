@@ -27,10 +27,11 @@ The workspace crates are:
 | `pi-agent-trace` | Immutable event-to-linear-episode recorder, redaction and caller-selected JSONL/CBOR sinks | Agent state, session tree, replay mutations, sink-driven behavior |
 | `pi-agent-luau` (optional policy) | Hermetic VM, capability manifest/modules, policy hooks/tools, script error/limit translation | Core lifecycle/state/scheduling, ambient OS authority, event-loop ownership |
 
-`PiDefaultCodingProfile` belongs with the explicit profile/tool adapters. It may be a module in
-`pi-agent-core` or a narrowly separated profile crate selected during implementation, but it must
-depend only on the core/protocol boundaries and caller-provided operation traits. It must not import
-the selected contract or make external source a runtime dependency.
+`PiDefaultCodingProfile` is owned by `pi-agent-core` alongside the explicit profile/tool adapters.
+The profile implementation and its checked-in capture depend only on the core/protocol boundaries
+and caller-provided operation traits. It must not import the selected contract or make external
+source a runtime dependency. Hosts still own operation implementations and may supply a sterile
+profile or replace any standard tool.
 
 ## Ports and adapters
 
@@ -267,9 +268,9 @@ These contract-bearing choices are settled by fixtures and dependency review:
 | Drop unfinished run policy | `tests::agent_allows_one_run_and_drop_settles_cancellation` |
 | Manual compaction transaction, replacement validation, and cancellation | `tests/compaction.rs` |
 | Cancellation token implementation without Tokio | dependency review + `cancel/checkpoints` |
-| Mixed per-tool sequential override behavior | `parity/fixtures/declarative/mixed-tool-execution.json` |
-| Canonical JSON Schema serialization/hash | `profile/definitions` |
-| Exact generated default prompt bytes/hash and workspace substitution | `profile/default-prompt` |
+| Mixed per-tool sequential override behavior | `crates/pi-agent-core/fixtures/declarative/mixed-tool-execution.json` |
+| Canonical JSON Schema serialization/hash | `crates/pi-agent-core/profile/default-profile.json` and profile tests |
+| Exact generated default prompt bytes/hash and workspace substitution | `crates/pi-agent-core/profile/default-profile.json` |
 | Typed error hierarchy and failure-to-event mapping | `failure/provider-error`, `cancel/failure-shapes` |
 
 No change may introduce an undocumented fallback. A newly unresolved behavior

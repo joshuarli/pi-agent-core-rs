@@ -5,13 +5,13 @@
 //! one fixture path, has no network/provider capability, and supports the
 //! closed V0 fixture subset implemented by the Rust core.
 
-#[path = "pi-agent-parity/fixture.rs"]
+#[path = "pi-agent-fixtures/fixture.rs"]
 mod fixture;
-#[path = "pi-agent-parity/normalize.rs"]
+#[path = "pi-agent-fixtures/normalize.rs"]
 mod normalize;
-#[path = "pi-agent-parity/parser.rs"]
+#[path = "pi-agent-fixtures/parser.rs"]
 mod parser;
-#[path = "pi-agent-parity/runner.rs"]
+#[path = "pi-agent-fixtures/runner.rs"]
 mod runner;
 
 use fixture::Fixture;

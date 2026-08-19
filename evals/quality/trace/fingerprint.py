@@ -3,7 +3,7 @@
 Only transport-generated bookkeeping is removed.  Object-key order is
 canonicalized, while every array remains in its input order.  In particular,
 the order and complete fields of ``messages`` and ``tools`` are part of the
-fingerprint; sorting tools or reducing them to names can hide a real parity
+fingerprint; sorting tools or reducing them to names can hide a real fixture
 regression.
 """
 

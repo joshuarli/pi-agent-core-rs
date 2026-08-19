@@ -1,6 +1,6 @@
 # Pinned default coding profile
 
-`PiDefaultCodingProfile` is the explicit V0 profile that reproduces the selected Pi coding-agent
+`PiDefaultCodingProfile` is the core-owned V0 profile that reproduces the selected Pi coding-agent
 inputs while keeping all authority replaceable. It is not a port of `pi-coding-agent` and it does
 not load resources, sessions, settings, skills, extensions, or ambient configuration.
 
@@ -38,13 +38,13 @@ pass it to `with_operations`. The standard shell adapter starts with an empty en
 must explicitly choose `CommandEnvironment::inherited()` or add variables. No factory consults
 ambient cwd, home, `.pi`, sessions, credentials, or resource discovery.
 
-## Captured profile provenance
+## Core-owned profile fixture
 
-The following hashes are retained as historical provenance for the captured profile data. They
-are review information only; runtime code and verification do not require an external source
-checkout or an upstream pin.
+The following hashes identify the source material used to produce the core-owned profile fixture.
+They are review information only; runtime code and verification do not require an external source
+checkout.
 
-| Artifact | Upstream symbol | SHA-256 of source bytes |
+| Artifact | Source symbol | SHA-256 of source bytes |
 | --- | --- | --- |
 | `packages/coding-agent/src/core/system-prompt.ts` | `buildSystemPrompt`, `BuildSystemPromptOptions` | `e8b06a0f093c83fd7660a3eae331d5f8ee917702763b1e5044f5c5306e9c1d00` |
 | `packages/coding-agent/src/core/tools/index.ts` | `createCodingTools`, `createCodingToolDefinitions`, `createAllTools` | `afeb406e0f5edde143aaac51b9c928cb497bfb8216c04ac9242bfd0f9241ffe1` |
@@ -58,7 +58,7 @@ checkout or an upstream pin.
 
 The generated-prompt hash is a separate fixture value. Never substitute a source-file hash for a
 generated prompt hash. The checked-in canonical fixture
-[`parity/profile/default-profile.json`](../parity/profile/default-profile.json) has fixed
+[`crates/pi-agent-core/profile/default-profile.json`](../crates/pi-agent-core/profile/default-profile.json) has fixed
 workspace/documentation inputs and currently records prompt SHA-256
 `856e7855dcf14420a8433611a65c55427f1fe4dfa614780dfaea2e06331b3d3e`.
 
@@ -190,7 +190,7 @@ prompt with no implicit trailing newline; `expected_prompt_sha256` hashes those 
 
 The fixture suite must add variants for no tools, read-only tools, custom prompt, append/context,
 duplicate/blank guidelines, and workspace paths containing backslashes. Only the explicitly named
-workspace substitution may be normalized in a parity comparison; prompt whitespace and section
+workspace substitution may be normalized in a fixture comparison; prompt whitespace and section
 order are semantic.
 
 ## Operation and capability boundary
@@ -215,6 +215,10 @@ the fixture manifest. It must not recreate Pi's session/resource discovery as a 
 
 ## Profile behavior fixtures
 
+These profile fixture IDs are owned by `pi-agent-core`; the canonical capture is
+`crates/pi-agent-core/profile/default-profile.json`, and the provider-free Rust
+runner is `crates/pi-agent-core/fixtures/run.sh`.
+
 ```text
 profile/default-prompt             byte prompt + active order + snippets/guidelines
 profile/definitions                canonical schemas/descriptions/factory order
@@ -231,22 +235,19 @@ profile/workspace-isolation        two explicit workspaces cannot cross authorit
 ```
 
 Every profile fixture uses an isolated temporary or virtual fixture workspace. No fixture consults
-the repository cwd, credentials, sessions, or a live provider. The Rust factories run
-through virtual in-memory operation adapters. Upstream `grep` necessarily owns a process seam:
-its dedicated capture creates an empty temporary `PI_CODING_AGENT_DIR` before importing the
-pinned profile data, requires resolution to PATH `rg` rather than a managed `~/.pi` binary, and then
-runs in a disposable workspace. It never invokes Pi itself.
+the repository cwd, credentials, sessions, or a live provider. The Rust factories run through
+virtual in-memory operation adapters and never consult a live Pi installation or invoke Pi.
 
 The executable factory smoke/evidence suite is
 [`crates/pi-agent-core/tests/default_tools_behavior.rs`](../crates/pi-agent-core/tests/default_tools_behavior.rs).
 It creates a unique temporary workspace per test and covers successful calls, invalid arguments
 that must stop before host dispatch, and explicit host-operation failures for all seven standard
 tools. The test also locks in head truncation for `read`, explicit empty-success output for
-`bash`, and the two-workspace capability boundary. It is intentionally separate from parity
-runner fixtures: it verifies the Rust factories' concrete capability boundary without consulting a
-live Pi installation or the repository workspace.
+`bash`, and the two-workspace capability boundary. It is intentionally separate from the
+declarative core runner fixtures: it verifies the Rust factories' concrete capability boundary
+without consulting a live Pi installation or the repository workspace.
 
-The Rust suite is the profile check. Run `bash parity/run-rust.sh` to execute the complete
+The Rust suite is the profile check. Run `bash crates/pi-agent-core/fixtures/run.sh` to execute the complete
 deterministic corpus. It proves the explicit capability boundary for all seven tools; hosts
 needing full ripgrep behavior may replace `CodingOperations::grep_files` explicitly.
 

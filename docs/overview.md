@@ -11,9 +11,9 @@ model stream -> assistant response -> tool execution -> tool results -> next tur
 ```
 
 It is designed for disposable agents in CI sandboxes, VM worlds, RL
-environments, and swarms. Pi is a behavioral oracle through an in-process,
-pinned Rust fixture harness; this project never launches the Pi CLI for parity
-or runtime behavior.
+environments, and swarms. The selected compatibility behavior is captured by
+an in-process, provider-free Rust fixture harness; this project never launches
+the Pi CLI or depends on an external runtime for verification.
 
 ## Design commitments
 
@@ -56,8 +56,9 @@ downstream optional layers.
   lifecycle, tools, policy, and verification layers.
 - [Runtime semantics](semantics.md) — observable lifecycle and cancellation
   contracts.
-- [Fixture format](../parity/fixture-format.md) and [Rust parity guide](../parity/README.md)
-  — exact behavioral fixtures and verification evidence.
+- [Fixture format](../crates/pi-agent-core/fixtures/fixture-format.md) and
+  [Rust fixture guide](../crates/pi-agent-core/fixtures/README.md) — exact
+  behavioral fixtures and verification evidence owned by `pi-agent-core`.
 - [Default coding profile](default-coding-profile.md) — captured prompt, tools,
   operation adapters, and update procedure.
 - [HTTP/2 boundary](../HTTP2.md) — transport-version evidence and the future
@@ -65,14 +66,15 @@ downstream optional layers.
 - [Verification](verification.md) — required checks and completed V0 evidence.
 - [Prompt cache-friendliness](cache-friendliness.md) — deterministic prefix measurements and
   compaction cache discipline.
-- [Quality evaluation](quality-evaluation.md) — deterministic trace parity,
-  three pinned Express tasks, replay artifacts, and resource diagnostics.
+- [Quality evaluation](quality-evaluation.md) — deterministic trace checks,
+  three pinned Express tasks, fixture artifacts, and resource diagnostics.
 - [Tracing](trace.md) — optional trajectory observer boundary.
 - [Terminal host](tui.md) — `pi-agent` ownership boundaries, interaction
   contract, and post-V0 direction.
 - [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
   bindings, coroutine-backed tools, limits, and review rules.
 
-The parity harness and fixtures have their own [guide](../parity/README.md).
+The core-owned fixture harness has its own
+[guide](../crates/pi-agent-core/fixtures/README.md).
 The end-to-end coding evaluation controller is documented in
 [`evals/README.md`](../evals/README.md).

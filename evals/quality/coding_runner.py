@@ -1,12 +1,10 @@
 """Provider-opt-in ecological coding evaluations for the three pinned Express cases.
 
-The adapter boundary intentionally reuses the repository's two explicit live
-adapters: upstream is a headless, pinned-source SDK session and Rust is the
-Smol-owned `pi-agent-eval` binary.  This module owns clean worktrees,
-validation, artifacts, and process resource measurements; it never discovers
-a model or a credential. Callers explicitly select an env file; a tiny shell
-boundary sources it immediately before the adapter starts, so Python and tool
-children never receive or persist the OpenRouter credential.
+This module owns clean worktrees, validation, artifacts, and process resource
+measurements around the Rust coding adapter. It never discovers a model or a
+credential. Callers explicitly select an env file; a tiny shell boundary
+sources it immediately before the adapter starts, so Python and tool children
+never receive or persist the OpenRouter credential.
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ from .coding_cases import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILE = ROOT / "parity" / "profile" / "default-profile.json"
+PROFILE = ROOT / "crates" / "pi-agent-core" / "profile" / "default-profile.json"
 RESULT_SCHEMA = "pi-coding-eval-result/v0"
 CODING_SCHEMA = "pi-agent-quality-coding-run/v1"
 
@@ -187,17 +185,13 @@ def _cost_comparison(adapter_records: list[dict[str, Any]]) -> dict[str, Any]:
         for record in adapter_records
         if isinstance(record.get("adapter_result"), dict)
     }
-    upstream = by_adapter.get("upstream")
     rust = by_adapter.get("rust")
-    upstream_total = upstream.get("reported_total_usd") if isinstance(upstream, dict) and upstream.get("complete") else None
     rust_total = rust.get("reported_total_usd") if isinstance(rust, dict) and rust.get("complete") else None
     return {
         "schema_version": "pi-eval-cost-comparison/v1",
         "currency": "USD",
-        "complete": upstream_total is not None and rust_total is not None,
-        "upstream_total_usd": upstream_total,
+        "complete": rust_total is not None,
         "rust_total_usd": rust_total,
-        "rust_minus_upstream_usd": None if upstream_total is None or rust_total is None else rust_total - upstream_total,
     }
 
 
@@ -232,7 +226,9 @@ def _run_process(command: list[str], *, cwd: Path, timeout_seconds: int) -> tupl
 
 
 def _adapter_command(adapter: str, model: str, task_path: Path, workspace: Path, capabilities_path: Path, result_path: Path, attempt_id: str) -> list[str]:
-    script = ROOT / "evals" / ("run-upstream-live.sh" if adapter == "upstream" else "run-rust-live.sh")
+    if adapter != "rust":
+        raise CodingRunError(f"unsupported coding adapter {adapter!r}")
+    script = ROOT / "evals" / "run-rust-live.sh"
     return [
         "bash",
         str(script),
@@ -327,7 +323,7 @@ def run_coding_cases(
         task_path.write_bytes(_canonical(task) + b"\n")
         capabilities_path.write_bytes(_canonical(capabilities) + b"\n")
         adapter_records: list[dict[str, Any]] = []
-        for adapter in ("upstream", "rust"):
+        for adapter in ("rust",):
             worktree = materialize_clean_worktree(case, cache_root, workspace_root)
             try:
                 # Fast regression validators execute the checked-out source directly and do

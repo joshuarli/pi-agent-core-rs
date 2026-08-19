@@ -21,7 +21,7 @@ The concrete executable factory evidence is in
 crates/pi-agent-core/tests/default_tools_behavior.rs. The complete deterministic kernel corpus
 is checked with:
 
-    ./parity/run-rust.sh
+    ./crates/pi-agent-core/fixtures/run.sh
 
 No profile check may consult the repository cwd, credentials, sessions, a live provider, or a
 host-installed Pi executable.

@@ -1,6 +1,6 @@
 # Scope and compatibility boundary
 
-This document defines what the project means by “Pi parity.” The pinned
+This document defines the selected Pi compatibility boundary. The pinned
 checked-in deterministic fixtures and the Rust tests are the executable specification;
 prose is a boundary, not a substitute for a fixture. The optional Luau policy
 plane is described in [Writing Luau extensions](luau-extensions.md) and does
@@ -24,9 +24,10 @@ and optional event/trace sinks. The core owns state transitions, context history
 request construction, tool scheduling and result ordering, queue semantics, event settlement,
 failure classification, and cleanup.
 
-Pi is the behavioral oracle, not a source-code port. A behavior enters the V0 contract only when
-it has a precise code target, a deterministic fixture, and a normalized result
-comparison. A source file being present in the Pi repository is not permission to implement it.
+The Rust contract captures selected Pi behavior; it is not a source-code port. A behavior enters
+the V0 contract only when it has a precise code target, a deterministic fixture, and a normalized
+result comparison. A source file being present in the Pi repository is not permission to implement
+it.
 
 ## V0 contract
 
@@ -43,7 +44,7 @@ The following are deliberately in scope:
 | Compaction | Caller-supplied `Compactor` port, idle-only manual transaction, and opt-in typed automatic policy | No summary prompt or provider is invented; hosts supply capacity, reserve, tail, retry policy, and compactor |
 | Cancellation | Model, preparation, execution, hooks, queue waits, and between-turn cancellation | Terminal cleanup leaves the same agent reusable |
 | Hooks and queues | The selected `beforeToolCall`, `afterToolCall`, context, stop, next-turn, steering and follow-up semantics | Rust owns semantics; Luau adapters remain downstream policy |
-| Default profile | Pinned prompt template, active tool order, schemas, snippets, guidelines and standard-tool behavior | `PiDefaultCodingProfile` is explicit and sterile profiles remain possible |
+| Default profile | Pinned prompt template, active tool order, schemas, snippets, guidelines and standard-tool behavior | `pi-agent-core` owns `PiDefaultCodingProfile`; it is explicit and sterile profiles remain possible |
 | Trace boundary | Optional immutable event consumer, separate from state | Linear recording only; no session tree |
 
 The default profile is a capability bundle, not ambient authority. Its constructor takes an
@@ -106,7 +107,7 @@ message content, tool results, state cleanup, or terminal outcomes.
 
 ## Completed contract record
 
-The core, profile, deterministic parity corpus, hardening, trace boundary,
+The core, profile, deterministic fixture corpus, hardening, trace boundary,
 optional Luau policy plane, and final comparative coding evaluation are complete.
 The durable evidence and revalidation requirements live in
 [verification.md](verification.md). Future host/application policy expansion
@@ -122,7 +123,7 @@ Status: supported | rejected | investigating
 Code target: crates/<crate>/<path>:<line>
 Observable behavior: <one sentence; include ordering or settlement>
 Boundary rationale: <why this boundary is correct>
-Fixture: parity/fixtures/declarative/<scenario>.json
+Fixture: crates/pi-agent-core/fixtures/declarative/<scenario>.json
 Expected evidence: <canonical field or assertion>
 Normalization: none | timestamp | generated-id | duration (explain)
 Open question / exit criterion: <required only for investigating>
