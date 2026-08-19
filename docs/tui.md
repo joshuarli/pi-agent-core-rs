@@ -183,12 +183,15 @@ accounting, tool, compaction, or conversation semantics.
 The renderer displays incrementally delivered assistant text with bounded
 plain-text, heading/list, fenced-code, error, and Unicode Markdown-table
 treatment. Tables use box-drawing borders and display-width-aware cell
-padding. It renders tool calls generically as one lifecycle activity from
-their name, serialized arguments, progress, and settled result/error rather
-than type-specific widgets. `PageUp` and `PageDown` provide basic
-scroll/follow behavior. Code and diff syntax highlighting deliberately remain
-outside this host so a shared highlighter can be introduced without changing
-the transcript contract.
+padding. Markdown, fenced code, and completed diff blocks use the shared
+`hi-lite` line highlighter; an assistant's in-flight diff remains neutral until
+its closing fence (or `MessageEnd`) arrives so a partial patch cannot acquire
+misleading colors.
+Styles are projected into cells rather than emitted as an unterminated ANSI
+stream, so every redraw is independent and safe during streaming. It renders
+tool calls generically as one lifecycle activity from their name, serialized
+arguments, progress, and settled result/error rather than type-specific
+widgets. `PageUp` and `PageDown` provide basic scroll/follow behavior.
 
 The fixed footer keeps provider/model, run state, provider-reported token and
 cache counters, exact cost, and context status visible. Every unavailable
@@ -306,7 +309,7 @@ agent loop, hidden session store, or ambient configuration system.
 
 | Area | Deferred work |
 | --- | --- |
-| Transcript | Markdown rendering, restrained highlighting, code-block horizontal handling, richer generic tool hints, search/copy, new-output markers, refined scrolling |
+| Transcript | More complete Markdown rendering, code-block horizontal handling, richer generic tool hints, search/copy, new-output markers, refined scrolling |
 | Composer and commands | Multiline native editing, grapheme/wide-cell correctness, word movement, history, paste presentation, richer editor integration, completion, and a narrow explicit command registry |
 | Extensions | Capability-scoped bindings for declared Luau tools; no package manager, marketplace, or automatic authority grant |
 | Providers | Authorized cached remote model discovery, catalog update tooling, richer metadata, and explicit user-managed authentication flows |

@@ -444,6 +444,11 @@ impl AppState {
         self.follow_output
     }
 
+    /// Whether the transcript row is still receiving assistant deltas.
+    pub(crate) fn is_streaming_transcript(&self, index: usize) -> bool {
+        self.streaming_line == Some(index)
+    }
+
     /// Return the latest core snapshot, if one has been attached.
     pub fn snapshot(&self) -> Option<&AgentSnapshot> {
         self.last_snapshot.as_ref()
