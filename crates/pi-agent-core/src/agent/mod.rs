@@ -39,8 +39,7 @@ pub(crate) struct AgentInner {
     /// Optional caller-supplied compactor, driven externally.
     pub(crate) compactor: RwLock<Option<Arc<dyn crate::compaction::Compactor>>>,
     /// Opt-in automatic-compaction policy; mutable counters stay on each run.
-    pub(crate) automatic_compaction:
-        RwLock<crate::compaction::AutomaticCompactionPolicy>,
+    pub(crate) automatic_compaction: RwLock<crate::compaction::AutomaticCompactionPolicy>,
     /// Bounded model-facing presentation for canonical tool results.
     pub(crate) tool_result_projection: crate::tool::ToolResultProjectionPolicy,
     /// Immutable circuit-breaker policy; streak state is allocated per run.
@@ -324,11 +323,11 @@ impl Agent {
         &self,
         policy: crate::compaction::AutomaticCompactionPolicy,
     ) -> Result<(), CoreError> {
-        policy.validate().map_err(|message| {
-            CoreError::InvalidAutomaticCompactionPolicy {
+        policy
+            .validate()
+            .map_err(|message| CoreError::InvalidAutomaticCompactionPolicy {
                 message: message.into(),
-            }
-        })?;
+            })?;
         let state = self.inner.state.lock().expect("agent state mutex poisoned");
         if let AgentPhase::Running(run_id) | AgentPhase::Cancelling(run_id) = state.phase {
             return Err(CoreError::ActiveRun { run_id });

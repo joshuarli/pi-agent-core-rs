@@ -39,7 +39,11 @@ pub fn layout(width: u16, height: u16) -> Layout {
 pub fn layout_for(state: &AppState, width: u16, height: u16) -> Layout {
     let desired = composer_lines(state.composer(), width).len().max(1) as u16;
     let header_height = welcome_lines(state, width).len() as u16;
-    let status_height = if height >= 2 { 2 } else { u16::from(height > 0) };
+    let status_height = if height >= 2 {
+        2
+    } else {
+        u16::from(height > 0)
+    };
     let available = height.saturating_sub(status_height + header_height);
     let max_composer = (available / 2).max(1);
     layout_for_composer(
@@ -56,7 +60,11 @@ fn layout_for_composer(
     composer_height: u16,
     header_height: u16,
 ) -> Layout {
-    let status_height = if height >= 2 { 2 } else { u16::from(height > 0) };
+    let status_height = if height >= 2 {
+        2
+    } else {
+        u16::from(height > 0)
+    };
     let header_height = header_height.min(height.saturating_sub(status_height));
     let composer_height = composer_height.min(height.saturating_sub(status_height + header_height));
     let transcript_height = height.saturating_sub(composer_height + status_height + header_height);
@@ -136,11 +144,7 @@ pub fn render(state: &AppState, registry: &ProviderRegistry, width: u16, height:
         regions.composer.width,
         &composer,
     );
-    for (row, line) in composer
-        .into_iter()
-        .skip(composer_start)
-        .enumerate()
-    {
+    for (row, line) in composer.into_iter().skip(composer_start).enumerate() {
         if row >= regions.composer.height as usize {
             break;
         }
@@ -213,23 +217,15 @@ pub fn composer_height(state: &AppState, width: u16) -> u16 {
 }
 
 /// Return the native cursor location for the visible composer.
-pub fn composer_cursor_position(
-    state: &AppState,
-    width: u16,
-    height: u16,
-) -> Option<(u16, u16)> {
+pub fn composer_cursor_position(state: &AppState, width: u16, height: u16) -> Option<(u16, u16)> {
     let regions = layout_for(state, width, height);
     if regions.composer.height == 0 {
         return None;
     }
     let (row, column) = composer_visual_cursor(state.composer(), width);
     let composer = composer_lines(state.composer(), width);
-    let composer_start = composer_view_start(
-        state.composer(),
-        regions.composer.height,
-        width,
-        &composer,
-    );
+    let composer_start =
+        composer_view_start(state.composer(), regions.composer.height, width, &composer);
     let row = row.saturating_sub(composer_start as u16);
     Some((
         column.min(width.saturating_sub(1)),
@@ -274,20 +270,9 @@ fn put_text(grid: &mut Grid, x: u16, y: u16, width: u16, text: &str, style: Styl
         if column.saturating_add(symbol_width) > width {
             break;
         }
-        let _ = grid.set(
-            x.saturating_add(column),
-            y,
-            Cell { symbol, style },
-        );
+        let _ = grid.set(x.saturating_add(column), y, Cell { symbol, style });
         if symbol_width == 2 && column + 1 < width {
-            let _ = grid.set(
-                x.saturating_add(column + 1),
-                y,
-                Cell {
-                    symbol: ' ',
-                    style,
-                },
-            );
+            let _ = grid.set(x.saturating_add(column + 1), y, Cell { symbol: ' ', style });
         }
         column = column.saturating_add(symbol_width);
     }
@@ -463,7 +448,10 @@ fn markdown_lines(text: &str, width: u16) -> Vec<RenderLine> {
             index += 1;
             continue;
         }
-        if is_table_header(raw_lines.get(index).copied(), raw_lines.get(index + 1).copied()) {
+        if is_table_header(
+            raw_lines.get(index).copied(),
+            raw_lines.get(index + 1).copied(),
+        ) {
             let start = index;
             index += 2;
             while index < raw_lines.len() && raw_lines[index].contains('|') {
@@ -486,11 +474,7 @@ fn markdown_lines(text: &str, width: u16) -> Vec<RenderLine> {
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
         {
-            output.extend(wrap_lines(
-                &format!("• {item}"),
-                width,
-                Style::default(),
-            ));
+            output.extend(wrap_lines(&format!("• {item}"), width, Style::default()));
         } else {
             output.extend(wrap_lines(raw, width, Style::default()));
         }
@@ -501,7 +485,9 @@ fn markdown_lines(text: &str, width: u16) -> Vec<RenderLine> {
 
 fn is_table_header(header: Option<&str>, separator: Option<&str>) -> bool {
     let Some(header) = header else { return false };
-    let Some(separator) = separator else { return false };
+    let Some(separator) = separator else {
+        return false;
+    };
     header.contains('|')
         && separator.contains('|')
         && split_table_row(separator).iter().all(|cell| {
@@ -605,9 +591,9 @@ fn render_table(rows: &[&str], width: u16) -> Vec<RenderLine> {
 }
 
 fn is_separator_table_row(row: &str) -> bool {
-    split_table_row(row).iter().all(|cell| {
-        !cell.is_empty() && cell.chars().all(|character| character == '-')
-    })
+    split_table_row(row)
+        .iter()
+        .all(|cell| !cell.is_empty() && cell.chars().all(|character| character == '-'))
 }
 
 fn composer_lines(composer: &Composer, width: u16) -> Vec<String> {
@@ -638,7 +624,9 @@ fn composer_view_start(
     }
     let (_, cursor_row) = composer_visual_cursor(composer, width);
     let visible = usize::from(visible_rows);
-    usize::from(cursor_row).saturating_sub(visible - 1).min(lines.len() - visible)
+    usize::from(cursor_row)
+        .saturating_sub(visible - 1)
+        .min(lines.len() - visible)
 }
 
 fn wrap_lines(text: &str, width: u16, style: Style) -> Vec<RenderLine> {

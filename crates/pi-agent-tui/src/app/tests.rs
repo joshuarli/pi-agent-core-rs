@@ -1,6 +1,6 @@
-use super::*;
 use super::compaction::ProviderCompactor;
 use super::state::ContextEstimate;
+use super::*;
 use pi_agent_core::compaction::{
     AutomaticCompactionReason, AutomaticCompactionRequest, CompactionContext, Compactor,
     OverflowRecovery,
@@ -40,9 +40,9 @@ impl ModelProvider for SummaryProvider {
                 message: "summary request used the wrong local model".into(),
             }]
         };
-        Box::pin(std::future::ready(Ok(Box::new(ModelStream {
-            events,
-        }) as _)))
+        Box::pin(std::future::ready(
+            Ok(Box::new(ModelStream { events }) as _),
+        ))
     }
 }
 
@@ -142,10 +142,9 @@ fn cli_rejects_unknown_thinking_level() {
 
 #[test]
 fn cli_parses_and_validates_explicit_local_context_capacity() {
-    let options = CliOptions::parse(
-        ["pi-agent", "--local-context-window", "32768"].map(OsString::from),
-    )
-    .expect("local context capacity parses");
+    let options =
+        CliOptions::parse(["pi-agent", "--local-context-window", "32768"].map(OsString::from))
+            .expect("local context capacity parses");
     assert_eq!(options.local_context_window(), NonZeroU64::new(32_768));
     assert!(matches!(
         CliOptions::parse(["pi-agent", "--local-context-window", "0"].map(OsString::from)),
@@ -427,10 +426,7 @@ fn local_catalog_selection_enables_automatic_compaction() {
     )
     .expect("local model selection");
 
-    let policy = app
-        .agent()
-        .expect("attached agent")
-        .automatic_compaction();
+    let policy = app.agent().expect("attached agent").automatic_compaction();
     assert!(policy.enabled);
     assert_eq!(policy.context_budget.tokens(), 32_768);
     assert_eq!(policy.reserved_tokens, 8_192);
@@ -473,10 +469,7 @@ fn custom_local_model_enables_automatic_compaction_with_explicit_capacity() {
     app.select_model("local".into(), "Qwen3.5-4B-MLX-4bit".into())
         .expect("custom local model selection");
 
-    let policy = app
-        .agent()
-        .expect("attached agent")
-        .automatic_compaction();
+    let policy = app.agent().expect("attached agent").automatic_compaction();
     assert!(policy.enabled);
     assert_eq!(policy.context_budget.tokens(), 32_768);
     assert_eq!(
@@ -519,9 +512,7 @@ fn headless_host_agent_sends_openai_compatible_context() {
 fn local_provider_is_selectable_without_a_credential() {
     let workspace = std::env::current_dir().expect("test workspace");
     let tools = DefaultCodingTools::new(workspace).expect("default tools");
-    let agent = build_host_agent(tools)
-        .expect("host agent builder")
-        .build();
+    let agent = build_host_agent(tools).expect("host agent builder").build();
     let mut app = App::new(CliOptions::default());
     app.attach_agent(agent);
 
@@ -532,10 +523,10 @@ fn local_provider_is_selectable_without_a_credential() {
     .expect("local provider should configure without a key");
 
     assert_eq!(
-        app.state().selected_model.as_ref().map(|model| (
-            model.provider.as_str(),
-            model.model.as_str(),
-        )),
+        app.state()
+            .selected_model
+            .as_ref()
+            .map(|model| (model.provider.as_str(), model.model.as_str(),)),
         Some(("local", "Laguna-XS-2.1-5bit"))
     );
     assert!(app.agent().expect("attached agent").has_model_provider());

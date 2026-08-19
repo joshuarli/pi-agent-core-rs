@@ -734,7 +734,12 @@ pub(super) fn openrouter_context_overflow(bytes: &[u8]) -> bool {
     let Some(message) = from_bytes(bytes)
         .ok()
         .and_then(|response| response.get("error").cloned())
-        .and_then(|error| error.get("message").and_then(JsonValue::as_str).map(str::to_owned))
+        .and_then(|error| {
+            error
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+        })
     else {
         return false;
     };

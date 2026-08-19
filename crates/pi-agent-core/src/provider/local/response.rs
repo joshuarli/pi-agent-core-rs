@@ -87,9 +87,7 @@ impl LocalSseDecoder {
         events.push(ModelStreamEvent::Usage(usage));
         let stop_reason = match self.finish_reason.as_deref() {
             Some("length") => StopReason::Length,
-            Some("tool_calls" | "tool_call") if has_tool_calls => {
-                StopReason::ToolUse
-            }
+            Some("tool_calls" | "tool_call") if has_tool_calls => StopReason::ToolUse,
             _ if has_tool_calls => StopReason::ToolUse,
             _ => StopReason::Stop,
         };
@@ -169,8 +167,7 @@ impl LocalSseDecoder {
                     if let Some(name) = function.get("name").and_then(JsonValue::as_str) {
                         entry.name = Some(name.to_owned());
                     }
-                    if let Some(arguments) = function.get("arguments").and_then(JsonValue::as_str)
-                    {
+                    if let Some(arguments) = function.get("arguments").and_then(JsonValue::as_str) {
                         entry.arguments.push_str(arguments);
                     }
                 }

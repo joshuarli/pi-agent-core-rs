@@ -12,9 +12,7 @@ pub enum ComposerError {
 impl fmt::Display for ComposerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Newline => {
-                formatter.write_str("line-only composer operation received a newline")
-            }
+            Self::Newline => formatter.write_str("line-only composer operation received a newline"),
         }
     }
 }
@@ -183,8 +181,8 @@ impl Composer {
         let previous_start = self.text[..previous_end]
             .rfind('\n')
             .map_or(0, |index| index + 1);
-        self.cursor = char_offset(&self.text[previous_start..previous_end], column)
-            + previous_start;
+        self.cursor =
+            char_offset(&self.text[previous_start..previous_end], column) + previous_start;
     }
 
     /// Move to the same character column on the next logical line.

@@ -48,7 +48,6 @@ impl LocalProvider {
     pub fn new(config: LocalConfig) -> Self {
         Self { config }
     }
-
 }
 
 /// One live local SSE response.  The HTTP worker owns blocking body reads while this source
@@ -63,11 +62,7 @@ struct LocalEventStream {
 }
 
 impl LocalEventStream {
-    fn start(
-        config: LocalConfig,
-        request: ModelRequest,
-        cancellation: CancellationToken,
-    ) -> Self {
+    fn start(config: LocalConfig, request: ModelRequest, cancellation: CancellationToken) -> Self {
         let mut event_stream = Self {
             config,
             response: None,
@@ -83,13 +78,17 @@ impl LocalEventStream {
             return event_stream;
         }
         if let Err(message) = event_stream.validate_model(&request) {
-            event_stream.pending.push_back(ModelStreamEvent::Error { message });
+            event_stream
+                .pending
+                .push_back(ModelStreamEvent::Error { message });
             return event_stream;
         }
         let payload = match local_payload(&event_stream.config, request) {
             Ok(payload) => payload,
             Err(message) => {
-                event_stream.pending.push_back(ModelStreamEvent::Error { message });
+                event_stream
+                    .pending
+                    .push_back(ModelStreamEvent::Error { message });
                 return event_stream;
             }
         };
@@ -98,9 +97,13 @@ impl LocalEventStream {
             event_stream.config.base_url.trim_end_matches('/')
         );
         event_stream.response = Some(stream(
-            Request::post(endpoint, payload.into_bytes(), event_stream.config.request_timeout)
-                .header("Content-Type", "application/json")
-                .header("Accept", "text/event-stream"),
+            Request::post(
+                endpoint,
+                payload.into_bytes(),
+                event_stream.config.request_timeout,
+            )
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream"),
             &cancellation,
         ));
         event_stream.decoder = Some(LocalSseDecoder::new());
@@ -190,7 +193,9 @@ impl LocalEventStream {
                         continue;
                     }
                     let Some(decoder) = self.decoder.as_mut() else {
-                        self.response_failure("local response stream was not initialized".to_owned());
+                        self.response_failure(
+                            "local response stream was not initialized".to_owned(),
+                        );
                         continue;
                     };
                     match decoder.push(&bytes) {
@@ -245,9 +250,7 @@ mod tests {
     use super::{
         local_payload, parse_local_response, LocalConfig, LocalProvider, LAGUNA_XS_2_1_MODEL,
     };
-    use crate::scheduler::{
-        CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent,
-    };
+    use crate::scheduler::{CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent};
     use crate::state::{ModelDescriptor, ThinkingLevel, Usage};
     use crate::tool::ToolDefinition;
     use pi_agent_protocol::JsonValue;
@@ -409,9 +412,13 @@ data: [DONE]
                     .as_bytes(),
                 )
                 .expect("response headers should write");
-            socket.write_all(first).expect("first SSE record should write");
+            socket
+                .write_all(first)
+                .expect("first SSE record should write");
             socket.flush().expect("first SSE record should flush");
-            first_sent.send(()).expect("test should observe first record");
+            first_sent
+                .send(())
+                .expect("test should observe first record");
             wait_for_release
                 .recv()
                 .expect("test should release the response body");
@@ -444,7 +451,9 @@ data: [DONE]
         first_received
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("mock server should send the first record");
-        release.send(()).expect("mock server should receive release");
+        release
+            .send(())
+            .expect("mock server should receive release");
         assert_eq!(
             smol::block_on(source.next_event(cancellation.clone())),
             Ok(Some(ModelStreamEvent::TextDelta("second".into())))

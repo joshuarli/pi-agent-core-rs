@@ -46,10 +46,7 @@ impl ModelCandidate {
     }
 }
 
-pub(super) fn model_candidates(
-    registry: &ProviderRegistry,
-    filter: &str,
-) -> Vec<ModelCandidate> {
+pub(super) fn model_candidates(registry: &ProviderRegistry, filter: &str) -> Vec<ModelCandidate> {
     let filter = filter.to_ascii_lowercase();
     let mut candidates = Vec::new();
     for entry in registry.providers() {

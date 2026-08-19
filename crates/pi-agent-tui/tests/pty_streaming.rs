@@ -203,10 +203,12 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
 fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
     let scenario = Scenario::new("native composer interaction")
         .expect("valid scenario label")
-        .command(
-            CommandSpec::new(env!("CARGO_BIN_EXE_pi-agent"))
-                .args(["--provider", "local", "--model", "Laguna-XS-2.1-5bit"]),
-        )
+        .command(CommandSpec::new(env!("CARGO_BIN_EXE_pi-agent")).args([
+            "--provider",
+            "local",
+            "--model",
+            "Laguna-XS-2.1-5bit",
+        ]))
         .size(Size::new(80, 16).expect("constant terminal size"))
         .environment(TestEnv::hermetic().expect("create hermetic test environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());

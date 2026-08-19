@@ -72,14 +72,8 @@ pub enum UiStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Picker {
-    Model {
-        filter: String,
-        selected: usize,
-    },
-    CustomModel {
-        provider: String,
-        input: String,
-    },
+    Model { filter: String, selected: usize },
+    CustomModel { provider: String, input: String },
 }
 
 /// Terminal-owned state: event-derived rows plus local input and overlay state.
@@ -156,11 +150,7 @@ impl AppState {
             AgentEventKind::AgentStart => self.status = UiStatus::Active,
             AgentEventKind::MessageStart { message } => {
                 if let pi_agent_core::Message::User { content, .. } = message {
-                    self.push_kind(
-                        sequence,
-                        format!("you: {content}"),
-                        TranscriptKind::User,
-                    );
+                    self.push_kind(sequence, format!("you: {content}"), TranscriptKind::User);
                 }
             }
             AgentEventKind::MessageUpdate {
@@ -644,7 +634,7 @@ impl AppState {
         if self
             .history
             .last()
-            .map_or(true, |previous| previous != prompt)
+            .is_none_or(|previous| previous != prompt)
         {
             self.history.push(prompt.to_owned());
         }
@@ -740,6 +730,12 @@ fn format_context_percent(tokens: Option<u64>, capacity: Option<u64>) -> String 
 
 fn compact_model_label(model: &str) -> String {
     let bare = model.rsplit('/').next().unwrap_or(model);
-    bare.strip_prefix("claude-")
-        .map_or_else(|| bare.to_owned(), |name| name.replace("opus-", "opus ").replace("sonnet-", "sonnet ").replace("haiku-", "haiku "))
+    bare.strip_prefix("claude-").map_or_else(
+        || bare.to_owned(),
+        |name| {
+            name.replace("opus-", "opus ")
+                .replace("sonnet-", "sonnet ")
+                .replace("haiku-", "haiku ")
+        },
+    )
 }

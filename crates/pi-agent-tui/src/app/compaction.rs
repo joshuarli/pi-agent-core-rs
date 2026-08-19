@@ -11,9 +11,7 @@ use pi_agent_core::compaction::{
 };
 use pi_agent_core::hooks::{ContextEnvelope, HookSet};
 use pi_agent_core::provider::openai::OpenAiContextHook;
-use pi_agent_core::scheduler::{
-    CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent,
-};
+use pi_agent_core::scheduler::{CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent};
 use pi_agent_core::state::{AgentMessage, MessageId, ModelDescriptor, StopReason, ThinkingLevel};
 use pi_agent_core::Usage;
 use std::collections::BTreeSet;
@@ -65,7 +63,10 @@ impl fmt::Debug for ProviderCompactor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ProviderCompactor")
-            .field("model", &self.model.read().ok().and_then(|model| model.clone()))
+            .field(
+                "model",
+                &self.model.read().ok().and_then(|model| model.clone()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -92,7 +93,10 @@ impl ProviderCompactor {
             .expect("TUI compactor model lock poisoned") = Some(model);
     }
 
-    fn configured(&self, context: &CompactionContext) -> Result<(Arc<dyn ModelProvider>, ModelDescriptor), CompactionError> {
+    fn configured(
+        &self,
+        context: &CompactionContext,
+    ) -> Result<(Arc<dyn ModelProvider>, ModelDescriptor), CompactionError> {
         let provider = self
             .provider
             .read()
@@ -125,13 +129,8 @@ impl Compactor for ProviderCompactor {
             if context.messages.is_empty() {
                 return Ok(CompactionResult::new(Vec::new()));
             }
-            let (summary, usage) = summarize(
-                provider,
-                model,
-                context.messages.clone(),
-                cancellation,
-            )
-            .await?;
+            let (summary, usage) =
+                summarize(provider, model, context.messages.clone(), cancellation).await?;
             let replacement = vec![summary_message(&context.messages, summary)];
             Ok(match usage {
                 Some(usage) => CompactionResult::new(replacement).with_usage(usage),
@@ -154,13 +153,8 @@ impl Compactor for ProviderCompactor {
             if messages_to_summarize.is_empty() {
                 return Ok(CompactionResult::new(request.retained_messages));
             }
-            let (summary, usage) = summarize(
-                provider,
-                model,
-                messages_to_summarize.clone(),
-                cancellation,
-            )
-            .await?;
+            let (summary, usage) =
+                summarize(provider, model, messages_to_summarize.clone(), cancellation).await?;
             let retained_messages = request.retained_messages;
             let mut all_messages = messages_to_summarize;
             all_messages.extend(retained_messages.iter().cloned());
@@ -231,13 +225,17 @@ async fn summarize(
             .next_event(cancellation.clone())
             .await
             .map_err(|error| CompactionError::failed(error.to_string()))?
-            .ok_or_else(|| CompactionError::failed("compaction provider closed without a terminal event"))?;
+            .ok_or_else(|| {
+                CompactionError::failed("compaction provider closed without a terminal event")
+            })?;
         match event {
             ModelStreamEvent::TextDelta(delta) => summary.push_str(&delta),
             ModelStreamEvent::Usage(reported) => usage = Some(reported),
             ModelStreamEvent::End(reason) => {
                 if reason == StopReason::Error {
-                    return Err(CompactionError::failed("compaction provider ended with an error"));
+                    return Err(CompactionError::failed(
+                        "compaction provider ended with an error",
+                    ));
                 }
                 break;
             }
@@ -254,7 +252,9 @@ async fn summarize(
         }
     }
     if summary.trim().is_empty() {
-        return Err(CompactionError::failed("compaction provider returned an empty summary"));
+        return Err(CompactionError::failed(
+            "compaction provider returned an empty summary",
+        ));
     }
     Ok((summary, usage))
 }

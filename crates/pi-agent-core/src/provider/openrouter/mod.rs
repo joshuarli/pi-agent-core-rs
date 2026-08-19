@@ -1171,9 +1171,11 @@ data: [DONE]
     fn streaming_sse_context_errors_keep_the_typed_overflow_marker() {
         let mut decoder = StreamingSseDecoder::new();
         let error = decoder
-            .push(br#"data: {"error":{"message":"maximum context length exceeded"}}
+            .push(
+                br#"data: {"error":{"message":"maximum context length exceeded"}}
 
-"#)
+"#,
+            )
             .expect_err("context error should stop the stream");
         assert_eq!(error, "OpenRouter context capacity exceeded");
     }

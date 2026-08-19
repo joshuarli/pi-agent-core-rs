@@ -172,15 +172,15 @@ impl App {
         else {
             return;
         };
-        self.state.composer_mut().replace_from_editor(format!("{command} "));
+        self.state
+            .composer_mut()
+            .replace_from_editor(format!("{command} "));
     }
 
     pub(super) fn dispatch_command(&mut self, input: &str) -> Result<(), AppError> {
         let mut words = input.split_whitespace();
         let command = words.next().unwrap_or_default();
-        if self.agent_is_active()
-            && matches!(command, "/model" | "/compact" | "/clear")
-        {
+        if self.agent_is_active() && matches!(command, "/model" | "/compact" | "/clear") {
             self.state
                 .notice(format!("{command} is unavailable while a run is active"));
             return Ok(());

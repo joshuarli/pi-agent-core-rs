@@ -1,7 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use pi_agent_core::compaction::{
-    AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery,
-};
+use pi_agent_core::compaction::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};
 use pi_agent_core::provider::{ConfiguredProvider, ProviderConfiguration};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -142,16 +140,13 @@ impl App {
         if let Some(compactor) = &self.compactor {
             compactor.configure(descriptor.clone(), Arc::clone(&configured_provider));
         }
-        let context_window = self
-            .options
-            .local_context_window()
-            .or_else(|| {
-                self.registry
-                    .provider(&provider)
-                    .and_then(|entry| entry.model(&model))
-                    .and_then(|model| model.context_window)
-                    .and_then(NonZeroU64::new)
-            });
+        let context_window = self.options.local_context_window().or_else(|| {
+            self.registry
+                .provider(&provider)
+                .and_then(|entry| entry.model(&model))
+                .and_then(|model| model.context_window)
+                .and_then(NonZeroU64::new)
+        });
         let policy = if self.compactor.is_some() {
             context_window
                 .map(automatic_compaction_policy)
@@ -159,11 +154,10 @@ impl App {
         } else {
             AutomaticCompactionPolicy::disabled()
         };
-        self.agent_or_setup()?.replace_automatic_compaction(policy)?;
-        self.state.automatic_compaction_enabled = self
-            .agent_or_setup()?
-            .automatic_compaction()
-            .enabled;
+        self.agent_or_setup()?
+            .replace_automatic_compaction(policy)?;
+        self.state.automatic_compaction_enabled =
+            self.agent_or_setup()?.automatic_compaction().enabled;
         self.state.selected_context_window = context_window;
         self.state.selected_model = Some(descriptor);
         self.state.context_estimate = None;
@@ -219,14 +213,9 @@ impl App {
                     .local_base_url()
                     .map(|value| super::runtime::os_text(value, "--local-base-url"))
                     .transpose()?
-                    .unwrap_or_else(|| {
-                        pi_agent_core::provider::local::DEFAULT_BASE_URL.to_owned()
-                    });
-                let config = pi_agent_core::provider::local::LocalConfig::try_new(
-                    base_url,
-                    model,
-                )
-                .map_err(|error| AppError::Setup(error.to_string()))?;
+                    .unwrap_or_else(|| pi_agent_core::provider::local::DEFAULT_BASE_URL.to_owned());
+                let config = pi_agent_core::provider::local::LocalConfig::try_new(base_url, model)
+                    .map_err(|error| AppError::Setup(error.to_string()))?;
                 ProviderConfiguration::Local(config)
             }
             _ => {
@@ -239,7 +228,6 @@ impl App {
             .build(descriptor, configuration)
             .map_err(Into::into)
     }
-
 }
 
 fn automatic_compaction_policy(context_window: NonZeroU64) -> AutomaticCompactionPolicy {
