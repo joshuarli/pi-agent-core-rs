@@ -22,7 +22,8 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
   [verification](docs/verification.md) for compatibility and quality evidence.
 - [fixture format](parity/fixture-format.md) and [parity guide](parity/README.md)
   for fixture-based compatibility work.
-- [`V1.md`](V1.md) for remaining programmable-policy work.
+- [Luau extensions](docs/luau-extensions.md) for the optional capability-scoped
+  policy plane.
 
 ## Working contract
 

@@ -183,6 +183,10 @@ impl Future for LuaToolExecution<'_> {
                 .as_mut()
                 .is_some_and(|wait| Pin::new(wait).poll(context).is_ready());
             if cancellation.is_cancelled() || cancellation_won {
+                // Drop a pending host future before publishing cancellation,
+                // so settlement never leaves capability work owned by this
+                // adapter.
+                this.capability_future.take();
                 return Poll::Ready(Err(ToolError::Cancelled { tool: tool_name }));
             }
 
@@ -617,7 +621,27 @@ mod tests {
         }
     }
 
-    struct PendingCapability;
+    struct PendingCapability {
+        drops: Arc<AtomicUsize>,
+    }
+
+    struct PendingFuture {
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Future for PendingFuture {
+        type Output = Result<CapabilityResponse, CapabilityError>;
+
+        fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingFuture {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     impl LuauCapability for PendingCapability {
         fn invoke(
@@ -625,7 +649,9 @@ mod tests {
             _request: CapabilityRequest,
             _cancellation: CancellationToken,
         ) -> CapabilityFuture {
-            Box::pin(std::future::pending())
+            Box::pin(PendingFuture {
+                drops: Arc::clone(&self.drops),
+            })
         }
     }
 
@@ -814,6 +840,7 @@ mod tests {
 
     #[test]
     fn cancellation_wakes_a_pending_capability_future() {
+        let drops = Arc::new(AtomicUsize::new(0));
         let handler = LuaToolHandler::new(
             r#"
                 return function(call)
@@ -827,7 +854,9 @@ mod tests {
                 end
             "#,
             spec(),
-            bindings(Arc::new(PendingCapability)),
+            bindings(Arc::new(PendingCapability {
+                drops: Arc::clone(&drops),
+            })),
         )
         .expect("handler should load");
         let cancellation = CancellationToken::new();
@@ -854,6 +883,7 @@ mod tests {
                 tool: "echo_tool".to_owned()
             })
         );
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
     #[test]

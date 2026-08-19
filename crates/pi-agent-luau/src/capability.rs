@@ -21,10 +21,9 @@
 //! }
 //! ```
 //!
-//! Missing module members mean no grant.  There is no wildcard operation, and
-//! an MCP grant without a server is rejected.  A missing MCP target means any
-//! target on that explicitly named server and operation; hosts should prefer
-//! exact targets where practical.
+//! Missing module members mean no grant. There are no wildcard operations or
+//! target fallbacks, and an MCP grant without a server is rejected. An omitted
+//! MCP target matches only a request that also omits its target.
 
 mod domain;
 mod gate;
@@ -124,6 +123,21 @@ mod tests {
         assert!(manifest.check(&allowed).is_ok());
         assert!(manifest.check(&wrong_tool).is_err());
         assert!(manifest.check(&wrong_server).is_err());
+    }
+
+    #[test]
+    fn mcp_targetless_grants_do_not_authorize_other_targets() {
+        let manifest = CapabilityManifest::new([CapabilityGrant::new(
+            CapabilityModule::World,
+            [world_mcp(None)],
+        )
+        .expect("valid targetless grant")])
+        .expect("valid manifest");
+
+        let targetless = CapabilityRequest::new(world_mcp(None), JsonValue::Null);
+        let targeted = CapabilityRequest::new(world_mcp(Some("execute_code")), JsonValue::Null);
+        assert!(manifest.check(&targetless).is_ok());
+        assert!(manifest.check(&targeted).is_err());
     }
 
     #[test]

@@ -72,8 +72,6 @@ downstream optional layers.
   contract, and post-V0 direction.
 - [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
   bindings, coroutine-backed tools, limits, and review rules.
-- [V1](../V1.md) — delivered optional Luau extension foundation and intentional
-  boundaries.
 
 The parity harness and fixtures have their own [guide](../parity/README.md).
 The end-to-end coding evaluation controller is documented in

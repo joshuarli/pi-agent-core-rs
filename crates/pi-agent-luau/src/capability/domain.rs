@@ -152,7 +152,7 @@ impl McpPermission {
     fn allows(&self, requested: &Self) -> bool {
         self.server == requested.server
             && self.operation == requested.operation
-            && (self.target.is_none() || self.target == requested.target)
+            && self.target == requested.target
     }
 }
 

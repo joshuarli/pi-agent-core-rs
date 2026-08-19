@@ -4,7 +4,9 @@
 `pi-agent-core-rs`. It is for task- and world-specific policy, not a second
 agent runtime: Rust retains control of model transport, the state machine,
 tool scheduler, cancellations, tracing, resource ownership, and every side
-effect.
+effect. That includes schema validation, preparation, scheduling, updates,
+ordering, result insertion, cancellation, and settlement for adapted tools; a
+handler's single coroutine is a structural limit, not a replacement scheduler.
 
 Use the checked-in nightly. The embedded engine is `mlua`'s `luau-jit`
 backend; it is intentionally not LuaJIT 5.2. An embedding normally drives its
@@ -23,6 +25,12 @@ A policy source or bundle entrypoint returns a declaration table. It can:
 A policy cannot discover files, read environment variables, run processes,
 open a network connection, load packages, use a wall clock, modify core
 state, schedule an agent, or acquire a capability by naming it.
+
+The shipped Luau surface is intentionally low-level. Ergonomic `@world`-style
+modules remain host API designs and must use the same explicit yield and gate
+boundary. Luau syntax, including annotations, is compiled by the embedded VM;
+this repository does not provide a separate `luau-analyze` dependency or an
+external static-type-check guarantee.
 
 ## Minimal declaration
 
@@ -124,7 +132,8 @@ server/method/target triples.
 On success, return either a string or a result table containing `content` and
 optional `details_json`, `is_error`, and `terminate`. `details_json` must be
 valid JSON. A handler may make at most `HandlerLimits::max_capability_calls`
-host calls (64 by default).
+host calls (64 by default). Cancellation wakes a pending capability call,
+drops its host future before settlement, and returns a typed cancellation.
 
 ## Bundle-local modules
 
@@ -140,17 +149,19 @@ return { system_prompt_append = prompt }
 
 Only `./...` and `../...` imports are accepted, and they must stay inside the
 declared bundle. Bare names, absolute paths, drive paths, package registries,
-and virtual modules are denied. Each VM has its own module cache; bundle
-source hashes are deterministic identities, not cryptographic digests.
+and virtual modules are denied. Each VM has its own module cache. `Bundle` is
+an ABI-v1 value whose deterministic source hash covers its manifest and every
+canonical module; that hash is an identity, not a cryptographic digest.
 
 ## Host capability manifests
 
 `capability::CapabilityManifest` is the host-facing, serializable ABI-v1
 authority description. Its typed modules are `@agent`, `@world`, `@trace`,
 `@task`, `@json`, and `@time`; an MCP permission can be scoped to an exact
-server, method, and tool/resource target. Use `CapabilityGate` before an
-effectful provider. A manifest does not install globals or effects into Luau;
-the embedding still chooses a concrete `LuauCapability` binding.
+server, method, and tool/resource target. Matching is exact; omitting a target
+is not a wildcard. Use `CapabilityGate` before an effectful provider. A
+manifest does not install globals or effects into Luau; the embedding still
+chooses a concrete `LuauCapability` binding.
 
 This separation is intentional. Do not invent `require("@world")` or other
 ambient capability modules in a policy unless its embedding documents and
@@ -311,18 +322,17 @@ means a handler cannot leak a coroutine or mutable global into another call.
   tool environment.
 
 For crate ownership and benchmark/test evidence see
-[architecture](architecture.md), [verification](verification.md), and
-[V1](../V1.md).
+[architecture](architecture.md) and [verification](verification.md).
 
-### Phi v1 limitations
+### Phi host limitations
 
 The minimal host design does not make `~/.phi` a repository-wide convention or
-add it to the Luau crate. V1 has no ambient extension discovery, package
+add it to the Luau crate. It has no ambient extension discovery, package
 registry, marketplace, remote source loader, signature/trust store, automatic
 grant approval, or active-run hot reload. It also has no cross-extension
 mutable state, implicit dependency graph, session persistence, TUI/approval
 surface, agent spawning, or world authority in the policy plane. Those are
-host/application work for a separately specified contract. The durable V1
+host/application work for a separately specified contract. The durable policy
 guarantees remain closed host-supplied bundles, fresh isolated VMs, finite
 budgets, explicit grants and bindings, and Rust ownership of mechanism and
 effects.

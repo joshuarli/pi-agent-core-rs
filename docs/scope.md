@@ -2,8 +2,9 @@
 
 This document defines what the project means by “Pi parity.” The pinned
 checked-in deterministic fixtures and the Rust tests are the executable specification;
-prose is a boundary, not a substitute for a fixture. [`V1.md`](../V1.md)
-describes optional Luau policy work and does not widen the completed core.
+prose is a boundary, not a substitute for a fixture. The optional Luau policy
+plane is described in [Writing Luau extensions](luau-extensions.md) and does
+not widen the completed core.
 
 ## Product boundary
 
@@ -41,9 +42,9 @@ The following are deliberately in scope:
 | Events | Agent/turn/message/tool lifecycle, manual/automatic-compaction lifecycle, failure/circuit observations, awaited observers, and bounded/lossless live subscriptions | Event order, terminal grammar, and subscription overflow/drop behavior are fixture-tested |
 | Compaction | Caller-supplied `Compactor` port, idle-only manual transaction, and opt-in typed automatic policy | No summary prompt or provider is invented; hosts supply capacity, reserve, tail, retry policy, and compactor |
 | Cancellation | Model, preparation, execution, hooks, queue waits, and between-turn cancellation | Terminal cleanup leaves the same agent reusable |
-| Hooks and queues | The selected `beforeToolCall`, `afterToolCall`, context, stop, next-turn, steering and follow-up semantics | Rust-only in V0; Luau adapts later |
+| Hooks and queues | The selected `beforeToolCall`, `afterToolCall`, context, stop, next-turn, steering and follow-up semantics | Rust owns semantics; Luau adapters remain downstream policy |
 | Default profile | Pinned prompt template, active tool order, schemas, snippets, guidelines and standard-tool behavior | `PiDefaultCodingProfile` is explicit and sterile profiles remain possible |
-| Trace boundary | Optional immutable event consumer, separate from state | The lean recorder is a later V0 milestone; no session tree |
+| Trace boundary | Optional immutable event consumer, separate from state | Linear recording only; no session tree |
 
 The default profile is a capability bundle, not ambient authority. Its constructor takes an
 explicit workspace and operation adapters. It does not discover cwd, `$HOME`, `.pi`, settings,
@@ -64,15 +65,15 @@ These are rejected as V0 implementation targets even when a broader application 
 | Pi provider catalog/authentication/model discovery and a port of `pi-ai` | Provider mechanics stay behind the small model-stream trait |
 | OpenTelemetry, Sentry, and remote provider catalog policy | Not needed for the V0 state machine; the core exposes typed events and optional built-in adapters own bounded transport retry |
 | Tokio, Node, TypeScript, `napi-rs`, JavaScript callback bridges, or a scripting runtime | Core is executor-owned pure Rust |
-| Swarm framework, world forking, IPC, C ABI, WASM/component, Python bindings | Post-V1 exploration only when a concrete use case exists |
+| Swarm framework, world forking, IPC, C ABI, WASM/component, Python bindings | Future exploration only when a concrete use case exists |
 
 The default profile may use local filesystem/process implementations, but those implementations
 are explicit profile adapters. The core never learns filesystem, shell, network, VM, or world
 semantics.
 
-## V0 versus V1
+## Core versus optional Luau policy
 
-| Concern | V0 | V1 (`V1.md`) |
+| Concern | Core | Optional Luau policy |
 | --- | --- | --- |
 | Mechanism | Rust agent FSM, context, stream handling, scheduling, queues, cancellation, settlement | Unchanged; Rust remains authoritative |
 | Policy | Statically supplied Rust hooks/tools and caller-owned adapters | Optional hermetic Luau policy attached downstream |
@@ -81,20 +82,19 @@ semantics.
 | Scheduling | Caller-owned Smol executor; no core-owned runtime/tasks | Luau coroutines yield to Rust futures on the same caller-owned executor |
 | Isolation | Rust API and explicit host capability boundary | Capability manifest, closed module resolver, VM/resource limits |
 | Tracing | Optional linear typed event recorder | Luau may annotate, never alter replay semantics |
-| Interfaces | No external language binding | No general external binding; future IPC/WASM/etc. remain post-V1 |
+| Interfaces | No external language binding | No general external binding; future IPC/WASM/etc. remain outside this contract |
 
 Luau cannot redefine V0 events, ordering, state transitions, cancellation, usage, failure
-classification, resource ownership, or run lifecycle. If a feature requires a VM, module
-resolution, policy bundle, world capability, or script ABI, it is deferred to V1. If it requires
-interactive sessions or ambient discovery, it remains rejected.
+classification, resource ownership, or run lifecycle. A feature that requires a VM, module
+resolution, policy bundle, world capability, or script ABI belongs to the optional Luau policy
+contract. If it requires interactive sessions or ambient discovery, it remains rejected.
 
 ## Decision rules
 
 When a behavior is added or remains uncertain, classify it in the relevant fixture and test
 evidence using exactly one of these statuses:
 
-* `supported`: part of the V0 target and covered by a fixture;
-* `deferred-to-v1`: explicitly a Luau policy-plane concern from `V1.md`;
+* `supported`: part of the current contract and covered by a fixture or focused test;
 * `rejected`: outside the headless kernel/profile boundary;
 * `investigating`: the selected behavior or its settlement detail is not yet pinned by a
   deterministic fixture.
@@ -104,13 +104,13 @@ such row has a fixture ID and a concrete exit condition. A fixture may normalize
 generated UUIDs, and durations only; it may not normalize semantic ordering, queue behavior,
 message content, tool results, state cleanup, or terminal outcomes.
 
-## Completed V0 record
+## Completed contract record
 
-V0's core, profile, deterministic parity corpus, hardening, trace boundary,
-and final comparative coding evaluation are complete. The durable evidence and
-revalidation requirements live in [verification.md](verification.md). Future
-policy-plane expansion belongs in [`V1.md`](../V1.md); it does not change this
-scope without a new explicit contract.
+The core, profile, deterministic parity corpus, hardening, trace boundary,
+optional Luau policy plane, and final comparative coding evaluation are complete.
+The durable evidence and revalidation requirements live in
+[verification.md](verification.md). Future host/application policy expansion
+requires a new explicit contract; it does not change this scope implicitly.
 
 ## Exact new-ledger entry template
 
@@ -118,10 +118,10 @@ Copy this block when adding a row to any Milestone 0 ledger. Keep the status voc
 
 ```text
 ID: FIX-<domain>-<number>
-Status: supported | deferred-to-v1 | rejected | investigating
+Status: supported | rejected | investigating
 Code target: crates/<crate>/<path>:<line>
 Observable behavior: <one sentence; include ordering or settlement>
-V0/V1 rationale: <why this boundary is correct>
+Boundary rationale: <why this boundary is correct>
 Fixture: parity/fixtures/declarative/<scenario>.json
 Expected evidence: <canonical field or assertion>
 Normalization: none | timestamp | generated-id | duration (explain)

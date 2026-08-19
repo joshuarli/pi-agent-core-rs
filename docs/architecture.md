@@ -188,7 +188,7 @@ Hook callbacks receive the active cancellation scope and typed contexts. They ca
 state directly, bypass event reduction, or reorder tool-result insertion. Hook errors are typed and
 follow the fixture-defined abort/block/structured-result rule.
 
-V1 Luau adapters may call those ports, register ordinary Rust tools, request stop, or annotate a
+Luau adapters may call those ports, register ordinary Rust tools, request stop, or annotate a
 trace. They cannot own the loop, mutate transcript storage, schedule tools, define queue semantics,
 hold resource ownership, or emit post-settlement events.
 
@@ -252,7 +252,7 @@ Policy: protocol <- core <- luau adapter -> mlua/Luau VM
 
 `pi-agent-core` must compile and operate without `mlua`, Luau, world APIs, scripting types, Node,
 TypeScript, `napi-rs`, `pi-ai`, or a provider implementation. `pi-agent-luau` may depend on core;
-core must not depend on it. V1 module resolution is host-controlled and closed, with no ambient
+core must not depend on it. Luau module resolution is host-controlled and closed, with no ambient
 filesystem, process, environment, network, home, cwd, clock, FFI, package registry, native plugin,
 or OS-command authority.
 

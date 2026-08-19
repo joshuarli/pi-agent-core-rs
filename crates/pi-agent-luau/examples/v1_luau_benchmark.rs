@@ -1,4 +1,4 @@
-//! Small, dependency-free Luau V1 benchmark and isolation harness.
+//! Small, dependency-free Luau benchmark and isolation harness.
 //!
 //! Run it with the repository's pinned toolchain:
 //!
@@ -11,7 +11,7 @@
 //! and build mode. The semantic checks are the hard gate: every policy must retain its own
 //! declaration marker and every benchmark hook must return `allow`.
 //!
-//! The harness covers three V1 questions:
+//! The harness covers three Luau runtime questions:
 //!
 //! * What is the cost of creating and dropping one sandboxed policy VM?
 //! * What is the cost of repeatedly invoking a policy pre-tool hook?
@@ -83,7 +83,7 @@ impl DurationStats {
 
 fn benchmark_call() -> ToolCall {
     ToolCall {
-        id: ToolCallId::new("v1-luau-benchmark-call").expect("static call ID is non-empty"),
+        id: ToolCallId::new("luau-benchmark-call").expect("static call ID is non-empty"),
         name: "execute_code".to_owned(),
         arguments: SerializedJson::new("{}"),
     }
@@ -178,7 +178,7 @@ fn isolated_policies() -> Result<(), String> {
 }
 
 fn main() -> Result<(), String> {
-    println!("pi-agent-luau V1 benchmark (observational; no timing thresholds)");
+    println!("pi-agent-luau benchmark (observational; no timing thresholds)");
     startup_and_teardown()?;
     hook_invocation()?;
     isolated_policies()?;

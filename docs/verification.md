@@ -1,10 +1,10 @@
-# Verification and completed V0 evidence
+# Verification and completed contract evidence
 
 V0 is complete. Its implementation is the pure Rust agent kernel, pinned
 default coding profile, deterministic in-process Pi subset parity corpus,
 structured cancellation, optional trace observer, and comparative coding
-evaluation. V1 adds an optional Luau extension foundation without changing the
-core's provider-, executor-, or world-agnostic boundary.
+evaluation. The optional Luau extension layer is separately verified without
+changing the core's provider-, executor-, or world-agnostic boundary.
 
 ## Required local checks
 
@@ -59,12 +59,13 @@ provider-reported cache usage remains the authoritative hit/write measurement.
   provider manifest. The provider-specific report is intentionally ignored; the
   controller contract lives in [`evals/README.md`](../evals/README.md).
 
-## V1 extension evidence
+## Luau extension evidence
 
 - `pi-agent-luau` has unit and integration coverage for deterministic bundle
   paths/hashes, closed relative imports and per-VM caches, typed capability
-  manifests/gates, raw coroutine request validation, cancellation/drop of
-  pending host futures, handler host-call limits, and policy-bundle loading.
+  manifests/gates (including exact MCP target matching), raw coroutine request
+  validation, cancellation/drop of pending host futures, handler host-call
+  limits, and policy-bundle loading.
 - The adversarial suite verifies the absence of ambient OS/file/package/debug
   authority, immutable globals, source/memory/interrupt containment, loop and
   recursion termination, failure recovery, deterministic declarations, and
