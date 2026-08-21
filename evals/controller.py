@@ -28,10 +28,10 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parent
 TASKS = ROOT / "tasks"
-TASK_SCHEMA = "pi-coding-eval-task/v0"
-BASELINE_SCHEMA = "pi-coding-eval-baselines/v0"
-RESULT_SCHEMA = "pi-coding-eval-result/v0"
-ADAPTER_SCHEMA = "pi-coding-eval-adapter/v0"
+TASK_SCHEMA = "tea-coding-eval-task/v0"
+BASELINE_SCHEMA = "tea-coding-eval-baselines/v0"
+RESULT_SCHEMA = "tea-coding-eval-result/v0"
+ADAPTER_SCHEMA = "tea-coding-eval-adapter/v0"
 # These are the complete adapter argv contract.  Identity values are passed explicitly so
 # adapters never infer them from temporary filenames or hard-code a single attempt.
 TOKENS = (
@@ -44,7 +44,7 @@ TOKENS = (
 )
 OPTIONAL_TOKENS = ("{controller_root}", "{controller_python}")
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-HOST_PI_EXECUTABLES = {"pi", "pi-agent", "pi-agent-core"}
+HOST_PI_EXECUTABLES = {"pi", "tea", "tea-core"}
 
 
 class ContractError(ValueError):
@@ -266,7 +266,7 @@ def materialize_workspace(task: dict[str, Any], parent: Path) -> Path:
     assert_no_symlink_ancestors(parent)
     parent.mkdir(parents=True, exist_ok=True)
     parent = parent.resolve()
-    root = Path(tempfile.mkdtemp(prefix=f"pi-eval-{task['task_id']}-", dir=parent))
+    root = Path(tempfile.mkdtemp(prefix=f"tea-eval-{task['task_id']}-", dir=parent))
     try:
         for item in task["initial_workspace"]:
             destination = workspace_child(root, item["path"])
@@ -460,8 +460,8 @@ def validate_provider_error(provider_error: Any) -> None:
 
 def validate_cost_report(cost: Any) -> None:
     """Validate optional, redacted provider accounting without pricing it locally."""
-    if not isinstance(cost, dict) or cost.get("schema_version") != "pi-eval-cost/v1":
-        raise ContractError("adapter result cost must be a pi-eval-cost/v1 object")
+    if not isinstance(cost, dict) or cost.get("schema_version") != "tea-eval-cost/v1":
+        raise ContractError("adapter result cost must be a tea-eval-cost/v1 object")
     if cost.get("currency") != "USD" or cost.get("pricing") != "provider_reported":
         raise ContractError("adapter result cost must be USD and provider_reported")
     turns = cost.get("turns")
@@ -494,7 +494,7 @@ def attempt_envelope(
     usage = result.get("usage") if isinstance(result, dict) else None
     cost = result.get("cost") if isinstance(result, dict) else None
     return {
-        "schema_version": "pi-coding-eval-attempt/v0",
+        "schema_version": "tea-coding-eval-attempt/v0",
         "attempt_id": attempt_id,
         "baseline_id": baseline["id"],
         "task_id": task["task_id"],
@@ -665,7 +665,7 @@ def execute_wave(
     records_by_index: dict[int, dict[str, Any]] = {}
     next_index, started, stopped = 0, 0, False
     futures: dict[Any, int] = {}
-    with ThreadPoolExecutor(max_workers=worker_limit, thread_name_prefix="pi-eval") as executor:
+    with ThreadPoolExecutor(max_workers=worker_limit, thread_name_prefix="tea-eval") as executor:
         def start_until_full() -> None:
             nonlocal next_index, started
             while not stopped and next_index < len(items) and len(futures) < worker_limit:
@@ -779,7 +779,7 @@ def paired_cost_comparison(summary: dict[str, Any]) -> dict[str, Any]:
         complete = complete and isinstance(cost, dict) and cost.get("incomplete_or_unreported_attempts") == 0 and totals[baseline_id] is not None
     upstream, rust = totals["upstream"], totals["rust"]
     return {
-        "schema_version": "pi-eval-cost-comparison/v1",
+        "schema_version": "tea-eval-cost-comparison/v1",
         "currency": "USD",
         "complete": complete,
         "upstream_total_usd": upstream,
@@ -824,7 +824,7 @@ def command_run(args: argparse.Namespace) -> int:
         wave_reports.append(wave_report)
     summary = summarize(records)
     report = {
-        "schema_version": "pi-coding-eval-report/v0",
+        "schema_version": "tea-coding-eval-report/v0",
         "records": records,
         "summary": summary,
         "provider_reported_cost_comparison": paired_cost_comparison(summary),

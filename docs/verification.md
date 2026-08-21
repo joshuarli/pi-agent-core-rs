@@ -17,9 +17,9 @@ git diff --check
 ```
 
 For a profile or contract change, also run the Rust fixture check in
-[`crates/pi-agent-core/fixtures/README.md`](../crates/pi-agent-core/fixtures/README.md)
+[`crates/tea-core/fixtures/README.md`](../crates/tea-core/fixtures/README.md)
 and the profile tests described in
-[`crates/pi-agent-core/profile/README.md`](../crates/pi-agent-core/profile/README.md).
+[`crates/tea-core/profile/README.md`](../crates/tea-core/profile/README.md).
 A new supported
 behavior requires a deterministic fixture before implementation.
 
@@ -64,7 +64,7 @@ provider-reported cache usage remains the authoritative hit/write measurement.
 
 ## Luau extension evidence
 
-- `pi-agent-luau` has unit and integration coverage for deterministic bundle
+- `tea-luau` has unit and integration coverage for deterministic bundle
   paths/hashes, closed relative imports and per-VM caches, typed capability
   manifests/gates (including exact MCP target matching), raw coroutine request
   validation, cancellation/drop of pending host futures, handler host-call
@@ -73,13 +73,13 @@ provider-reported cache usage remains the authoritative hit/write measurement.
   authority, immutable globals, source/memory/interrupt containment, loop and
   recursion termination, failure recovery, deterministic declarations, and
   two-policy isolation.
-- `cargo +nightly-2026-07-24 run -p pi-agent-luau --example
+- `cargo +nightly-2026-07-24 run -p tea-luau --example
   v1_luau_benchmark --release` records startup/teardown, hook, and 256-policy
   isolation costs without brittle timing thresholds.
 - The exact end-user and host contracts are in
   [`docs/luau-extensions.md`](luau-extensions.md). The lower-level source
   modules are `bundle`, `bundle_runtime`, `capability`, `async_runtime`, and
-  `tool_handler` in `pi-agent-luau`.
+  `tool_handler` in `tea-luau`.
 
 ## Runebench integration evidence
 

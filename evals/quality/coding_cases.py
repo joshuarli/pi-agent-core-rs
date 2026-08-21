@@ -243,7 +243,7 @@ def cache_bare_repository(repository: str, commit: str, cache_root: Path, *, pop
     # A clone only advertises normal branch/tag refs, not arbitrary loose/unreachable objects.
     # Keep a cache-private branch after verifying each allowed object so a detached
     # materialization can reliably obtain both independently shallow-pinned commits.
-    cache_ref = f"refs/heads/pi-agent-quality/{commit}"
+    cache_ref = f"refs/heads/tea-quality/{commit}"
     with _cache_lock(root / f"{key}.lock"):
         if bare.is_symlink():
             raise CodingCaseError("bare repository cache entry must not be a symlink")

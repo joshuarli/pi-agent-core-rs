@@ -20,7 +20,7 @@ class QualitySuiteTest(unittest.TestCase):
                 self.assertIn(turn["chunks"][-1]["kind"], {"done", "error"})
 
     def test_known_fixture_runs_through_the_rust_runner(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="pi-agent-quality-test-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="tea-quality-test-") as temporary:
             status, summary = run_fast(case_ids=["unknown-tool"], out=Path(temporary))
             self.assertEqual(status, 0, summary)
             self.assertEqual(summary["matches"], 1)

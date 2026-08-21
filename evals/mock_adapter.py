@@ -17,7 +17,7 @@ import sys
 from typing import Any
 
 
-RESULT_SCHEMA = "pi-coding-eval-result/v0"
+RESULT_SCHEMA = "tea-coding-eval-result/v0"
 
 
 def read_object(path: Path) -> dict[str, Any]:

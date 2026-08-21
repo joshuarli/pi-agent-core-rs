@@ -57,7 +57,7 @@ executor, which is a deliberate expansion of the low-level contract.
   fields to enforce result placement and settlement.
 - AgentSession, session events, compaction UI, extensions, and application
   tools belong to packages/coding-agent/src/core, not this microkernel. They
-  must not be copied into pi-agent-core; the TUI and Luau crates are explicit
+  must not be copied into tea-core; the TUI and Luau crates are explicit
   downstream hosts.
 
 When resyncing from upstream, first compare packages/agent/src/types.ts,

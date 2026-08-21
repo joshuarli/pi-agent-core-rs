@@ -541,50 +541,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "pi-agent-core"
-version = "0.1.0"
-dependencies = [
- "pi-agent-protocol",
- "pi-agent-trace",
- "rustybench",
- "smol",
- "ureq",
-]
-
-[[package]]
-name = "pi-agent-luau"
-version = "0.1.0"
-dependencies = [
- "mlua",
- "pi-agent-core",
- "pi-agent-protocol",
-]
-
-[[package]]
-name = "pi-agent-protocol"
-version = "0.1.0"
-dependencies = [
- "miniserde",
-]
-
-[[package]]
-name = "pi-agent-trace"
-version = "0.1.0"
-
-[[package]]
-name = "pi-agent-tui"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "hi-lite",
- "pi-agent-core",
- "pi-agent-luau",
- "pi-agent-protocol",
- "ptytest",
- "smol",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -862,6 +818,50 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "tea-agent"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "hi-lite",
+ "ptytest",
+ "smol",
+ "tea-core",
+ "tea-luau",
+ "tea-protocol",
+]
+
+[[package]]
+name = "tea-core"
+version = "0.1.0"
+dependencies = [
+ "rustybench",
+ "smol",
+ "tea-protocol",
+ "tea-trace",
+ "ureq",
+]
+
+[[package]]
+name = "tea-luau"
+version = "0.1.0"
+dependencies = [
+ "mlua",
+ "tea-core",
+ "tea-protocol",
+]
+
+[[package]]
+name = "tea-protocol"
+version = "0.1.0"
+dependencies = [
+ "miniserde",
+]
+
+[[package]]
+name = "tea-trace"
+version = "0.1.0"
 
 [[package]]
 name = "unicode-ident"

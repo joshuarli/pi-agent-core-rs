@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                 env_file=args.env_file,
                 case_ids=args.case or None,
             )
-            summary = {"schema_version": "pi-agent-quality-full-run/v1", "core": core_summary, "coding": coding_summary}
+            summary = {"schema_version": "tea-quality-full-run/v1", "core": core_summary, "coding": coding_summary}
             (args.out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             print(
                 f"quality full: core {core_summary['matches']}/{core_summary['case_count']} passed; "

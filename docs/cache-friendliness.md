@@ -9,7 +9,7 @@ Prompt cache behavior has two different evidence levels:
    only evidence treated as an actual provider cache hit or write. A proxy prefix must never be
    presented as a hit.
 
-The baseline fixture in `crates/pi-agent-core/tests/cache_friendliness.rs` drives three text
+The baseline fixture in `crates/tea-core/tests/cache_friendliness.rs` drives three text
 turns through the real run loop and prints the measurements. On the current pinned profile it
 reports a stable prompt domain and a 100% common context prefix for both adjacent turns:
 
@@ -28,7 +28,7 @@ uses the standalone summary prompt.
 Run the focused baseline with:
 
 ```bash
-cargo +nightly-2026-07-24 test -p pi-agent-core --test cache_friendliness -- --nocapture
+cargo +nightly-2026-07-24 test -p tea-core --test cache_friendliness -- --nocapture
 ```
 
 The measurement intentionally excludes provider-native envelopes and tokenizer-specific token

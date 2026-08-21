@@ -7,7 +7,7 @@ The maintained evaluation surfaces are under `evals/quality`:
 - `coding` is an explicit provider-opt-in check for the pinned Express cases.
 
 The core fixture corpus is owned by the crate at
-`crates/pi-agent-core/fixtures`. The quality harness lowers its declarative
+`crates/tea-core/fixtures`. The quality harness lowers its declarative
 case manifests to that fixture vocabulary and never invokes a host Pi
 executable, reads ambient configuration, or requires an upstream checkout.
 

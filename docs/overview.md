@@ -1,6 +1,6 @@
-# pi-agent-core-rs
+# tea
 
-`pi-agent-core-rs` is a small, headless Rust implementation of a pinned,
+`tea` is a small, headless Rust implementation of a pinned,
 useful subset of Pi's agent runtime. It is an execution microkernel, not a
 port of Pi's interactive application.
 
@@ -25,18 +25,18 @@ the Pi CLI or depends on an external runtime for verification.
   package/plugin discovery, provider implementation, or background runtime.
 - The checked-in nightly in `rust-toolchain.toml` is authoritative. Tokio is
   prohibited; applications commonly drive the core with Smol.
-- `pi-agent-protocol` uses Miniserde at the JSON boundary. Serde values are not
+- `tea-protocol` uses Miniserde at the JSON boundary. Serde values are not
   part of the public workspace contract.
 - The pinned Pi default coding profile is batteries-included but fully
   replaceable. Its workspace and all filesystem/process authority are explicit.
-- `pi-agent-luau` is optional. A pure Rust agent neither links nor constructs a
+- `tea-luau` is optional. A pure Rust agent neither links nor constructs a
   scripting VM.
 
 ## Crate direction
 
 ```text
-pi-agent-protocol <- pi-agent-core <- pi-agent-luau
-                   <- pi-agent-trace
+tea-protocol <- tea-core <- tea-luau
+                   <- tea-trace
 ```
 
 Arrows point from a dependency toward its dependent. The protocol provides
@@ -56,9 +56,9 @@ downstream optional layers.
   lifecycle, tools, policy, and verification layers.
 - [Runtime semantics](semantics.md) — observable lifecycle and cancellation
   contracts.
-- [Fixture format](../crates/pi-agent-core/fixtures/fixture-format.md) and
-  [Rust fixture guide](../crates/pi-agent-core/fixtures/README.md) — exact
-  behavioral fixtures and verification evidence owned by `pi-agent-core`.
+- [Fixture format](../crates/tea-core/fixtures/fixture-format.md) and
+  [Rust fixture guide](../crates/tea-core/fixtures/README.md) — exact
+  behavioral fixtures and verification evidence owned by `tea-core`.
 - [Default coding profile](default-coding-profile.md) — captured prompt, tools,
   operation adapters, and update procedure.
 - [HTTP/2 boundary](../HTTP2.md) — transport-version evidence and the future
@@ -69,12 +69,12 @@ downstream optional layers.
 - [Quality evaluation](quality-evaluation.md) — deterministic trace checks,
   three pinned Express tasks, fixture artifacts, and resource diagnostics.
 - [Tracing](trace.md) — optional trajectory observer boundary.
-- [Terminal host](tui.md) — `pi-agent` ownership boundaries, interaction
+- [Terminal host](tui.md) — `tea` ownership boundaries, interaction
   contract, and post-V0 direction.
 - [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
   bindings, coroutine-backed tools, limits, and review rules.
 
 The core-owned fixture harness has its own
-[guide](../crates/pi-agent-core/fixtures/README.md).
+[guide](../crates/tea-core/fixtures/README.md).
 The end-to-end coding evaluation controller is documented in
 [`evals/README.md`](../evals/README.md).

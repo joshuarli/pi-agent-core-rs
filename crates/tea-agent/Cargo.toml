@@ -1,0 +1,41 @@
+[package]
+name = "tea-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal interactive terminal host for tea-core"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "tea"
+path = "src/main.rs"
+
+[[bin]]
+name = "tea-headless"
+path = "src/bin/tea-headless.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Compiles the real-binary PTY regression harness and its local OpenRouter endpoint override.
+pty-harness = ["tea-core/provider-openrouter-test-support"]
+
+[dependencies]
+crossterm = { version = "=0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
+hi-lite = { path = "../../../hi-lite" }
+tea-core = { path = "../tea-core", features = [
+    "provider-commandcode",
+    "provider-openrouter",
+    "provider-local",
+] }
+tea-luau = { path = "../tea-luau" }
+tea-protocol = { path = "../tea-protocol" }
+smol = { workspace = true }
+
+[dev-dependencies]
+ptytest = { path = "../../../ptytest" }
+
+[[test]]
+name = "pty_streaming"
+path = "tests/pty_streaming.rs"
+required-features = ["pty-harness"]

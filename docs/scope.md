@@ -44,7 +44,7 @@ The following are deliberately in scope:
 | Compaction | Caller-supplied `Compactor` port, idle-only manual transaction, and opt-in typed automatic policy | No summary prompt or provider is invented; hosts supply capacity, reserve, tail, retry policy, and compactor |
 | Cancellation | Model, preparation, execution, hooks, queue waits, and between-turn cancellation | Terminal cleanup leaves the same agent reusable |
 | Hooks and queues | The selected `beforeToolCall`, `afterToolCall`, context, stop, next-turn, steering and follow-up semantics | Rust owns semantics; Luau adapters remain downstream policy |
-| Default profile | Pinned prompt template, active tool order, schemas, snippets, guidelines and standard-tool behavior | `pi-agent-core` owns `PiDefaultCodingProfile`; it is explicit and sterile profiles remain possible |
+| Default profile | Pinned prompt template, active tool order, schemas, snippets, guidelines and standard-tool behavior | `tea-core` owns `PiDefaultCodingProfile`; it is explicit and sterile profiles remain possible |
 | Trace boundary | Optional immutable event consumer, separate from state | Linear recording only; no session tree |
 
 The default profile is a capability bundle, not ambient authority. Its constructor takes an
@@ -78,7 +78,7 @@ semantics.
 | --- | --- | --- |
 | Mechanism | Rust agent FSM, context, stream handling, scheduling, queues, cancellation, settlement | Unchanged; Rust remains authoritative |
 | Policy | Statically supplied Rust hooks/tools and caller-owned adapters | Optional hermetic Luau policy attached downstream |
-| Runtime cost | No VM; pure Rust agent has no scripting cost | `pi-agent-luau` with `mlua`/Luau only when selected |
+| Runtime cost | No VM; pure Rust agent has no scripting cost | `tea-luau` with `mlua`/Luau only when selected |
 | Capabilities | Rust traits and explicit profile adapters | Host-controlled `@agent`, `@world`, `@trace`, `@task`, `@json`, `@time` modules |
 | Scheduling | Caller-owned Smol executor; no core-owned runtime/tasks | Luau coroutines yield to Rust futures on the same caller-owned executor |
 | Isolation | Rust API and explicit host capability boundary | Capability manifest, closed module resolver, VM/resource limits |
@@ -123,7 +123,7 @@ Status: supported | rejected | investigating
 Code target: crates/<crate>/<path>:<line>
 Observable behavior: <one sentence; include ordering or settlement>
 Boundary rationale: <why this boundary is correct>
-Fixture: crates/pi-agent-core/fixtures/declarative/<scenario>.json
+Fixture: crates/tea-core/fixtures/declarative/<scenario>.json
 Expected evidence: <canonical field or assertion>
 Normalization: none | timestamp | generated-id | duration (explain)
 Open question / exit criterion: <required only for investigating>

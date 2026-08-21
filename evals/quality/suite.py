@@ -25,9 +25,9 @@ from .trace import coerce_trace, extract_metrics
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_ROOT = Path(__file__).resolve().parent
 CASE_ROOT = QUALITY_ROOT / "cases"
-PROTOCOL = "pi-agent-quality-adapter/v0"
+PROTOCOL = "tea-quality-adapter/v0"
 RUST_ADAPTER = QUALITY_ROOT / "adapters" / "rust-core" / "adapter.py"
-QUALITY_SCHEMA = "pi-agent-quality-run/v1"
+QUALITY_SCHEMA = "tea-quality-run/v1"
 USAGE = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total_tokens": 0}
 
 
@@ -241,7 +241,7 @@ def compile_core_fixture(manifest: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     adapter_fixture = manifest.get("adapter_fixture")
-    if isinstance(adapter_fixture, str) and adapter_fixture.startswith("crates/pi-agent-core/fixtures/"):
+    if isinstance(adapter_fixture, str) and adapter_fixture.startswith("crates/tea-core/fixtures/"):
         return read_json(ROOT / adapter_fixture)
     if adapter_fixture != "generated":
         raise ContractError(f"case {manifest.get('id')!r} has no executable fixture mapping")
@@ -337,7 +337,7 @@ def run_adapter(adapter: str, fixture: Path) -> dict[str, Any]:
             "LC_ALL": "C",
             # This opt-in, runner-local diagnostic preserves request envelopes
             # without changing ordinary fixture golden output.
-            "PI_AGENT_QUALITY_CAPTURE": "1",
+            "TEA_QUALITY_CAPTURE": "1",
         },
         check=False,
     )
@@ -521,7 +521,7 @@ def run_core_case(manifest_path: Path, manifest: Mapping[str, Any], destination:
 def run_fast(*, case_ids: Iterable[str] | None = None, out: Path | None = None) -> tuple[int, dict[str, Any]]:
     cases = load_core_cases(case_ids)
     if out is None:
-        with tempfile.TemporaryDirectory(prefix="pi-agent-quality-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="tea-quality-") as temporary:
             return _run_cases(cases, Path(temporary))
     return _run_cases(cases, out)
 
@@ -551,7 +551,7 @@ def inspect_environment() -> dict[str, Any]:
     """Return an explicit, side-effect-free audit of the evaluation surfaces."""
 
     return {
-        "schema_version": "pi-agent-quality-environment/v1",
+        "schema_version": "tea-quality-environment/v1",
         "core": {
             "rust": {
                 "adapter": str(RUST_ADAPTER.relative_to(ROOT)),
@@ -563,12 +563,12 @@ def inspect_environment() -> dict[str, Any]:
         },
         "resource_measurement": {
             "peak_rss": "Rust adapter process via platform time utility when available",
-            "rust_allocations": "rustybench AllocProfiler benchmark at crates/pi-agent-core/benches/quality_memory.rs",
+            "rust_allocations": "rustybench AllocProfiler benchmark at crates/tea-core/benches/quality_memory.rs",
             "fixture_gate": False,
         },
         "coding": {
             "rust": {
-                "adapter": "crates/pi-agent-core/src/bin/pi-agent-eval.rs",
+                "adapter": "crates/tea-core/src/bin/tea-eval.rs",
                 "runtime": "smol",
                 "ambient_discovery": False,
                 "provider": "explicit opt-in through an adapter-only env source boundary",
@@ -591,7 +591,7 @@ def run_rust_allocation_probe(out: Path | None = None) -> dict[str, Any]:
         "+nightly-2026-07-24",
         "bench",
         "-p",
-        "pi-agent-core",
+        "tea-core",
         "--bench",
         "quality_memory",
         "--",
@@ -630,7 +630,7 @@ def run_rust_allocation_probe(out: Path | None = None) -> dict[str, Any]:
             "Rustybench allocation probe failed: " + (completed.stderr.strip() or completed.stdout.strip())
         )
     result = {
-        "schema_version": "pi-agent-quality-resource/v1",
+        "schema_version": "tea-quality-resource/v1",
         "probe": "rust-one-text-turn",
         "allocator": "rustybench::AllocProfiler::system",
         "benchmark": parsed,

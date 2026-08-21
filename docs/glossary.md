@@ -1,6 +1,6 @@
 # Glossary
 
-This is the repository-wide vocabulary for pi-agent-core-rs. Terms in this
+This is the repository-wide vocabulary for tea. Terms in this
 document describe ownership and observable contracts, not implementation
 convenience. The exact upstream name mapping for the low-level agent package is
 in [core terminology](core-terminology.md).
@@ -9,7 +9,7 @@ in [core terminology](core-terminology.md).
 
 **Agent** — The durable state owner. An Agent owns the transcript, model
 configuration, registered tools, explicit queues, and one-or-zero active runs.
-The Rust target is pi_agent_core::Agent.
+The Rust target is tea_core::Agent.
 
 **Run** — One prompt or continue invocation together with all model turns, tool
 work, queue drains, observers, cancellation, and terminal settlement caused by
@@ -156,27 +156,27 @@ public contract. The Rust type is state::SerializedJson.
 
 ## Repository layers
 
-**Core** — crates/pi-agent-core: state machine, scheduling, cancellation,
+**Core** — crates/tea-core: state machine, scheduling, cancellation,
 hooks, queues, tool validation, provider port, and optional adapter modules.
 
-**Protocol** — crates/pi-agent-protocol: stable JSON-native values and
+**Protocol** — crates/tea-protocol: stable JSON-native values and
 wire-level data types. It does not own Agent state or scheduling.
 
 **Default coding tools** — The explicit tools/ implementation under
-crates/pi-agent-core/src, exposed through the compatibility facade
+crates/tea-core/src, exposed through the compatibility facade
 default_tools.rs. Workspace/process authority arrives through operation traits.
 
 **Provider adapter** — An opt-in concrete transport under
-crates/pi-agent-core/src/provider. It must preserve the generic ModelProvider
+crates/tea-core/src/provider. It must preserve the generic ModelProvider
 contract and must not move provider authority into the core.
 
-**Luau policy layer** — crates/pi-agent-luau: optional hermetic policy,
+**Luau policy layer** — crates/tea-luau: optional hermetic policy,
 capability manifests, and tool handlers. It is downstream of the core.
 
-**Trace layer** — crates/pi-agent-trace: an optional immutable event consumer
+**Trace layer** — crates/tea-trace: an optional immutable event consumer
 that records redacted trajectory data. It does not mutate Agent state.
 
-**Terminal host** — crates/pi-agent-tui: the repository-owned pi-agent host.
+**Terminal host** — crates/tea-agent: the repository-owned tea host.
 It is an application layer, not part of the headless core.
 
 **Parity fixture** — A deterministic scenario describing setup, provider

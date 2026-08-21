@@ -1,14 +1,14 @@
 # Core trace adapter
 
-The optional `pi-agent-core/trace` feature connects the core's awaited
-`EventObserver` boundary to the dependency-free `pi-agent-trace` contract:
+The optional `tea-core/trace` feature connects the core's awaited
+`EventObserver` boundary to the dependency-free `tea-trace` contract:
 
 ```text
 AgentEvent reducer → TraceObserver → RedactingSink → caller TraceSink
 ```
 
-Construct `pi_agent_core::trace::TraceObserver` with a host-owned episode ID
-and a `pi-agent-trace::TraceSink`, then register it on the agent builder with
+Construct `tea_core::trace::TraceObserver` with a host-owned episode ID
+and a `tea-trace::TraceSink`, then register it on the agent builder with
 `.observer(Arc::new(observer))`. The adapter emits an
 `EpisodeHeader` at `AgentStart`, a compact `Turn` at each `TurnEnd`, a `Tool`
 at each settled tool execution, and an `EpisodeEnd` at `AgentEnd`.
@@ -22,21 +22,21 @@ observer can apply its redaction policy while the arguments are still an
 explicit boundary value.
 
 `Tool.input` is not itself redacted. Wrap the sink in
-`pi_agent_trace::RedactingSink` (or perform equivalent policy in a host
+`tea_trace::RedactingSink` (or perform equivalent policy in a host
 observer) before persisting or forwarding it. The core never guesses which
 argument fields are sensitive and never stores a second hidden copy.
 
 Tracing is best effort. `TraceObserver` wraps the sink in
-`pi_agent_trace::IsolatedSink`; `failed_events()` reports dropped records while
+`tea_trace::IsolatedSink`; `failed_events()` reports dropped records while
 the agent run continues with the same state and result. To redact prompts or
-tool content, wrap the sink in `pi_agent_trace::RedactingSink` before passing it
+tool content, wrap the sink in `tea_trace::RedactingSink` before passing it
 to the observer.
 
 The adapter is intentionally synchronous at the observer boundary. Sink work
 must remain bounded and must not call back into the agent. It creates no task,
 thread, executor, clock, session tree, or persistence policy.
 
-`pi-agent-trace` supplies explicit writer adapters for the two V0 encodings:
+`tea-trace` supplies explicit writer adapters for the two V0 encodings:
 `JsonLinesSink<W>` writes one stable, escaped JSON record per line, and
 `CborSink<W>` writes a concatenated sequence of definite-length CBOR maps.
 Both accept an already-open caller-owned `Write`; neither opens a path or

@@ -1,5 +1,5 @@
 {
-  "schema_version": "pi-coding-eval-task/v0",
+  "schema_version": "tea-coding-eval-task/v0",
   "task_id": "interval-merge-v0",
   "task_version": 2,
   "kind": "coding",

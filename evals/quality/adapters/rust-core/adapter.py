@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JSON adapter for the Rust pi-agent-fixtures executable.
+"""JSON adapter for the Rust tea-fixtures executable.
 
 The adapter owns process setup only.  The Rust executable remains the
 implementation of fixture parsing, execution, and canonical normalization.
@@ -16,7 +16,7 @@ import sys
 from typing import Any
 
 
-PROTOCOL = "pi-agent-quality-adapter/v0"
+PROTOCOL = "tea-quality-adapter/v0"
 ADAPTER = "rust-core"
 TOOLCHAIN = "nightly-2026-07-24"
 
@@ -76,7 +76,7 @@ def check_toolchain(root: Path) -> None:
 
 
 def run_runner(root: Path, fixture: Path) -> tuple[int, Any]:
-    runner = root / "crates" / "pi-agent-core" / "src" / "bin" / "pi-agent-fixtures.rs"
+    runner = root / "crates" / "tea-core" / "src" / "bin" / "tea-fixtures.rs"
     if not runner.is_file():
         raise ContractError(f"missing Rust fixture runner source: {runner}")
     check_toolchain(root)
@@ -87,11 +87,11 @@ def run_runner(root: Path, fixture: Path) -> tuple[int, Any]:
             "run",
             "--quiet",
             "-p",
-            "pi-agent-core",
+            "tea-core",
             "--features",
             "fixture-runner",
             "--bin",
-            "pi-agent-fixtures",
+            "tea-fixtures",
             "--",
             str(fixture),
         ],
@@ -125,8 +125,8 @@ def main() -> int:
             "protocol": PROTOCOL,
             "adapter": ADAPTER,
             "metadata": {
-                "crate": "pi-agent-core",
-                "runner": "crates/pi-agent-core/src/bin/pi-agent-fixtures.rs",
+                "crate": "tea-core",
+                "runner": "crates/tea-core/src/bin/tea-fixtures.rs",
                 "toolchain": TOOLCHAIN,
                 "fixture_sha256": hashlib.sha256(input_fixture.read_bytes()).hexdigest(),
                 "tui": False,

@@ -8,26 +8,26 @@ the core state machine.
 ## Crate boundaries
 
 ```text
-pi-agent-protocol  -> serializable model/message/tool/event/error values
+tea-protocol  -> serializable model/message/tool/event/error values
         ^
         |
-pi-agent-core      -> Agent state, Run lifecycle, loop, queues, hooks, tool scheduler
+tea-core      -> Agent state, Run lifecycle, loop, queues, hooks, tool scheduler
         |
-        +--> pi-agent-trace   (optional immutable event consumer)
+        +--> tea-trace   (optional immutable event consumer)
         |
-        +--> pi-agent-luau    (optional policy adapter; depends on core only)
+        +--> tea-luau    (optional policy adapter; depends on core only)
 ```
 
 The workspace crates are:
 
 | Crate | Owns | Must not own |
 | --- | --- | --- |
-| `pi-agent-protocol` | `ModelDescriptor`, messages/content, tool definitions/results, events, usage, stop reasons, typed wire errors | Scheduler state, provider SDKs, Luau types, filesystem APIs |
-| `pi-agent-core` | Agent FSM, one-active-run ownership, context conversion boundary, model stream trait, tool validation/scheduling, hooks/queues, cancellation and settlement | HTTP/provider implementations, cwd/home/config discovery, sessions, TUI, VM/runtime, Tokio executor |
-| `pi-agent-trace` | Immutable event-to-linear-episode recorder, redaction and caller-selected JSONL/CBOR sinks | Agent state, session tree, replay mutations, sink-driven behavior |
-| `pi-agent-luau` (optional policy) | Hermetic VM, capability manifest/modules, policy hooks/tools, script error/limit translation | Core lifecycle/state/scheduling, ambient OS authority, event-loop ownership |
+| `tea-protocol` | `ModelDescriptor`, messages/content, tool definitions/results, events, usage, stop reasons, typed wire errors | Scheduler state, provider SDKs, Luau types, filesystem APIs |
+| `tea-core` | Agent FSM, one-active-run ownership, context conversion boundary, model stream trait, tool validation/scheduling, hooks/queues, cancellation and settlement | HTTP/provider implementations, cwd/home/config discovery, sessions, TUI, VM/runtime, Tokio executor |
+| `tea-trace` | Immutable event-to-linear-episode recorder, redaction and caller-selected JSONL/CBOR sinks | Agent state, session tree, replay mutations, sink-driven behavior |
+| `tea-luau` (optional policy) | Hermetic VM, capability manifest/modules, policy hooks/tools, script error/limit translation | Core lifecycle/state/scheduling, ambient OS authority, event-loop ownership |
 
-`PiDefaultCodingProfile` is owned by `pi-agent-core` alongside the explicit profile/tool adapters.
+`PiDefaultCodingProfile` is owned by `tea-core` alongside the explicit profile/tool adapters.
 The profile implementation and its checked-in capture depend only on the core/protocol boundaries
 and caller-provided operation traits. It must not import the selected contract or make external
 source a runtime dependency. Hosts still own operation implementations and may supply a sterile
@@ -70,7 +70,7 @@ and numeric bounds); unsupported draft-specific keywords are rejected as invalid
 rather than ignored. A tool receives a call ID, validated JSON, cancellation, and an update sink.
 Standard coding tools are ordinary tools behind explicit profile operation ports.
 
-The optional `pi_agent_core::provider` module is a separate adapter layer behind explicit Cargo
+The optional `tea_core::provider` module is a separate adapter layer behind explicit Cargo
 features. `provider-openrouter`, `provider-commandcode`, and `provider-local` are opt-in native
 rustls HTTP transports with caller-supplied keys and no ambient configuration discovery; the
 evaluation runner selects one only through its explicit provider argument. They do not change the
@@ -234,7 +234,7 @@ specified in `docs/default-coding-profile.md`.
 
 ## Tracing boundary
 
-`pi-agent-trace` consumes immutable typed events after the core reducer. It records a linear
+`tea-trace` consumes immutable typed events after the core reducer. It records a linear
 episode, not a Pi session tree. Redaction is selected by the caller for prompts/tool content;
 trace sink failure is reported separately and cannot change the agent result. No trace, JSONL and
 CBOR runs must have identical core behavior.
@@ -251,8 +251,8 @@ Policy: protocol <- core <- luau adapter -> mlua/Luau VM
                                     +-> host capability manifest/world/task/trace ports
 ```
 
-`pi-agent-core` must compile and operate without `mlua`, Luau, world APIs, scripting types, Node,
-TypeScript, `napi-rs`, `pi-ai`, or a provider implementation. `pi-agent-luau` may depend on core;
+`tea-core` must compile and operate without `mlua`, Luau, world APIs, scripting types, Node,
+TypeScript, `napi-rs`, `pi-ai`, or a provider implementation. `tea-luau` may depend on core;
 core must not depend on it. Luau module resolution is host-controlled and closed, with no ambient
 filesystem, process, environment, network, home, cwd, clock, FFI, package registry, native plugin,
 or OS-command authority.
@@ -268,9 +268,9 @@ These contract-bearing choices are settled by fixtures and dependency review:
 | Drop unfinished run policy | `tests::agent_allows_one_run_and_drop_settles_cancellation` |
 | Manual compaction transaction, replacement validation, and cancellation | `tests/compaction.rs` |
 | Cancellation token implementation without Tokio | dependency review + `cancel/checkpoints` |
-| Mixed per-tool sequential override behavior | `crates/pi-agent-core/fixtures/declarative/mixed-tool-execution.json` |
-| Canonical JSON Schema serialization/hash | `crates/pi-agent-core/profile/default-profile.json` and profile tests |
-| Exact generated default prompt bytes/hash and workspace substitution | `crates/pi-agent-core/profile/default-profile.json` |
+| Mixed per-tool sequential override behavior | `crates/tea-core/fixtures/declarative/mixed-tool-execution.json` |
+| Canonical JSON Schema serialization/hash | `crates/tea-core/profile/default-profile.json` and profile tests |
+| Exact generated default prompt bytes/hash and workspace substitution | `crates/tea-core/profile/default-profile.json` |
 | Typed error hierarchy and failure-to-event mapping | `failure/provider-error`, `cancel/failure-shapes` |
 
 No change may introduce an undocumented fallback. A newly unresolved behavior

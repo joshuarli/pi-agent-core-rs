@@ -1,0 +1,53 @@
+[package]
+name = "tea-core"
+version = "0.1.0"
+edition = "2021"
+description = "Nightly Rust state-machine kernel for the Tea runtime"
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+fixture-runner = ["dep:smol"]
+provider-commandcode = ["dep:ureq"]
+provider-openrouter = ["dep:ureq"]
+# Test-only endpoint injection for an offline HTTP/1.1 OpenRouter fixture. This feature is never
+# enabled by the production TUI build.
+provider-openrouter-test-support = ["provider-openrouter"]
+provider-local = ["dep:ureq"]
+eval-runner = ["dep:smol", "provider-commandcode", "provider-openrouter"]
+trace = ["dep:tea-trace"]
+
+[dependencies]
+tea-protocol = { path = "../tea-protocol" }
+tea-trace = { path = "../tea-trace", optional = true }
+smol = { workspace = true, optional = true }
+ureq = {
+    version = "=3.4.0",
+    default-features = false,
+    features = ["rustls"],
+    optional = true,
+}
+
+[dev-dependencies]
+smol = { workspace = true }
+# Quality-only allocation profiling. This is the same `AllocProfiler::system()`
+# global-allocator pattern used by the local `e` project; it is never linked
+# into the core library or production adapters.
+rustybench = "=0.1.0"
+
+[[bin]]
+name = "tea-fixtures"
+path = "src/bin/tea-fixtures.rs"
+required-features = ["fixture-runner"]
+
+[[bin]]
+name = "tea-eval"
+path = "src/bin/tea-eval.rs"
+required-features = ["eval-runner"]
+
+[[bench]]
+name = "quality_memory"
+harness = false

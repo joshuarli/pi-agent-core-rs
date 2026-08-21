@@ -1,12 +1,6 @@
-# pi-agent-core-rs
+# tea - token elicitation arts
 
-This repository is a headless Rust agent execution microkernel with a pinned
-Pi default coding profile. It is not Pi's CLI, session system, or an ambient
-project configuration layer; it also contains a small, repository-owned
-terminal host in `crates/pi-agent-tui`. Rust owns mechanism; optional Luau owns
-policy; embeddings own model transport and world capabilities. The pinned
-`PiDefaultCodingProfile` and its capture are owned by `crates/pi-agent-core`;
-hosts own operation adapters and may supply a sterile profile.
+minimal extensible agent harness
 
 Start with [docs/overview.md](docs/overview.md). The main routes are:
 
@@ -19,11 +13,11 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
   [provider adapters](docs/provider-adapters.md) for optional runtime layers.
 - [Tracing](docs/trace.md) and [Luau extensions](docs/luau-extensions.md) for
   optional observability and policy layers.
-- [Terminal host](docs/tui.md) for the repository-owned `pi-agent` TUI.
+- [Terminal host](docs/tui.md) for the repository-owned `tea` TUI.
 - [Quality evaluation](docs/quality-evaluation.md) and
   [verification](docs/verification.md) for compatibility and quality evidence.
-- [fixture format](crates/pi-agent-core/fixtures/fixture-format.md) and
-  [fixture guide](crates/pi-agent-core/fixtures/README.md)
+- [fixture format](crates/tea-core/fixtures/fixture-format.md) and
+  [fixture guide](crates/tea-core/fixtures/README.md)
   for fixture-based compatibility work.
 - [Luau extensions](docs/luau-extensions.md) for the optional capability-scoped
   policy plane.
@@ -36,8 +30,6 @@ Start with [docs/overview.md](docs/overview.md). The main routes are:
   without user approval or hide a fallback that changes semantics.
 - For bugs, add the smallest isolated failing regression test first, then fix
   the root cause and retain the test.
-- Start with focused evidence, then broaden checks. Use the pinned nightly in
-  `rust-toolchain.toml`; stable Rust and Tokio are not supported.
-- Keep core executor- and provider-agnostic. No Pi CLI, sessions, ambient
-  discovery, `$HOME` access, or world authority belongs in the core.
-- Do not run pre-commit hooks or push. Preserve unrelated worktree changes.
+- Start with focused evidence, then broaden checks.
+- Keep core executor- and provider-agnostic.
+

@@ -1,8 +1,8 @@
-# `pi-agent` terminal host
+# `tea` terminal host
 
-`pi-agent` is the small interactive terminal host in
-[`crates/pi-agent-tui`](../crates/pi-agent-tui). It is a control surface,
-projection, and explicitly bounded linear-session host for `pi-agent-core`, not
+`tea` is the small interactive terminal host in
+[`crates/tea-agent`](../crates/tea-agent). It is a control surface,
+projection, and explicitly bounded linear-session host for `tea-core`, not
 a second agent runtime or an ambient Pi installation.
 
 The core continues to own conversation state, model streaming, tool scheduling,
@@ -39,10 +39,10 @@ overlays.
 The command line is deliberately narrow:
 
 ```text
-pi-agent [--provider <id>] [--model <id>] [--local-base-url <url>]
+tea [--provider <id>] [--model <id>] [--local-base-url <url>]
          [--local-context-window <tokens>] [--cwd <path>] [--phi-home <path>]
-pi-agent [-h | --help]
-pi-agent --provider <id> --model <id> [--thinking <level>] -p <message>
+tea [-h | --help]
+tea --provider <id> --model <id> [--thinking <level>] -p <message>
 ```
 
 `-h` and `--help` print the usage text and exit without starting the
@@ -105,8 +105,8 @@ historical core events.
 ## Phi extension home
 
 The terminal host resolves `~/.phi` only at its application boundary; use
-`--phi-home <path>` to select another root. Neither `pi-agent-core` nor
-`pi-agent-luau` discovers a home directory. A missing `extensions.json` is an
+`--phi-home <path>` to select another root. Neither `tea-core` nor
+`tea-luau` discovers a home directory. A missing `extensions.json` is an
 empty registry. Otherwise, its `extensions` array is the authoritative load
 order:
 
@@ -135,7 +135,7 @@ A failed reload retains the previous prompt, tool registry, and hook snapshot.
 
 For a reproducible provider check without terminal state, use the headless
 probe. It assembles the same default profile and OpenAI-compatible context
-hook as `pi-agent`, then drives one OpenRouter prompt and prints the assistant
+hook as `tea`, then drives one OpenRouter prompt and prints the assistant
 text. It deliberately does not load Phi extensions, so an operator's
 `~/.phi` sources cannot change the provider smoke check. The probe does not
 read `.env`; source that file explicitly at the shell boundary:
@@ -157,7 +157,7 @@ Select it explicitly with `--provider local`; the default model is
 `http://127.0.0.1:8000/v1`:
 
 ```bash
-cargo run -p pi-agent-tui --bin pi-agent -- --provider local --model Laguna-XS-2.1-5bit
+cargo run -p tea-agent --bin tea -- --provider local --model Laguna-XS-2.1-5bit
 ```
 
 For a nonstandard oMLX port, pass `--local-base-url`, for example
@@ -249,7 +249,7 @@ failed flush must invalidate the previous frame so the next draw repaints it.
 Unicode width support is admitted only after a focused rendering/cursor test
 demonstrates that scalar-count placement is insufficient.
 
-The mandatory streaming regression runs the compiled `pi-agent` binary inside
+The mandatory streaming regression runs the compiled `tea` binary inside
 a native PTY against a loopback HTTP/1.1 OpenRouter fixture. It submits input
 through the PTY, holds the response body after its first SSE text record, and
 uses a virtual VT100 screen to assert that first text is already visible. The
@@ -332,7 +332,7 @@ unavailable; the TUI does not guess a context budget.
 
 ## Dependency and architecture discipline
 
-The application owns a Smol executor while `pi-agent-core` remains
+The application owns a Smol executor while `tea-core` remains
 executor-agnostic and Tokio-free. It uses direct Crossterm synchronous events
 and direct rendering, not Ratatui or another widget/terminal abstraction. The
 CLI uses `std::env::args_os()` rather than Clap, and local typed errors rather

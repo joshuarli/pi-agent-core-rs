@@ -1,7 +1,7 @@
 # Writing Luau extensions
 
-`pi-agent-luau` is an optional, hermetic policy plane for
-`pi-agent-core-rs`. It is for task- and world-specific policy, not a second
+`tea-luau` is an optional, hermetic policy plane for
+`tea`. It is for task- and world-specific policy, not a second
 agent runtime: Rust retains control of model transport, the state machine,
 tool scheduler, cancellations, tracing, resource ownership, and every side
 effect. That includes schema validation, preparation, scheduling, updates,
@@ -183,14 +183,14 @@ for model-visible effects.
 ## Phi minimal extension host
 
 The minimal Phi host is an embedding convention around this crate, not an
-ambient resource layer in `pi-agent-luau`. Phi may own a user-facing
+ambient resource layer in `tea-luau`. Phi may own a user-facing
 extension registry, but Rust still receives explicit source records, a closed
 bundle, and explicit capability bindings.
 
 ### Host-only `~/.phi` ownership
 
 `~/.phi` belongs to the Phi host if that host elects to use it. The core,
-`pi-agent-luau`, and a policy VM must never discover, read, write, watch, or
+`tea-luau`, and a policy VM must never discover, read, write, watch, or
 interpret that directory. A host may choose a different root, an in-memory
 registry, or no persistent registry at all. Path permissions, file formats,
 symlink handling, atomic writes, and user approval are host responsibilities.

@@ -28,7 +28,7 @@ class CodingCasesTest(unittest.TestCase):
 
     def test_scoring_requires_a_prepopulated_bare_cache(self) -> None:
         case = load_cases()[0]
-        with tempfile.TemporaryDirectory(prefix="pi-agent-quality-cache-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="tea-quality-cache-") as temporary:
             with self.assertRaises(CodingCaseError):
                 cache_bare_repository(case["baseline"]["repository"], case["baseline"]["commit"], Path(temporary))
 
@@ -36,7 +36,7 @@ class CodingCasesTest(unittest.TestCase):
         case = load_cases()[0]
         repository = case["baseline"]["repository"]
         commit = case["baseline"]["commit"]
-        with tempfile.TemporaryDirectory(prefix="pi-agent-quality-cache-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="tea-quality-cache-") as temporary:
             root = Path(temporary)
             key = coding_cases.hashlib.sha256(repository.encode()).hexdigest()[:32]
             bare = root / "bare" / f"{key}.git"
@@ -48,7 +48,7 @@ class CodingCasesTest(unittest.TestCase):
                     "--git-dir",
                     str(bare.resolve()),
                     "update-ref",
-                    f"refs/heads/pi-agent-quality/{commit}",
+                    f"refs/heads/tea-quality/{commit}",
                     commit,
                 ),
                 git.call_args_list,

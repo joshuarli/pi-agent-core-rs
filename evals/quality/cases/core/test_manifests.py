@@ -58,7 +58,7 @@ class CoreCaseManifestTest(unittest.TestCase):
             self.assertIn("adapter_fixture", manifest, case_id)
 
             mapping = manifest["adapter_fixture"]
-            if mapping.startswith("crates/pi-agent-core/fixtures/"):
+            if mapping.startswith("crates/tea-core/fixtures/"):
                 self.assertTrue((ROOT.parents[3] / mapping).is_file(), mapping)
             elif manifest.get("status") == "excluded":
                 self.assertEqual(mapping, "excluded", case_id)

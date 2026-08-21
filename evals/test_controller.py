@@ -34,7 +34,7 @@ class ControllerContractTests(unittest.TestCase):
 
     def test_interval_task_declares_the_exact_active_profile_tool_schemas(self) -> None:
         task = controller.load_tasks(controller.TASKS)[0]
-        profile = controller.read_json(controller.ROOT.parent / "crates" / "pi-agent-core" / "profile" / "default-profile.json")
+        profile = controller.read_json(controller.ROOT.parent / "crates" / "tea-core" / "profile" / "default-profile.json")
         task_schemas = {capability["name"]: capability["schema"] for capability in task["capabilities"]}
         profile_schemas = {tool["name"]: tool["parameters"] for tool in profile["active_tools"]}
         self.assertEqual(task_schemas, profile_schemas)
@@ -138,7 +138,7 @@ class ControllerContractTests(unittest.TestCase):
         baseline["command"] = [
             sys.executable,
             "-c",
-            "import json,sys; json.dump(dict(schema_version='pi-coding-eval-result/v0', attempt_id=sys.argv[2], baseline_id=sys.argv[3], terminal=dict(status='completed'), final_text='READY', turns=0, tool_calls=0, usage=dict(input=0, output=0, cache_read=0, cache_write=0), trace=[]), open(sys.argv[1], 'w'))",
+            "import json,sys; json.dump(dict(schema_version='tea-coding-eval-result/v0', attempt_id=sys.argv[2], baseline_id=sys.argv[3], terminal=dict(status='completed'), final_text='READY', turns=0, tool_calls=0, usage=dict(input=0, output=0, cache_read=0, cache_write=0), trace=[]), open(sys.argv[1], 'w'))",
             "{result_json}",
             "{attempt_id}",
             "{baseline_id}",

@@ -1,8 +1,8 @@
 # PTY integration tests
 
-`crates/pi-agent-tui/tests/pty_streaming.rs` drives the compiled TUI through
+`crates/tea-agent/tests/pty_streaming.rs` drives the compiled TUI through
 `ptytest`; the offline OpenRouter fixture remains application-specific. Run it
-with `cargo test -p pi-agent-tui --features pty-harness --test pty_streaming`.
+with `cargo test -p tea-agent --features pty-harness --test pty_streaming`.
 
 The test uses a hermetic environment, an audited `xterm-minimal-v1` profile,
 and semantic screen barriers for startup, the first streamed token, completion,

@@ -1,7 +1,7 @@
 # `rust-core` quality adapter
 
 This executable is a thin JSON process boundary around the existing
-[`pi-agent-fixtures`](../../../../crates/pi-agent-core/src/bin/pi-agent-fixtures.rs)
+[`tea-fixtures`](../../../../crates/tea-core/src/bin/tea-fixtures.rs)
 binary. It uses the repository's pinned `nightly-2026-07-24` toolchain and
 does not instantiate a TUI, provider, policy runtime, or ambient workspace
 capability.
@@ -9,7 +9,7 @@ capability.
 `adapter.py` reads one JSON request from stdin:
 
 ```json
-{"protocol":"pi-agent-quality-adapter/v0","operation":"run","fixture":"crates/pi-agent-core/fixtures/declarative/single-turn-text.json"}
+{"protocol":"tea-quality-adapter/v0","operation":"run","fixture":"crates/tea-core/fixtures/declarative/single-turn-text.json"}
 ```
 
 `fixture` is required and is resolved relative to the repository root when it
@@ -26,6 +26,6 @@ result; status `2` means the request or runner contract was invalid.
 Example:
 
 ```sh
-printf '%s\n' '{"fixture":"crates/pi-agent-core/fixtures/declarative/single-turn-text.json"}' |
+printf '%s\n' '{"fixture":"crates/tea-core/fixtures/declarative/single-turn-text.json"}' |
   evals/quality/adapters/rust-core/adapter.py
 ```

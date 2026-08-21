@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/pi-agent-core",
-    "crates/pi-agent-tui",
-    "crates/pi-agent-luau",
-    "crates/pi-agent-protocol",
-    "crates/pi-agent-trace",
+    "crates/tea-core",
+    "crates/tea-agent",
+    "crates/tea-luau",
+    "crates/tea-protocol",
+    "crates/tea-trace",
 ]
 
 # Crate manifests own their dependencies. The runtime policy is executor-

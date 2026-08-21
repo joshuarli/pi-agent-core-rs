@@ -15,7 +15,7 @@
   "contract": {
     "kind": "rust_fixture_runner"
   },
-  "adapter_fixture": "crates/pi-agent-core/fixtures/declarative/unknown-tool-continues.json",
+  "adapter_fixture": "crates/tea-core/fixtures/declarative/unknown-tool-continues.json",
   "execution": {
     "deterministic": true,
     "network": false,

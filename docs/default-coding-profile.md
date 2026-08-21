@@ -28,7 +28,7 @@ The profile may be omitted entirely. A sterile profile can provide no tools and 
 replace `read`, `bash`, `edit`, `write`, `grep`, `find`, or `ls` independently. The runtime never
 knows whether an operation is local, remote, sandboxed, logged, denied, or virtual.
 
-The executable V0 factories live in `pi_agent_core::default_tools::DefaultCodingTools`. Constructing
+The executable V0 factories live in `tea_core::default_tools::DefaultCodingTools`. Constructing
 one requires an existing workspace directory; the constructor canonicalizes that directory and
 every operation rejects lexical, canonical, and symlink escapes. `coding_tools()` returns the
 captured active order (`read`, `bash`, `edit`, `write`), `all_tools()` returns all seven pinned
@@ -58,7 +58,7 @@ checkout.
 
 The generated-prompt hash is a separate fixture value. Never substitute a source-file hash for a
 generated prompt hash. The checked-in canonical fixture
-[`crates/pi-agent-core/profile/default-profile.json`](../crates/pi-agent-core/profile/default-profile.json) has fixed
+[`crates/tea-core/profile/default-profile.json`](../crates/tea-core/profile/default-profile.json) has fixed
 workspace/documentation inputs and currently records prompt SHA-256
 `856e7855dcf14420a8433611a65c55427f1fe4dfa614780dfaea2e06331b3d3e`.
 
@@ -215,9 +215,9 @@ the fixture manifest. It must not recreate Pi's session/resource discovery as a 
 
 ## Profile behavior fixtures
 
-These profile fixture IDs are owned by `pi-agent-core`; the canonical capture is
-`crates/pi-agent-core/profile/default-profile.json`, and the provider-free Rust
-runner is `crates/pi-agent-core/fixtures/run.sh`.
+These profile fixture IDs are owned by `tea-core`; the canonical capture is
+`crates/tea-core/profile/default-profile.json`, and the provider-free Rust
+runner is `crates/tea-core/fixtures/run.sh`.
 
 ```text
 profile/default-prompt             byte prompt + active order + snippets/guidelines
@@ -239,7 +239,7 @@ the repository cwd, credentials, sessions, or a live provider. The Rust factorie
 virtual in-memory operation adapters and never consult a live Pi installation or invoke Pi.
 
 The executable factory smoke/evidence suite is
-[`crates/pi-agent-core/tests/default_tools_behavior.rs`](../crates/pi-agent-core/tests/default_tools_behavior.rs).
+[`crates/tea-core/tests/default_tools_behavior.rs`](../crates/tea-core/tests/default_tools_behavior.rs).
 It creates a unique temporary workspace per test and covers successful calls, invalid arguments
 that must stop before host dispatch, and explicit host-operation failures for all seven standard
 tools. The test also locks in head truncation for `read`, explicit empty-success output for
@@ -247,7 +247,7 @@ tools. The test also locks in head truncation for `read`, explicit empty-success
 declarative core runner fixtures: it verifies the Rust factories' concrete capability boundary
 without consulting a live Pi installation or the repository workspace.
 
-The Rust suite is the profile check. Run `bash crates/pi-agent-core/fixtures/run.sh` to execute the complete
+The Rust suite is the profile check. Run `bash crates/tea-core/fixtures/run.sh` to execute the complete
 deterministic corpus. It proves the explicit capability boundary for all seven tools; hosts
 needing full ripgrep behavior may replace `CodingOperations::grep_files` explicitly.
 

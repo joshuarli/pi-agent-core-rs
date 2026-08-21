@@ -1,6 +1,6 @@
 # Provider adapters
 
-The default `pi-agent-core` build contains only the `ModelProvider` and
+The default `tea-core` build contains only the `ModelProvider` and
 `ModelEventStream` ports. It does not choose a provider, issue HTTP requests,
 or discover credentials. Optional adapters are an embedding convenience, not
 a change to that core boundary.
@@ -16,15 +16,15 @@ opaque caller providers or replay a stream after it has exposed events.
 
 | Feature | Module | Wire protocol | Intended use |
 | --- | --- | --- | --- |
-| `provider-openrouter` | `pi_agent_core::provider::openrouter` | OpenRouter Chat Completions SSE plus inline usage/accounting | Opt-in incremental rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
-| `provider-commandcode` | `pi_agent_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in native HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
-| `provider-local` | `pi_agent_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions SSE endpoint | Opt-in incremental native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
+| `provider-openrouter` | `tea_core::provider::openrouter` | OpenRouter Chat Completions SSE plus inline usage/accounting | Opt-in incremental rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
+| `provider-commandcode` | `tea_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in native HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
+| `provider-local` | `tea_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions SSE endpoint | Opt-in incremental native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
 
 Enable only the provider an application owns:
 
 ```toml
 [dependencies]
-pi-agent-core = { path = "../pi-agent-core-rs/crates/pi-agent-core", features = ["provider-local"] }
+tea-core = { path = "../tea/crates/tea-core", features = ["provider-local"] }
 ```
 
 Provider features are opt-in and none is enabled by default. The adapters use
@@ -100,10 +100,10 @@ gateway's `workingDir`, `date`, and `environment` fields an explicit host
 decision:
 
 ```rust,no_run
-use pi_agent_core::provider::commandcode::{
+use tea_core::provider::commandcode::{
     CommandCodeConfig, CommandCodeHostContext, CommandCodeProvider,
 };
-use pi_agent_core::provider::RetryPolicy;
+use tea_core::provider::RetryPolicy;
 use std::time::Duration;
 
 let host = CommandCodeHostContext::new("/sandbox/project", "2026-08-14", "linux")?;
@@ -129,7 +129,7 @@ defaults to the upstream client's enabled setting but can be disabled with
 The provider accepts only a request whose `ModelDescriptor` is
 `command-code` with the configured model, avoiding a silent model mismatch.
 
-The `pi-agent-eval` executable is a caller-owned integration boundary. Its
+The `tea-eval` executable is a caller-owned integration boundary. Its
 Command Code mode reads `COMMANDCODE_API_KEY` from its process environment,
 not from the library, and requires explicit `--commandcode-date` and
 `--commandcode-environment` values plus a caller-owned canonical UUID passed as
@@ -140,7 +140,7 @@ command-line harness practical.
 ## Context and stream mapping
 
 Hosts using either concrete adapter should install
-`pi_agent_core::provider::openai::OpenAiContextHook` on the agent. It converts
+`tea_core::provider::openai::OpenAiContextHook` on the agent. It converts
 the core transcript to the standard Chat Completions message array consumed by
 both adapters. The core default `NoHooks` value is intentionally diagnostic
 Rust text and is not a provider wire format.
@@ -202,7 +202,7 @@ The local adapter accepts an explicit API root and model. Its convenience
 configuration targets the 5-bit `Laguna-XS-2.1-5bit` checkpoint served by oMLX:
 
 ```rust,no_run
-use pi_agent_core::provider::local::{LocalConfig, LocalProvider};
+use tea_core::provider::local::{LocalConfig, LocalProvider};
 
 let config = LocalConfig::laguna_xs_2_1("http://127.0.0.1:8000/v1");
 config.validate()?;

@@ -30,9 +30,9 @@ from .coding_cases import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILE = ROOT / "crates" / "pi-agent-core" / "profile" / "default-profile.json"
-RESULT_SCHEMA = "pi-coding-eval-result/v0"
-CODING_SCHEMA = "pi-agent-quality-coding-run/v1"
+PROFILE = ROOT / "crates" / "tea-core" / "profile" / "default-profile.json"
+RESULT_SCHEMA = "tea-coding-eval-result/v0"
+CODING_SCHEMA = "tea-quality-coding-run/v1"
 
 
 class CodingRunError(RuntimeError):
@@ -110,7 +110,7 @@ def _profile_capabilities() -> list[dict[str, Any]]:
 def _adapter_task(case: dict[str, Any], capabilities: list[dict[str, Any]]) -> dict[str, Any]:
     task = case["task"]
     return {
-        "schema_version": "pi-coding-eval-task/v0",
+        "schema_version": "tea-coding-eval-task/v0",
         "task_id": case["id"],
         "task_version": 1,
         "kind": "coding",
@@ -144,7 +144,7 @@ def _cost_contract(cost: Any) -> None:
     """Validate the common redacted, provider-reported accounting contract."""
     if not isinstance(cost, dict):
         raise CodingRunError("adapter result has no cost report")
-    if cost.get("schema_version") != "pi-eval-cost/v1":
+    if cost.get("schema_version") != "tea-eval-cost/v1":
         raise CodingRunError("adapter cost report has the wrong schema_version")
     if cost.get("currency") != "USD" or cost.get("pricing") != "provider_reported":
         raise CodingRunError("adapter cost report must be USD and provider_reported")
@@ -188,7 +188,7 @@ def _cost_comparison(adapter_records: list[dict[str, Any]]) -> dict[str, Any]:
     rust = by_adapter.get("rust")
     rust_total = rust.get("reported_total_usd") if isinstance(rust, dict) and rust.get("complete") else None
     return {
-        "schema_version": "pi-eval-cost-comparison/v1",
+        "schema_version": "tea-eval-cost-comparison/v1",
         "currency": "USD",
         "complete": rust_total is not None,
         "rust_total_usd": rust_total,
@@ -255,7 +255,7 @@ def _env_sourced_command(env_file: Path, command: list[str]) -> list[str]:
         "bash",
         "-c",
         'set -a; . "$1"; set +a; shift; exec "$@"',
-        "pi-agent-quality-source-env",
+        "tea-quality-source-env",
         str(env_file),
         *command,
     ]

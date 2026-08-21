@@ -5,15 +5,15 @@ lint:
 	cargo clippy --fix --allow-dirty --all-targets --all-features -- --deny warnings
 
 tui:
-	cargo build --release --package pi-agent-tui --bin pi-agent
+	cargo build --release --package tea-agent --bin tea
 
 tui-headless:
-	cargo run --package pi-agent-tui --bin pi-agent-headless -- $(ARGS)
+	cargo run --package tea-agent --bin tea-headless -- $(ARGS)
 
 TUI_SMOKE_MODEL ?= openrouter/free
 
 tui-smoke:
-	set -a; . ./.env; set +a; cargo run --package pi-agent-tui --bin pi-agent-headless -- --model $(TUI_SMOKE_MODEL) --prompt 'Reply with exactly READY and no additional text. Do not call any tools.'
+	set -a; . ./.env; set +a; cargo run --package tea-agent --bin tea-headless -- --model $(TUI_SMOKE_MODEL) --prompt 'Reply with exactly READY and no additional text. Do not call any tools.'
 
 OMLX_ROOT ?= $(HOME)/d/omlx
 OMLX_VENV ?= $(OMLX_ROOT)/.venv
@@ -28,7 +28,7 @@ LOCAL_MODEL ?= Qwen3.5-4B-MLX-4bit
 LOCAL_CONTEXT_WINDOW ?= 32768
 LOCAL_MODEL_REPO ?= mlx-community/Qwen3.5-4B-MLX-4bit
 LOCAL_MODEL_DIR ?= $(HOME)/.omlx/models/$(LOCAL_MODEL)
-LOCAL_OMLX_BASE_PATH ?= /tmp/pi-agent-omlx-$(LOCAL_PORT)
+LOCAL_OMLX_BASE_PATH ?= /tmp/tea-omlx-$(LOCAL_PORT)
 LOCAL_OMLX_LOG ?= $(LOCAL_OMLX_BASE_PATH)/server.log
 LOCAL_PI_ARGS ?=
 
@@ -75,8 +75,8 @@ local-server: local-model
 	fi
 
 local: local-server
-	cargo build --package pi-agent-tui --bin pi-agent
-	"$(CURDIR)/target/debug/pi-agent" --provider local --local-base-url "$(LOCAL_BASE_URL)" --model "$(LOCAL_MODEL)" --local-context-window "$(LOCAL_CONTEXT_WINDOW)" --thinking low $(LOCAL_PI_ARGS)
+	cargo build --package tea-agent --bin tea
+	"$(CURDIR)/target/debug/tea" --provider local --local-base-url "$(LOCAL_BASE_URL)" --model "$(LOCAL_MODEL)" --local-context-window "$(LOCAL_CONTEXT_WINDOW)" --thinking low $(LOCAL_PI_ARGS)
 
 quality-fast:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m evals.quality fast

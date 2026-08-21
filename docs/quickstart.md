@@ -9,8 +9,8 @@ for you.
 The checked-in toolchain is required; do not substitute stable Rust.
 
 ```bash
-git clone <repository-url> pi-agent-core-rs
-cd pi-agent-core-rs
+git clone <repository-url> tea
+cd tea
 cargo +nightly-2026-07-24 test --workspace
 ```
 
@@ -19,11 +19,11 @@ executor yourself:
 
 ```toml
 [dependencies]
-pi-agent-core = { path = "../pi-agent-core-rs/crates/pi-agent-core" }
+tea-core = { path = "../tea/crates/tea-core" }
 smol = "=2.0.2"
 ```
 
-`smol` belongs to the application here, not to `pi-agent-core`. Tokio is not a
+`smol` belongs to the application here, not to `tea-core`. Tokio is not a
 supported runtime dependency in this project.
 
 ## Run one deterministic agent
@@ -33,12 +33,12 @@ provider implements the same `ModelProvider` port and returns an incremental
 `ModelEventStream` instead.
 
 ```rust
-use pi_agent_core::scheduler::{
+use tea_core::scheduler::{
     CancellationToken, ModelEventStream, ModelFuture, ModelProvider, ModelStream,
     ModelStreamEvent,
 };
-use pi_agent_core::state::{ModelDescriptor, StopReason};
-use pi_agent_core::Agent;
+use tea_core::state::{ModelDescriptor, StopReason};
+use tea_core::Agent;
 use std::sync::Arc;
 
 struct DemoProvider;
@@ -46,7 +46,7 @@ struct DemoProvider;
 impl ModelProvider for DemoProvider {
     fn stream<'a>(
         &'a self,
-        _request: pi_agent_core::scheduler::ModelRequest,
+        _request: tea_core::scheduler::ModelRequest,
         _cancellation: CancellationToken,
     ) -> ModelFuture<'a> {
         let stream = ModelStream {
@@ -125,7 +125,7 @@ recovery accepts only `ModelStreamEvent::ContextOverflow` and retries an
 incomplete continuation at most at the configured limit.
 
 ```rust,no_run
-use pi_agent_core::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};
+use tea_core::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};
 use std::num::NonZeroU64;
 
 let policy = AutomaticCompactionPolicy {
@@ -147,7 +147,7 @@ The default profile is optional. When selected, provide an existing workspace
 explicitly; it never infers a working directory or reads Pi configuration.
 
 ```rust,no_run
-use pi_agent_core::{Agent, DefaultCodingTools};
+use tea_core::{Agent, DefaultCodingTools};
 
 let tools = DefaultCodingTools::new("/absolute/workspace")?;
 let agent = Agent::builder()
