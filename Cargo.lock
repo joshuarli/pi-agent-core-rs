@@ -351,6 +351,8 @@ dependencies = [
 [[package]]
 name = "h12tiny-client-normalize"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01db50ff0de5dfd384056c42c8544bd8671d7a3f31fa9fb147cf4cedea09f1f5"
 dependencies = [
  "http",
 ]
@@ -358,6 +360,8 @@ dependencies = [
 [[package]]
 name = "h12tiny-client-sync"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9776601813dd0079f234fcaf9cce423f0f004bc649456762e268e27b346cc30"
 dependencies = [
  "h12tiny-client-normalize",
  "http",

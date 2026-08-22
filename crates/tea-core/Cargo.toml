@@ -36,11 +36,10 @@ trace = ["dep:tea-trace"]
 tea-protocol = { path = "../tea-protocol" }
 tea-trace = { path = "../tea-trace", optional = true }
 smol = { workspace = true, optional = true }
-# The provider transports use h12tiny's blocking HTTP/1.1-only client. The sibling path keeps
-# development and release builds on the same Graviola-backed transport source.
+# The provider transports use h12tiny's blocking HTTP/1.1-only client from crates.io.
 h12tiny-client-sync = {
     package = "h12tiny-client-sync",
-    path = "../../../h12tiny/crates/h12tiny-client-sync",
+    version = "0.1",
     default-features = false,
     features = ["tls"],
     optional = true,
