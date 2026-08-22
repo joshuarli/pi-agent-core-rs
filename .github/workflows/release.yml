@@ -44,7 +44,7 @@ jobs:
       - name: Checkout h12tiny transport
         run: |
           git clone --no-checkout https://github.com/laputa-systems/h12tiny.git "$GITHUB_WORKSPACE/../h12tiny"
-          git -C "$GITHUB_WORKSPACE/../h12tiny" checkout f6bd3136d1e463aff4013a26a6c1e886e1f7dbbc
+          git -C "$GITHUB_WORKSPACE/../h12tiny" checkout 7c9a337b64be8d03710d37ad080a617b18d76035
 
       - uses: Swatinem/rust-cache@v2
         with:
