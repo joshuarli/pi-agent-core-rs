@@ -38,14 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # tea-core intentionally consumes the local h12tiny workspace so the provider transport
-      # stays on the reviewed HTTP/1.1 + Graviola configuration. Keep the sibling path available
-      # in release builds; the pinned revision makes this external source reproducible.
-      - name: Checkout h12tiny transport
-        run: |
-          git clone --no-checkout https://github.com/laputa-systems/h12tiny.git "$GITHUB_WORKSPACE/../h12tiny"
-          git -C "$GITHUB_WORKSPACE/../h12tiny" checkout 7c9a337b64be8d03710d37ad080a617b18d76035
-
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.runner }}-${{ matrix.target }}
