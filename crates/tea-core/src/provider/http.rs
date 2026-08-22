@@ -1,25 +1,19 @@
 //! Small, synchronous HTTP/1.1 boundary shared by the opt-in provider adapters.
 //!
-//! Provider features use the local `h12tiny-client` direct-origin transport with an explicit
-//! Rustls configuration backed by Graviola. The client is driven on a narrowly scoped worker
-//! thread so the core executor remains independent of HTTP, DNS, and TLS runtime details.
-//! Providers choose whether to collect the body with [`send`] or expose it incrementally with
-//! [`stream`]; provider modules retain ownership of status/error classification and response
-//! parsing.
+//! Provider features use the local `h12tiny-client-sync` direct-origin transport. Its blocking
+//! Rustls HTTP/1.1 reader runs on the provider's narrowly scoped worker thread, so the core
+//! executor remains independent of HTTP, DNS, and TLS runtime details. Providers choose whether
+//! to collect the body with [`send`] or expose it incrementally with [`stream`]; provider modules
+//! retain ownership of status/error classification and response parsing.
 
 #![allow(dead_code)] // provider features consume different request methods and response fields
 
 use super::super::scheduler::CancellationToken;
-use bytes::Bytes;
-use futures_lite::future::{self, poll_fn};
-use h12tiny_client::{Client, Connector};
+use h12tiny_client_sync::{Client, ResponseBody};
 use http::{header::HeaderName, HeaderValue, Method as HttpMethod, Request as HttpRequest, Uri};
-use http_body_util::Full;
-use hyper::body::{Body, Incoming};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -208,42 +202,17 @@ fn push_stream_event(state: &Arc<Mutex<StreamState>>, event: StreamEvent) {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ThreadExecutor;
-
-impl hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> for ThreadExecutor {
-    fn execute(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
-        std::thread::Builder::new()
-            .name("tea-http-driver".into())
-            .spawn(move || future::block_on(future))
-            .expect("HTTP driver thread should start");
-    }
-}
-
 /// Build a direct-origin h12tiny client with the smallest useful feature set: HTTP/1.1 only.
 ///
-/// Rustls receives both TLS 1.2 and TLS 1.3 safe defaults, webpki's public roots preserve the
-/// existing certificate-validation behavior, and the ALPN list intentionally excludes `h2`.
-fn client() -> Client<Full<Bytes>> {
-    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let provider = Arc::new(rustls_graviola::default_provider());
-    let mut config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("Graviola supports Rustls safe protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-    let connector = Connector::builder()
+/// The sync client supplies explicit Graviola-backed public roots and offers only `http/1.1`
+/// through ALPN. It owns no idle pool or background driver.
+fn client() -> Client {
+    Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .tls_config(config)
-        .build();
-    let mut builder = Client::<()>::builder(ThreadExecutor);
-    builder.connector(connector).pool_max_idle_per_host(0);
-    builder.build()
+        .build()
 }
 
-fn build_request(request: Request) -> Result<HttpRequest<Full<Bytes>>, Failure> {
+fn build_request(request: Request) -> Result<HttpRequest<Vec<u8>>, Failure> {
     let url = append_query(request.url, &request.query);
     let uri = url.parse::<Uri>().map_err(|error| Failure {
         message: format!("invalid HTTP request URI: {error}"),
@@ -271,13 +240,8 @@ fn build_request(request: Request) -> Result<HttpRequest<Full<Bytes>>, Failure> 
         })?;
         builder = builder.header(name, value);
     }
-    let body = if request.body.is_empty() {
-        Full::default()
-    } else {
-        Full::new(Bytes::from(request.body))
-    };
     builder
-        .body(body)
+        .body(request.body)
         .map_err(|error| Failure {
             message: format!("cannot build HTTP request: {error}"),
             status_code: None,
@@ -305,26 +269,9 @@ fn append_query(mut url: String, query: &[(String, String)]) -> String {
 
 struct OpenResponse {
     status_code: u16,
-    body: Incoming,
+    body: ResponseBody,
     deadline: Instant,
     stall_timeout: Option<Duration>,
-}
-
-async fn with_timeout<F, T>(future: F, timeout: Duration) -> Result<T, ()>
-where
-    F: Future<Output = T>,
-{
-    if timeout.is_zero() {
-        return Err(());
-    }
-    future::race(
-        async { Ok::<T, ()>(future.await) },
-        async {
-            async_io::Timer::after(timeout).await;
-            Err(())
-        },
-    )
-    .await
 }
 
 fn deadline(timeout: Duration) -> Instant {
@@ -342,23 +289,22 @@ fn open(request: Request) -> Result<OpenResponse, Failure> {
     let deadline = deadline(timeout);
     let http_request = build_request(request)?;
     let response_timeout = stall_timeout.map_or(timeout, |stall| timeout.min(stall));
-    let result = future::block_on(with_timeout(client().request(http_request), response_timeout));
-    let response = match result {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => {
-            return Err(Failure {
-                message: format!("HTTP request failed: {error}"),
-                status_code: None,
-                body: Vec::new(),
-                timeout: None,
-            })
-        }
-        Err(()) => {
+    let response = match client().request_with_timeout(http_request, Some(response_timeout)) {
+        Ok(response) => response,
+        Err(error) if error.is_timeout() => {
             return Err(Failure {
                 message: "HTTP request timed out while receiving response headers".into(),
                 status_code: None,
                 body: Vec::new(),
                 timeout: Some(Timeout::RecvResponse),
+            })
+        }
+        Err(error) => {
+            return Err(Failure {
+                message: format!("HTTP request failed: {error}"),
+                status_code: None,
+                body: Vec::new(),
+                timeout: None,
             })
         }
     };
@@ -376,26 +322,34 @@ enum BodyReadFailure {
     Transport(String),
 }
 
-async fn next_body_chunk(
-    body: &mut Incoming,
+fn next_body_chunk(
+    body: &mut ResponseBody,
     timeout: Duration,
-) -> Result<Option<Bytes>, BodyReadFailure> {
-    loop {
-        let frame = with_timeout(
-            poll_fn(|context| Pin::new(&mut *body).poll_frame(context)),
-            timeout,
-        )
-        .await
-        .map_err(|()| BodyReadFailure::Timeout)?;
-        let Some(frame) = frame else {
-            return Ok(None);
-        };
-        let frame = frame.map_err(|error| BodyReadFailure::Transport(error.to_string()))?;
-        if let Ok(data) = frame.into_data() {
-            if !data.is_empty() {
-                return Ok(Some(data));
-            }
+) -> Result<Option<Vec<u8>>, BodyReadFailure> {
+    if body.is_complete() {
+        return Ok(None);
+    }
+    if timeout.is_zero() {
+        return Err(BodyReadFailure::Timeout);
+    }
+    body.set_read_timeout(Some(timeout))
+        .map_err(|error| BodyReadFailure::Transport(error.to_string()))?;
+    let mut chunk = vec![0_u8; 8 * 1024];
+    match body.read(&mut chunk) {
+        Ok(0) => Ok(None),
+        Ok(read) => {
+            chunk.truncate(read);
+            Ok(Some(chunk))
         }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            Err(BodyReadFailure::Timeout)
+        }
+        Err(error) => Err(BodyReadFailure::Transport(error.to_string())),
     }
 }
 
@@ -429,11 +383,11 @@ fn stream_worker(
             );
             return;
         }
-        match future::block_on(next_body_chunk(
+        match next_body_chunk(
             &mut body,
             remaining(response.deadline, response.stall_timeout),
-        )) {
-            Ok(Some(chunk)) => push_stream_event(&state, StreamEvent::Chunk(chunk.to_vec())),
+        ) {
+            Ok(Some(chunk)) => push_stream_event(&state, StreamEvent::Chunk(chunk)),
             Ok(None) => {
                 push_stream_event(&state, StreamEvent::End);
                 return;
@@ -498,10 +452,10 @@ pub(crate) fn send(
         if cancellation.is_cancelled() {
             return Err(cancelled_failure(Some(status_code), body));
         }
-        match future::block_on(next_body_chunk(
+        match next_body_chunk(
             &mut incoming,
             remaining(response.deadline, response.stall_timeout),
-        )) {
+        ) {
             Ok(Some(chunk)) => body.extend_from_slice(&chunk),
             Ok(None) => break,
             Err(BodyReadFailure::Timeout) => {

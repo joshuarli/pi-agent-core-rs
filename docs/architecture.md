@@ -71,10 +71,11 @@ rather than ignored. A tool receives a call ID, validated JSON, cancellation, an
 Standard coding tools are ordinary tools behind explicit profile operation ports.
 
 The optional `tea_core::provider` module is a separate adapter layer behind explicit Cargo
-features. `provider-openrouter`, `provider-commandcode`, and `provider-local` are opt-in rustls
-HTTP transports backed by Graviola, with caller-supplied keys and no ambient configuration discovery; the
-evaluation runner selects one only through its explicit provider argument. They do not change the
-default build or the `ModelProvider` contract. See
+features. `provider-openrouter`, `provider-commandcode`, and `provider-local` are opt-in blocking
+HTTP/1.1 transports backed by Rustls/Graviola, with caller-supplied keys and no ambient configuration
+discovery; the provider-owned worker thread keeps that blocking I/O outside the core executor. The
+evaluation runner selects one only through its explicit provider argument. They do not change the default
+build or the `ModelProvider` contract. See
 [provider adapters](provider-adapters.md) for their wire and context boundaries.
 
 ## Ownership and state transitions
