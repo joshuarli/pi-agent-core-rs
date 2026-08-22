@@ -11,11 +11,16 @@ changing the core's provider-, executor-, or world-agnostic boundary.
 Run the repository's pinned nightly toolchain:
 
 ```bash
-cargo +nightly-2026-07-24 test --workspace
-python3 crates/tea-agent/fixtures/fx-ui/check.py
-cargo +nightly-2026-07-24 test -p tea-agent --features pty-harness --test pty_streaming
+make test
 git diff --check
 ```
+
+`make test` runs the locked workspace suite, the normalized UI fixture check,
+and the real-binary PTY suite. All three use deterministic fixtures and do not
+contact a live provider.
+
+On a host with Docker, `make test-linux` repeats the same checks in a Linux
+AArch64 Debian container (`linux/arm64`), including the PTY visual suite.
 
 For a profile or contract change, also run the Rust fixture check in
 [`crates/tea-core/fixtures/README.md`](../crates/tea-core/fixtures/README.md)

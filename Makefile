@@ -1,8 +1,24 @@
-.PHONY: lint tui tui-headless tui-smoke local-install local-model local-server local quality-fast quality-resources
+.PHONY: lint test test-linux tui tui-headless tui-smoke local-install local-model local-server local quality-fast quality-resources
 
 lint:
 	cargo fmt --all
 	cargo clippy --fix --allow-dirty --all-targets --all-features -- --deny warnings
+
+# Run the pinned, deterministic suite. The PTY tests use a loopback OpenRouter
+# fixture or no model request at all; neither reaches a real provider. The
+# normalized UI fixture check is included so visual contract data is covered.
+test:
+	cargo +nightly-2026-07-24 test --workspace --locked
+	PYTHONDONTWRITEBYTECODE=1 python3 crates/tea-agent/fixtures/fx-ui/check.py
+	cargo +nightly-2026-07-24 test -p tea-agent --features pty-harness --test pty_streaming --locked
+
+# Build and run the deterministic suite inside Linux AArch64. Docker's
+# platform selection also makes this usable from an x86_64 or Apple host.
+DOCKER ?= docker
+TEST_LINUX_IMAGE ?= tea-test-linux-aarch64
+
+test-linux:
+	$(DOCKER) build --platform linux/arm64 --progress=plain --tag $(TEST_LINUX_IMAGE) -f Dockerfile .
 
 tui:
 	cargo build --release --package tea-agent --bin tea

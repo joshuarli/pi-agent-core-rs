@@ -225,7 +225,7 @@ and inspection; it is not the usual transcript source.
 
 ```text
 AgentEvent -> typed AppState projection -> FrameLayout + VisualLayout + Theme + UiSurface
-           -> Grid<Cell> -> frame diff -> Crossterm
+           -> Grid<Cell> -> frame diff -> ANSI terminal boundary
 ```
 
 `AppState` holds typed `TranscriptEntry` records, a generic `ToolProjection`,
@@ -261,7 +261,7 @@ availability; custom models without capacity remain explicitly unknown and do
 not opt into automatic compaction.
 
 The local terminal substrate is deliberately small: `Cell`, `Style`, `Rect`,
-`Grid`, previous/current frame comparison, and direct Crossterm flushing. A
+`Grid`, previous/current frame comparison, and direct ANSI flushing. A
 failed flush must invalidate the previous frame so the next draw repaints it.
 Unicode width support is admitted only after a focused rendering/cursor test
 demonstrates that scalar-count placement is insufficient.
@@ -351,8 +351,8 @@ unavailable; the TUI does not guess a context budget.
 ## Dependency and architecture discipline
 
 The application owns a Smol executor while `tea-core` remains
-executor-agnostic and Tokio-free. It uses direct Crossterm synchronous events
-and direct rendering, not Ratatui or another widget/terminal abstraction. The
+executor-agnostic and Tokio-free. It uses synchronous rustix terminal input
+and direct ANSI rendering, not Ratatui or another widget/terminal abstraction. The
 CLI uses `std::env::args_os()` rather than Clap, and local typed errors rather
 than `anyhow`.
 

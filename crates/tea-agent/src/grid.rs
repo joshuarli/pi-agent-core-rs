@@ -1,7 +1,27 @@
 //! Small cell grid used by the future renderer.
 
-use crossterm::style::Color;
 use std::fmt;
+
+/// ANSI terminal colors used by the renderer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Color {
+    Black,
+    DarkGrey,
+    Red,
+    DarkRed,
+    Green,
+    DarkGreen,
+    Yellow,
+    DarkYellow,
+    Blue,
+    DarkBlue,
+    Magenta,
+    DarkMagenta,
+    Cyan,
+    DarkCyan,
+    White,
+    Grey,
+}
 
 /// Deliberately small cell style; terminal policy stays in the TUI.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -186,8 +206,6 @@ impl Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::style::Color;
-
     #[test]
     fn diff_is_empty_for_equal_frames_and_tracks_style_changes() {
         let mut before = Grid::new(2, 1);

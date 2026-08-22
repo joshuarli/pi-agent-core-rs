@@ -21,7 +21,6 @@ path = "src/lib.rs"
 pty-harness = ["tea-core/provider-openrouter-test-support"]
 
 [dependencies]
-crossterm = { version = "=0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
 laputa-hi-lite = "0.1"
 tea-core = { path = "../tea-core", features = [
     "provider-commandcode",
@@ -31,10 +30,11 @@ tea-core = { path = "../tea-core", features = [
 tea-luau = { path = "../tea-luau" }
 tea-protocol = { path = "../tea-protocol" }
 smol = { workspace = true }
+rustix = { version = "=1.1.4", default-features = false, features = ["event", "std", "termios"] }
 
 [dev-dependencies]
 # Published package name; the library target remains `ptytest` for consumers.
-laputa-ptytest = "0.1"
+laputa-ptytest = "=0.1.1"
 
 [[test]]
 name = "pty_streaming"

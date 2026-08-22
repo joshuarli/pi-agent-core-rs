@@ -2,8 +2,9 @@
 //!
 //! Core owns the conversation and execution state; these modules own the
 //! terminal projection and input surface. The binary is intentionally small:
-//! it consumes lossless typed core events, paints a local cell grid directly
-//! through Crossterm, and drives core futures on Smol.
+//! it consumes lossless typed core events, paints a local cell grid through
+//! ANSI sequences at the rustix-backed terminal boundary, and drives core
+//! futures on Smol.
 #![forbid(unsafe_code)]
 
 pub mod app;

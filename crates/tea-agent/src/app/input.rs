@@ -1,6 +1,7 @@
 use crate::editor::Editor;
-use crate::terminal::TerminalGuard;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::terminal::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, TerminalEvent, TerminalGuard,
+};
 use tea_core::state::AgentPhase;
 use tea_core::{CoreError, Usage};
 
@@ -14,11 +15,13 @@ impl App {
     pub(super) fn handle_terminal_event(
         &mut self,
         terminal: &mut TerminalGuard,
-        event: Event,
+        event: TerminalEvent,
     ) -> Result<(), AppError> {
         match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(terminal, key),
-            Event::Paste(text)
+            TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                self.handle_key(terminal, key)
+            }
+            TerminalEvent::Paste(text)
                 if self.state.picker.is_none()
                     && matches!(self.state.surface(), UiSurface::None) =>
             {
@@ -26,8 +29,11 @@ impl App {
                 self.refresh_command_completion();
                 Ok(())
             }
-            Event::Paste(text) => self.picker_insert(&text),
-            Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Mouse(_) => Ok(()),
+            TerminalEvent::Paste(text) => self.picker_insert(&text),
+            TerminalEvent::Resize(_, _)
+            | TerminalEvent::FocusGained
+            | TerminalEvent::FocusLost
+            | TerminalEvent::Mouse => Ok(()),
             _ => Ok(()),
         }
     }

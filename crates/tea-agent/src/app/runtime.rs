@@ -271,7 +271,7 @@ impl App {
             if let Some(event) = terminal.poll_event(Duration::from_millis(20))? {
                 self.handle_terminal_event(terminal, event)?;
             }
-            // Crossterm input is synchronous by design. Yield after each poll
+            // Terminal input is synchronous by design. Yield after each poll
             // so the caller-owned Smol executor drives model/tool work.
             smol::future::yield_now().await;
         }
@@ -345,7 +345,7 @@ impl App {
         let diff = current.diff(self.previous_grid.as_ref());
         let cursor = composer_cursor(&self.state, width, height);
         if let Err(error) = terminal.draw(&diff, cursor) {
-            // Crossterm may have emitted part of a frame before a flush failed. The cell grid
+            // The terminal may have received part of a frame before a flush failed. The cell grid
             // retained by the app can no longer be trusted as the terminal's actual state, so
             // force the next successful draw to be a full repaint.
             self.previous_grid = None;

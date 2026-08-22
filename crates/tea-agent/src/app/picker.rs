@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::terminal::{KeyCode, KeyEvent, KeyModifiers};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use tea_core::compaction::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};

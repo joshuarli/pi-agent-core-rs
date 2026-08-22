@@ -12,7 +12,7 @@ use crate::ui::frame_layout;
 use crate::ui::theme::{Role, Theme};
 use crate::ui::visual_layout::VisualLayout;
 #[cfg(test)]
-use crossterm::style::Color;
+use crate::grid::Color;
 use hi_lite::{Highlighter, Kind, Language};
 use tea_core::provider::ProviderRegistry;
 
