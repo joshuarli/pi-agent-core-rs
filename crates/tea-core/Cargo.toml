@@ -11,12 +11,48 @@ path = "src/lib.rs"
 [features]
 default = []
 fixture-runner = ["dep:smol"]
-provider-commandcode = ["dep:ureq"]
-provider-openrouter = ["dep:ureq"]
+provider-commandcode = [
+    "dep:async-io",
+    "dep:bytes",
+    "dep:futures-lite",
+    "dep:h12tiny-client",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:percent-encoding",
+    "dep:rustls",
+    "dep:rustls-graviola",
+    "dep:webpki-roots",
+]
+provider-openrouter = [
+    "dep:async-io",
+    "dep:bytes",
+    "dep:futures-lite",
+    "dep:h12tiny-client",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:percent-encoding",
+    "dep:rustls",
+    "dep:rustls-graviola",
+    "dep:webpki-roots",
+]
 # Test-only endpoint injection for an offline HTTP/1.1 OpenRouter fixture. This feature is never
 # enabled by the production TUI build.
 provider-openrouter-test-support = ["provider-openrouter"]
-provider-local = ["dep:ureq"]
+provider-local = [
+    "dep:async-io",
+    "dep:bytes",
+    "dep:futures-lite",
+    "dep:h12tiny-client",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:percent-encoding",
+    "dep:rustls",
+    "dep:rustls-graviola",
+    "dep:webpki-roots",
+]
 eval-runner = ["dep:smol", "provider-commandcode", "provider-openrouter"]
 trace = ["dep:tea-trace"]
 
@@ -24,12 +60,38 @@ trace = ["dep:tea-trace"]
 tea-protocol = { path = "../tea-protocol" }
 tea-trace = { path = "../tea-trace", optional = true }
 smol = { workspace = true, optional = true }
-ureq = {
-    version = "=3.4.0",
+# The provider transports use h12tiny's smallest HTTP/1.1-only configuration. The sibling path
+# keeps development and release builds on the same Graviola-backed transport source.
+h12tiny-client = {
+    package = "h12tiny-client",
+    path = "../../../h12tiny/crates/h12tiny-client",
     default-features = false,
-    features = ["rustls"],
+    features = ["http1", "tls"],
     optional = true,
 }
+hyper = {
+    package = "laputa-hyper-futures-lite",
+    version = "1.11",
+    default-features = false,
+    features = ["client", "http1"],
+    optional = true,
+}
+http = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+futures-lite = { version = "2", default-features = false, features = ["race", "std"], optional = true }
+async-io = { version = "2", optional = true }
+percent-encoding = { version = "2", optional = true }
+# Keep Rustls provider selection explicit: the transport must not fall back to a
+# feature-selected crypto backend.
+rustls = {
+    version = "=0.23.43",
+    default-features = false,
+    features = ["custom-provider", "std", "tls12"],
+    optional = true,
+}
+rustls-graviola = { version = "=0.4.0", optional = true }
+webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 smol = { workspace = true }

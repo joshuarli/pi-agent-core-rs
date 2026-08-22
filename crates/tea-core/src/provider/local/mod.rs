@@ -331,7 +331,7 @@ data: [DONE]
                         .then(|| value.trim().parse::<usize>().ok())
                         .flatten()
                 })
-                .expect("native HTTP client should send a content length");
+                .expect("HTTP client should send a content length");
             while request.len() < body_start + content_length {
                 let read = stream.read(&mut buffer).expect("mock body should read");
                 assert!(read > 0, "mock client closed before body");
@@ -403,6 +403,8 @@ data: [DONE]
         let (release, wait_for_release) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("provider should connect");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request);
             socket
                 .write_all(
                     format!(

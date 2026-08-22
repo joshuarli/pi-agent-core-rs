@@ -1,4 +1,4 @@
-//! OpenRouter native HTTPS transport and response-boundary classification.
+//! OpenRouter HTTP transport and response-boundary classification.
 //!
 //! The finite transport helpers remain regression-fixture coverage for the retired buffering
 //! path; the live adapter consumes the incremental shared HTTP stream.
@@ -24,7 +24,7 @@ pub(super) struct TransportResponse {
 /// temporary files. OpenRouter's configured stall timeout is applied to response headers and
 /// body reads by the shared transport; a timed-out partial body is handed to the existing
 /// partial SSE parser only when it contains meaningful provider data.
-pub(super) fn run_ureq(
+pub(super) fn run_http(
     request: Request,
     cancellation: &CancellationToken,
 ) -> Result<TransportResponse, String> {

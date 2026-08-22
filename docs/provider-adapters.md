@@ -16,9 +16,19 @@ opaque caller providers or replay a stream after it has exposed events.
 
 | Feature | Module | Wire protocol | Intended use |
 | --- | --- | --- | --- |
-| `provider-openrouter` | `tea_core::provider::openrouter` | OpenRouter Chat Completions SSE plus inline usage/accounting | Opt-in incremental rustls HTTPS transport with packet-bound model validation and response-stall timeouts. |
-| `provider-commandcode` | `tea_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in native HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
-| `provider-local` | `tea_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions SSE endpoint | Opt-in incremental native HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
+| `provider-openrouter` | `tea_core::provider::openrouter` | OpenRouter Chat Completions SSE plus inline usage/accounting | Opt-in incremental rustls + Graviola HTTPS transport with packet-bound model validation and response-stall timeouts. |
+| `provider-commandcode` | `tea_core::provider::commandcode` | Command Code `/alpha/generate` NDJSON | Opt-in rustls + Graviola HTTPS gateway transport; the evaluation runner selects it with `--provider commandcode`. |
+| `provider-local` | `tea_core::provider::local` | Caller-selected local OpenAI-compatible Chat Completions SSE endpoint | Opt-in incremental HTTP transport for oMLX and similar local servers; no credentials or endpoint discovery. |
+
+The optional transports currently use the sibling `h12tiny-client` source at
+`../h12tiny` because that client is not published on crates.io. The release
+workflow checks out its pinned revision before building, so local and release
+builds use the same HTTP/1.1-only implementation. Its TLS connector is given
+an explicit Rustls `CryptoProvider` from Graviola and advertises only
+`http/1.1` through ALPN. h12tiny's standard-library resolver is synchronous;
+its connector timeout covers TCP/TLS after resolution, while the existing
+request and response-body deadlines continue to bound provider work after the
+connection is established.
 
 Enable only the provider an application owns:
 
@@ -50,7 +60,7 @@ that pre-response period; callers can replace both with
 `OpenRouterConfig::with_request_timeout` and `with_stall_timeout` to keep
 retries inside their own session wall budget. The factory host derives both
 timeouts from the admitted assignment wall limit rather than using the adapter
-defaults. A response stall reaches the configured native receive timeout and
+defaults. A response stall reaches the configured receive timeout and
 enters the same bounded retry policy as other transport failures.
 Request-scoped `ThinkingLevel` values are mapped to OpenRouter's native
 `reasoning: { "effort": ... }` object (`off` maps to `none`); the default level
@@ -58,10 +68,10 @@ omits the field. This keeps provider-specific wire details in the adapter while
 leaving policy and model selection with the host.
 
 The provider sends the API key as an in-memory Authorization header. It never
-puts the key in argv, a child environment, or a temporary file. The native
+puts the key in argv, a child environment, or a temporary file. The shared
 transport has no ambient proxy or credential-file discovery. It checks the
 run's `CancellationToken` before, between received body chunks, and after the
-synchronous, timeout-bounded response body. A provider-owned native worker
+synchronous, timeout-bounded response body. A provider-owned HTTP worker
 performs those blocking reads while the caller-polled `ModelEventStream`
 reduces each complete SSE record in order. Cancellation settles as
 `StopReason::Cancelled` at the next bounded body-read boundary; the core and
@@ -188,13 +198,13 @@ still collects its timeout-bounded native response before returning a finite
 core stream. The generic `ModelProvider` port does not retry or replay a stream
 after it has exposed events.
 
-All in-tree native adapters own their native request boundary. On the run
+All in-tree adapters own their request boundary. On the run
 cancellation token, Local and Command Code check cancellation before and
 between body chunks, while OpenRouter's and Local's body workers yield
 completed chunks to the caller-polled stream. Command Code also checks after
 its timeout-bounded request settles.
 Cancellation does not become a retryable transport error. Immediate mid-read
-interruption remains bounded by the native receive timeout.
+interruption remains bounded by the receive timeout.
 
 ## Local oMLX and Laguna
 

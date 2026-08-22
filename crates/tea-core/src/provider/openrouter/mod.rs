@@ -23,6 +23,8 @@ pub use accounting::{OpenRouterCostReport, OpenRouterCostSource, OpenRouterCostT
 pub use config::{OpenRouterConfig, OpenRouterConfigError};
 use std::collections::VecDeque;
 use std::fmt;
+#[cfg(test)]
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -34,12 +36,12 @@ use response::{
     openrouter_status_retryable, parse_generation_cost, parse_partial_response, parse_response,
     response_body_prefix, unavailable_cost, StreamingSseDecoder,
 };
-use transport::{retryable_transport_error, run_ureq, COMPLETIONS_URL, GENERATION_URL};
+use transport::{retryable_transport_error, run_http, COMPLETIONS_URL, GENERATION_URL};
 
 /// The private source of the most recent OpenRouter failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenRouterErrorSource {
-    /// The native HTTP transport or its response boundary failed.
+    /// The HTTP transport or its response boundary failed.
     Transport,
     /// OpenRouter returned a response that the adapter could not accept.
     Response,
@@ -544,7 +546,7 @@ impl OpenRouterProvider {
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
             .with_stall_timeout(self.config.stall_timeout);
-            let output = run_ureq(request, cancellation);
+            let output = run_http(request, cancellation);
             let output = output.map_err(|message| {
                 let retryable = !cancellation.is_cancelled() && retryable_transport_error(&message);
                 self.record_error(OpenRouterErrorReport {
@@ -619,7 +621,7 @@ impl OpenRouterProvider {
                 .header("Authorization", format!("Bearer {}", self.config.api_key))
                 .header("Content-Type", "application/json")
                 .with_stall_timeout(self.config.stall_timeout);
-            if let Ok(output) = run_ureq(request, cancellation) {
+            if let Ok(output) = run_http(request, cancellation) {
                 if let Some(cost) = parse_generation_cost(&output.body, usage) {
                     return Some(cost);
                 }
@@ -853,6 +855,8 @@ data: [DONE]
         let (settle_response, wait_for_settlement) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("provider should connect");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request);
             let first = br#"data: {"id":"streamed","choices":[{"delta":{"content":"first "},"finish_reason":null}]}
 
 "#;
@@ -1256,7 +1260,7 @@ data: [DONE]
     fn cancellation_is_rejected_before_native_request() {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let result = run_ureq(
+        let result = run_http(
             Request::get("http://127.0.0.1:1", std::time::Duration::from_secs(1)),
             &cancellation,
         );

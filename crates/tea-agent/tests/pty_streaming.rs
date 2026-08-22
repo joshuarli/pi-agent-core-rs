@@ -1,5 +1,5 @@
 use ptytest::{Color as PtyColor, CommandSpec, ExitStatus, Key, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -28,6 +28,8 @@ impl OpenRouterFixture {
             let (mut socket, _) = listener
                 .accept()
                 .expect("OpenRouter request should connect");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request);
             let first = br#"data: {"id":"offline","choices":[{"delta":{"content":"first "},"finish_reason":null}]}
 
 "#;

@@ -1,19 +1,57 @@
-//! Small, synchronous HTTPS boundary shared by the opt-in provider adapters.
+//! Small, synchronous HTTP/1.1 boundary shared by the opt-in provider adapters.
 //!
-//! The core deliberately does not expose an HTTP client. Provider features use one explicit
-//! `ureq` agent configured with rustls, no ambient proxy discovery, and bounded request phases.
-//! Providers choose whether to collect the body with [`send`] or expose the body incrementally
-//! with [`stream`]; provider modules retain ownership of status/error classification and response
+//! Provider features use the local `h12tiny-client` direct-origin transport with an explicit
+//! Rustls configuration backed by Graviola. The client is driven on a narrowly scoped worker
+//! thread so the core executor remains independent of HTTP, DNS, and TLS runtime details.
+//! Providers choose whether to collect the body with [`send`] or expose it incrementally with
+//! [`stream`]; provider modules retain ownership of status/error classification and response
 //! parsing.
 
 #![allow(dead_code)] // provider features consume different request methods and response fields
 
 use super::super::scheduler::CancellationToken;
+use bytes::Bytes;
+use futures_lite::future::{self, poll_fn};
+use h12tiny_client::{Client, Connector};
+use http::{header::HeaderName, HeaderValue, Method as HttpMethod, Request as HttpRequest, Uri};
+use http_body_util::Full;
+use hyper::body::{Body, Incoming};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::VecDeque;
-use std::io::Read;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const QUERY_ENCODED: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'$')
+    .add(b'%')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'+')
+    .add(b',')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Method {
@@ -83,15 +121,21 @@ pub(crate) struct Response {
     pub(crate) body: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Timeout {
+    RecvResponse,
+    RecvBody,
+}
+
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(crate) message: String,
     pub(crate) status_code: Option<u16>,
     pub(crate) body: Vec<u8>,
-    pub(crate) timeout: Option<ureq::Timeout>,
+    timeout: Option<Timeout>,
 }
 
-/// Incremental items delivered by the native HTTP body worker.
+/// Incremental items delivered by the provider-owned HTTP body worker.
 #[derive(Debug)]
 pub(crate) enum StreamEvent {
     /// Response headers arrived and establish the status for following body chunks.
@@ -110,18 +154,14 @@ struct StreamState {
     waker: Option<Waker>,
 }
 
-/// Caller-polled response body backed by one provider-owned native I/O worker.
-///
-/// `ureq` deliberately remains synchronous. Moving its blocking body reads to this narrowly
-/// scoped worker lets the executor that drives the core keep reducing already-delivered chunks
-/// and processing cancellation without making HTTP a core runtime dependency.
+/// Caller-polled response body backed by one provider-owned HTTP worker.
 #[derive(Debug)]
 pub(crate) struct HttpStream {
     state: Arc<Mutex<StreamState>>,
 }
 
 impl HttpStream {
-    /// Poll the next native response item.
+    /// Poll the next response item.
     pub(crate) fn poll_next(&mut self, context: &mut Context<'_>) -> Poll<StreamEvent> {
         let mut state = self.state.lock().expect("HTTP stream state mutex poisoned");
         if let Some(event) = state.events.pop_front() {
@@ -136,10 +176,6 @@ impl HttpStream {
 }
 
 /// Begin a response-body stream without waiting for its first body chunk.
-///
-/// The returned value is deliberately private to adapters. It preserves explicit request
-/// timeouts and cancellation checks while preventing a synchronous HTTP body read from
-/// monopolizing an embedding's executor.
 pub(crate) fn stream(request: Request, cancellation: &CancellationToken) -> HttpStream {
     let state = Arc::new(Mutex::new(StreamState::default()));
     let worker_state = Arc::clone(&state);
@@ -172,6 +208,197 @@ fn push_stream_event(state: &Arc<Mutex<StreamState>>, event: StreamEvent) {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ThreadExecutor;
+
+impl hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> for ThreadExecutor {
+    fn execute(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        std::thread::Builder::new()
+            .name("tea-http-driver".into())
+            .spawn(move || future::block_on(future))
+            .expect("HTTP driver thread should start");
+    }
+}
+
+/// Build a direct-origin h12tiny client with the smallest useful feature set: HTTP/1.1 only.
+///
+/// Rustls receives both TLS 1.2 and TLS 1.3 safe defaults, webpki's public roots preserve the
+/// existing certificate-validation behavior, and the ALPN list intentionally excludes `h2`.
+fn client() -> Client<Full<Bytes>> {
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let provider = Arc::new(rustls_graviola::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("Graviola supports Rustls safe protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+    let connector = Connector::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .tls_config(config)
+        .build();
+    let mut builder = Client::<()>::builder(ThreadExecutor);
+    builder.connector(connector).pool_max_idle_per_host(0);
+    builder.build()
+}
+
+fn build_request(request: Request) -> Result<HttpRequest<Full<Bytes>>, Failure> {
+    let url = append_query(request.url, &request.query);
+    let uri = url.parse::<Uri>().map_err(|error| Failure {
+        message: format!("invalid HTTP request URI: {error}"),
+        status_code: None,
+        body: Vec::new(),
+        timeout: None,
+    })?;
+    let method = match request.method {
+        Method::Get => HttpMethod::GET,
+        Method::Post => HttpMethod::POST,
+    };
+    let mut builder = HttpRequest::builder().method(method).uri(uri);
+    for (key, value) in request.headers {
+        let name = HeaderName::try_from(key).map_err(|error| Failure {
+            message: format!("invalid HTTP request header name: {error}"),
+            status_code: None,
+            body: Vec::new(),
+            timeout: None,
+        })?;
+        let value = HeaderValue::try_from(value).map_err(|error| Failure {
+            message: format!("invalid HTTP request header value: {error}"),
+            status_code: None,
+            body: Vec::new(),
+            timeout: None,
+        })?;
+        builder = builder.header(name, value);
+    }
+    let body = if request.body.is_empty() {
+        Full::default()
+    } else {
+        Full::new(Bytes::from(request.body))
+    };
+    builder
+        .body(body)
+        .map_err(|error| Failure {
+            message: format!("cannot build HTTP request: {error}"),
+            status_code: None,
+            body: Vec::new(),
+            timeout: None,
+        })
+}
+
+fn append_query(mut url: String, query: &[(String, String)]) -> String {
+    if query.is_empty() {
+        return url;
+    }
+    let separator = if url.contains('?') { '&' } else { '?' };
+    url.push(separator);
+    for (index, (key, value)) in query.iter().enumerate() {
+        if index != 0 {
+            url.push('&');
+        }
+        url.push_str(&utf8_percent_encode(key, QUERY_ENCODED).to_string());
+        url.push('=');
+        url.push_str(&utf8_percent_encode(value, QUERY_ENCODED).to_string());
+    }
+    url
+}
+
+struct OpenResponse {
+    status_code: u16,
+    body: Incoming,
+    deadline: Instant,
+    stall_timeout: Option<Duration>,
+}
+
+async fn with_timeout<F, T>(future: F, timeout: Duration) -> Result<T, ()>
+where
+    F: Future<Output = T>,
+{
+    if timeout.is_zero() {
+        return Err(());
+    }
+    future::race(
+        async { Ok::<T, ()>(future.await) },
+        async {
+            async_io::Timer::after(timeout).await;
+            Err(())
+        },
+    )
+    .await
+}
+
+fn deadline(timeout: Duration) -> Instant {
+    Instant::now().checked_add(timeout).unwrap_or_else(Instant::now)
+}
+
+fn remaining(deadline: Instant, stall_timeout: Option<Duration>) -> Duration {
+    let total = deadline.saturating_duration_since(Instant::now());
+    stall_timeout.map_or(total, |stall| total.min(stall))
+}
+
+fn open(request: Request) -> Result<OpenResponse, Failure> {
+    let timeout = request.timeout;
+    let stall_timeout = request.stall_timeout;
+    let deadline = deadline(timeout);
+    let http_request = build_request(request)?;
+    let response_timeout = stall_timeout.map_or(timeout, |stall| timeout.min(stall));
+    let result = future::block_on(with_timeout(client().request(http_request), response_timeout));
+    let response = match result {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Err(Failure {
+                message: format!("HTTP request failed: {error}"),
+                status_code: None,
+                body: Vec::new(),
+                timeout: None,
+            })
+        }
+        Err(()) => {
+            return Err(Failure {
+                message: "HTTP request timed out while receiving response headers".into(),
+                status_code: None,
+                body: Vec::new(),
+                timeout: Some(Timeout::RecvResponse),
+            })
+        }
+    };
+    Ok(OpenResponse {
+        status_code: response.status().as_u16(),
+        body: response.into_body(),
+        deadline,
+        stall_timeout,
+    })
+}
+
+#[derive(Debug)]
+enum BodyReadFailure {
+    Timeout,
+    Transport(String),
+}
+
+async fn next_body_chunk(
+    body: &mut Incoming,
+    timeout: Duration,
+) -> Result<Option<Bytes>, BodyReadFailure> {
+    loop {
+        let frame = with_timeout(
+            poll_fn(|context| Pin::new(&mut *body).poll_frame(context)),
+            timeout,
+        )
+        .await
+        .map_err(|()| BodyReadFailure::Timeout)?;
+        let Some(frame) = frame else {
+            return Ok(None);
+        };
+        let frame = frame.map_err(|error| BodyReadFailure::Transport(error.to_string()))?;
+        if let Ok(data) = frame.into_data() {
+            if !data.is_empty() {
+                return Ok(Some(data));
+            }
+        }
+    }
+}
+
 fn stream_worker(
     request: Request,
     cancellation: CancellationToken,
@@ -184,68 +411,16 @@ fn stream_worker(
         );
         return;
     }
-    let timeout = request.timeout;
-    let stall_timeout = request.stall_timeout;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(timeout))
-        .timeout_resolve(Some(Duration::from_secs(10)))
-        .timeout_connect(Some(Duration::from_secs(10)))
-        .build()
-        .into();
-    let response = match request.method {
-        Method::Get => {
-            let mut builder = agent.get(&request.url);
-            for (key, value) in &request.query {
-                builder = builder.query(key, value);
-            }
-            for (key, value) in &request.headers {
-                builder = builder.header(key, value);
-            }
-            let mut config = builder.config().http_status_as_error(false);
-            if let Some(stall_timeout) = stall_timeout {
-                config = config
-                    .timeout_recv_response(Some(stall_timeout))
-                    .timeout_recv_body(Some(stall_timeout));
-            }
-            config.build().call()
-        }
-        Method::Post => {
-            let mut builder = agent.post(&request.url);
-            for (key, value) in &request.query {
-                builder = builder.query(key, value);
-            }
-            for (key, value) in &request.headers {
-                builder = builder.header(key, value);
-            }
-            let mut config = builder.config().http_status_as_error(false);
-            if let Some(stall_timeout) = stall_timeout {
-                config = config
-                    .timeout_recv_response(Some(stall_timeout))
-                    .timeout_recv_body(Some(stall_timeout));
-            }
-            config.build().send(&request.body)
-        }
-    };
-    let response = match response {
+    let response = match open(request) {
         Ok(response) => response,
-        Err(error) => {
-            push_stream_event(
-                &state,
-                StreamEvent::Failure(Failure {
-                    message: format!("HTTP request failed: {error}"),
-                    status_code: None,
-                    body: Vec::new(),
-                    timeout: timeout_kind(&error),
-                }),
-            );
+        Err(failure) => {
+            push_stream_event(&state, StreamEvent::Failure(failure));
             return;
         }
     };
-    let status_code = response.status().as_u16();
+    let status_code = response.status_code;
     push_stream_event(&state, StreamEvent::Response { status_code });
-    let mut reader = response.into_body().into_reader();
-    let mut buffer = [0_u8; 8 * 1024];
+    let mut body = response.body;
     loop {
         if cancellation.is_cancelled() {
             push_stream_event(
@@ -254,20 +429,35 @@ fn stream_worker(
             );
             return;
         }
-        match reader.read(&mut buffer) {
-            Ok(0) => {
+        match future::block_on(next_body_chunk(
+            &mut body,
+            remaining(response.deadline, response.stall_timeout),
+        )) {
+            Ok(Some(chunk)) => push_stream_event(&state, StreamEvent::Chunk(chunk.to_vec())),
+            Ok(None) => {
                 push_stream_event(&state, StreamEvent::End);
                 return;
             }
-            Ok(read) => push_stream_event(&state, StreamEvent::Chunk(buffer[..read].to_vec())),
-            Err(error) => {
+            Err(BodyReadFailure::Timeout) => {
+                push_stream_event(
+                    &state,
+                    StreamEvent::Failure(Failure {
+                        message: "HTTP response body receive timed out".into(),
+                        status_code: Some(status_code),
+                        body: Vec::new(),
+                        timeout: Some(Timeout::RecvBody),
+                    }),
+                );
+                return;
+            }
+            Err(BodyReadFailure::Transport(error)) => {
                 push_stream_event(
                     &state,
                     StreamEvent::Failure(Failure {
                         message: format!("HTTP response body read failed: {error}"),
                         status_code: Some(status_code),
                         body: Vec::new(),
-                        timeout: timeout_kind_from_io(&error),
+                        timeout: None,
                     }),
                 );
                 return;
@@ -287,140 +477,55 @@ fn cancelled_failure(status_code: Option<u16>, body: Vec<u8>) -> Failure {
 
 impl Failure {
     pub(crate) fn is_stall(&self) -> bool {
-        matches!(
-            self.timeout,
-            Some(ureq::Timeout::RecvResponse | ureq::Timeout::RecvBody)
-        )
+        matches!(self.timeout, Some(Timeout::RecvResponse | Timeout::RecvBody))
     }
 }
 
 /// Execute one finite request with explicit timeout and cancellation checkpoints.
-///
-/// `ureq` is intentionally used synchronously: these adapters return finite streams and the
-/// repository has no executor-owned blocking bridge. Cancellation is checked before opening the
-/// request, between received body chunks, and after the bounded ureq operation settles; the
-/// configured total timeout keeps an unresponsive provider from holding the run forever.
 pub(crate) fn send(
     request: Request,
     cancellation: &CancellationToken,
 ) -> Result<Response, Failure> {
     if cancellation.is_cancelled() {
-        return Err(Failure {
-            message: "HTTP request cancelled".into(),
-            status_code: None,
-            body: Vec::new(),
-            timeout: None,
-        });
+        return Err(cancelled_failure(None, Vec::new()));
     }
 
-    let timeout = request.timeout;
-    let stall_timeout = request.stall_timeout;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(timeout))
-        .timeout_resolve(Some(Duration::from_secs(10)))
-        .timeout_connect(Some(Duration::from_secs(10)))
-        .build()
-        .into();
-
-    let result = match request.method {
-        Method::Get => {
-            let mut builder = agent.get(&request.url);
-            for (key, value) in &request.query {
-                builder = builder.query(key, value);
-            }
-            for (key, value) in &request.headers {
-                builder = builder.header(key, value);
-            }
-            let mut config = builder.config().http_status_as_error(false);
-            if let Some(stall_timeout) = stall_timeout {
-                config = config
-                    .timeout_recv_response(Some(stall_timeout))
-                    .timeout_recv_body(Some(stall_timeout));
-            }
-            config.build().call()
-        }
-        Method::Post => {
-            let mut builder = agent.post(&request.url);
-            for (key, value) in &request.query {
-                builder = builder.query(key, value);
-            }
-            for (key, value) in &request.headers {
-                builder = builder.header(key, value);
-            }
-            let mut config = builder.config().http_status_as_error(false);
-            if let Some(stall_timeout) = stall_timeout {
-                config = config
-                    .timeout_recv_response(Some(stall_timeout))
-                    .timeout_recv_body(Some(stall_timeout));
-            }
-            config.build().send(&request.body)
-        }
-    };
-
-    let response = match result {
-        Ok(response) => response,
-        Err(error) => {
-            let timeout = timeout_kind(&error);
-            return Err(Failure {
-                message: format!("HTTP request failed: {error}"),
-                status_code: None,
-                body: Vec::new(),
-                timeout,
-            });
-        }
-    };
-    let status_code = response.status().as_u16();
+    let response = open(request)?;
+    let status_code = response.status_code;
     let mut body = Vec::new();
-    let mut reader = response.into_body().into_reader();
-    let mut buffer = [0_u8; 8 * 1024];
-    let read_result = loop {
+    let mut incoming = response.body;
+    loop {
         if cancellation.is_cancelled() {
-            return Err(Failure {
-                message: "HTTP request cancelled".into(),
-                status_code: Some(status_code),
-                body,
-                timeout: None,
-            });
+            return Err(cancelled_failure(Some(status_code), body));
         }
-        match reader.read(&mut buffer) {
-            Ok(0) => break Ok(()),
-            Ok(read) => body.extend_from_slice(&buffer[..read]),
-            Err(error) => break Err(error),
+        match future::block_on(next_body_chunk(
+            &mut incoming,
+            remaining(response.deadline, response.stall_timeout),
+        )) {
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(None) => break,
+            Err(BodyReadFailure::Timeout) => {
+                return Err(Failure {
+                    message: "HTTP response body receive timed out".into(),
+                    status_code: Some(status_code),
+                    body,
+                    timeout: Some(Timeout::RecvBody),
+                })
+            }
+            Err(BodyReadFailure::Transport(error)) => {
+                return Err(Failure {
+                    message: format!("HTTP response body read failed: {error}"),
+                    status_code: Some(status_code),
+                    body,
+                    timeout: None,
+                })
+            }
         }
-    };
-    if let Err(error) = read_result {
-        let timeout = timeout_kind_from_io(&error);
-        return Err(Failure {
-            message: format!("HTTP response body read failed: {error}"),
-            status_code: Some(status_code),
-            body,
-            timeout,
-        });
     }
     if cancellation.is_cancelled() {
-        return Err(Failure {
-            message: "HTTP request cancelled".into(),
-            status_code: Some(status_code),
-            body,
-            timeout: None,
-        });
+        return Err(cancelled_failure(Some(status_code), body));
     }
     Ok(Response { status_code, body })
-}
-
-fn timeout_kind(error: &ureq::Error) -> Option<ureq::Timeout> {
-    match error {
-        ureq::Error::Timeout(timeout) => Some(*timeout),
-        _ => None,
-    }
-}
-
-fn timeout_kind_from_io(error: &std::io::Error) -> Option<ureq::Timeout> {
-    error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<ureq::Error>())
-        .and_then(timeout_kind)
 }
 
 #[cfg(test)]
@@ -440,6 +545,8 @@ mod tests {
         let (finish_response, wait_for_finish) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("native client should connect");
+            let mut request = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut socket, &mut request);
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nfirst ",
@@ -489,6 +596,8 @@ mod tests {
         let address = listener.local_addr().expect("mock HTTP server address");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("native client should connect");
+            let mut request = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
             stream
                 .write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 3\r\n\r\nbad")
                 .expect("mock response should write");
@@ -510,6 +619,8 @@ mod tests {
         let address = listener.local_addr().expect("mock HTTP server address");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("native client should connect");
+            let mut request = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc")
                 .expect("mock response prefix should write");

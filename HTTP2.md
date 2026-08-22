@@ -23,10 +23,10 @@ provider requests use HTTP/2.
 
 The in-tree Rust adapters are serial finite-response adapters. They collect one
 OpenRouter SSE, Command Code NDJSON, or local Chat Completions response before
-returning the core stream. They now use `ureq` with its rustls feature, which is
-the smallest self-contained HTTPS facility that matches this HTTP/1.1 request
-shape. No external command-line HTTP executable, process environment, temporary credential file, or
-Tokio runtime is required.
+returning the core stream. They use the local `h12tiny-client` with only its
+HTTP/1.1 and TLS features, and configure Rustls with Graviola; the ALPN list
+intentionally excludes `h2`. No external command-line HTTP executable, process
+environment, temporary credential file, or Tokio runtime is required.
 
 HTTP/2 and asynchronous I/O are independent decisions. A blocking HTTP/2
 client is possible, and an asynchronous HTTP/1.1 client is possible. We do not
