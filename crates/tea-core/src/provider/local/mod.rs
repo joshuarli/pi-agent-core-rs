@@ -253,13 +253,13 @@ mod tests {
     use crate::scheduler::{CancellationToken, ModelProvider, ModelRequest, ModelStreamEvent};
     use crate::state::{ModelDescriptor, ThinkingLevel, Usage};
     use crate::tool::ToolDefinition;
-    use tea_protocol::JsonValue;
     #[cfg(unix)]
     use std::io::{Read, Write};
     #[cfg(unix)]
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::sync::mpsc;
+    use tea_protocol::JsonValue;
 
     #[test]
     fn laguna_defaults_target_o_mlx_without_ambient_configuration() {

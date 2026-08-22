@@ -1,6 +1,6 @@
 use crate::render;
-use tea_core::Usage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tea_core::Usage;
 
 use super::state::AppState;
 

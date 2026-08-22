@@ -6,13 +6,13 @@
 //! this is intentionally a diagnostic companion to the cross-process peak-RSS
 //! values recorded by `python3 -m evals.quality fast`.
 
+use rustybench::AllocProfiler;
+use std::sync::Arc;
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use tea_core::state::{ModelDescriptor, StopReason, ThinkingLevel};
 use tea_core::Agent;
-use rustybench::AllocProfiler;
-use std::sync::Arc;
 
 #[global_allocator]
 static ALLOC: AllocProfiler = AllocProfiler::system();

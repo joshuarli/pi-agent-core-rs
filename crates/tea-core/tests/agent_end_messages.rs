@@ -1,14 +1,12 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tea_core::event::AgentEventKind;
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use tea_core::state::{AssistantToolCall, Message, SerializedJson, StopReason, ToolCallId};
-use tea_core::tool::{
-    AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdateSink,
-};
+use tea_core::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdateSink};
 use tea_core::Agent;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 struct ScriptedProvider {

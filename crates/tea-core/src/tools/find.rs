@@ -10,8 +10,8 @@ use super::search::GlobMatcher;
 use super::workspace::WorkspaceRoot;
 use crate::error::ToolError;
 use crate::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolUpdateSink};
-use tea_protocol::JsonValue;
 use std::sync::Arc;
+use tea_protocol::JsonValue;
 
 pub(crate) struct FindTool {
     root: WorkspaceRoot,

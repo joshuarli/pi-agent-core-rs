@@ -55,14 +55,11 @@ impl RenderLine {
 }
 
 fn frame_for(state: &AppState, width: u16, height: u16) -> FrameLayout {
-    let desired_composer_rows = VisualLayout::measure(
-        state.composer().text(),
-        state.composer().cursor(),
-        width,
-    )
-    .rows
-    .len()
-    .max(1);
+    let desired_composer_rows =
+        VisualLayout::measure(state.composer().text(), state.composer().cursor(), width)
+            .rows
+            .len()
+            .max(1);
     // The composer grows with its content but keeps a bounded viewport once a
     // conversation exists. That leaves room for the transcript/status and
     // makes the hidden-above rail an observable affordance on short terminals.
@@ -194,32 +191,28 @@ fn footer_lines(state: &AppState, registry: &ProviderRegistry) -> [String; 2] {
     lines
 }
 
-fn render_surface(
-    state: &AppState,
-    registry: &ProviderRegistry,
-    width: u16,
-    height: u16,
-) -> Grid {
+fn render_surface(state: &AppState, registry: &ProviderRegistry, width: u16, height: u16) -> Grid {
     let mut grid = Grid::new(width, height);
     let theme = Theme::default();
     let payload = state.surface_lines().map(<[String]>::to_vec);
     let lines: Vec<String> = match state.surface() {
-        UiSurface::Help => payload.clone().unwrap_or_else(|| vec![
+        UiSurface::Help => payload.clone().unwrap_or_else(|| {
+            vec![
                 "Commands".into(),
                 String::new(),
                 "General".into(),
                 "  /help  show keybindings and commands".into(),
-            ]),
+            ]
+        }),
         UiSurface::Cost if payload.is_some() => payload.clone().unwrap_or_default(),
         UiSurface::Cost => {
             let [primary, secondary] = footer_lines(state, registry);
             vec!["Cost and context".into(), String::new(), primary, secondary]
         }
         UiSurface::ToolDetail => payload.unwrap_or_else(|| vec!["No transcript yet.".into()]),
-        UiSurface::ModelPicker | UiSurface::CustomModel | UiSurface::SessionPicker =>
-            state
-                .picker_lines_visible(registry, usize::MAX)
-                .unwrap_or_default(),
+        UiSurface::ModelPicker | UiSurface::CustomModel | UiSurface::SessionPicker => state
+            .picker_lines_visible(registry, usize::MAX)
+            .unwrap_or_default(),
         // Keep this branch forward-compatible with a future full-transcript surface. A
         // temporary surface still owns the whole frame even when its content is not yet
         // specialized here.
@@ -272,7 +265,14 @@ fn render_surface(
             }
             _ => "Esc Close",
         };
-        put_text(&mut grid, 0, height - 1, width, hint, theme.style(Role::Muted));
+        put_text(
+            &mut grid,
+            0,
+            height - 1,
+            width,
+            hint,
+            theme.style(Role::Muted),
+        );
     }
     grid
 }
@@ -280,7 +280,10 @@ fn render_surface(
 fn activity_lines(state: &AppState, width: u16) -> Vec<RenderLine> {
     let mut lines = Vec::new();
     if matches!(state.status(), crate::app::UiStatus::Active) {
-        lines.push(RenderLine::plain("• Thinking", Theme::default().style(Role::Activity)));
+        lines.push(RenderLine::plain(
+            "• Thinking",
+            Theme::default().style(Role::Activity),
+        ));
     }
     lines.extend(
         state
@@ -449,13 +452,17 @@ fn wrapped_transcript(state: &AppState, width: u16) -> Vec<RenderLine> {
 
 fn entry_lines_for_entry(entry: &TranscriptEntry, width: u16) -> Vec<RenderLine> {
     match entry {
-        TranscriptEntry::Welcome { text } => wrap_lines(text, width, Theme::default().style(Role::Muted)),
+        TranscriptEntry::Welcome { text } => {
+            wrap_lines(text, width, Theme::default().style(Role::Muted))
+        }
         TranscriptEntry::User { text } => rail_lines(text, width),
         TranscriptEntry::Assistant { text, streaming } => markdown_lines(text, width, !streaming),
         TranscriptEntry::Tool(tool) => tool_projection_lines(tool, width),
-        TranscriptEntry::Error { text } => {
-            wrap_lines(strip_prefix(text, "assistant error: "), width, Theme::default().style(Role::Error))
-        }
+        TranscriptEntry::Error { text } => wrap_lines(
+            strip_prefix(text, "assistant error: "),
+            width,
+            Theme::default().style(Role::Error),
+        ),
         TranscriptEntry::Notice { text, severity } => wrap_lines(
             text,
             width,
@@ -470,7 +477,10 @@ fn entry_lines_for_entry(entry: &TranscriptEntry, width: u16) -> Vec<RenderLine>
 fn tool_projection_lines(tool: &ToolProjection, width: u16) -> Vec<RenderLine> {
     let payload = match tool.state {
         ToolState::Started => Some(tool.arguments.as_str()),
-        ToolState::Progress => tool.latest_progress.as_deref().or(Some(tool.arguments.as_str())),
+        ToolState::Progress => tool
+            .latest_progress
+            .as_deref()
+            .or(Some(tool.arguments.as_str())),
         ToolState::Completed | ToolState::Failed => tool
             .settled_result
             .as_deref()
@@ -484,21 +494,11 @@ fn rail_lines(text: &str, width: u16) -> Vec<RenderLine> {
     let budget = width.saturating_sub(2);
     wrap_raw_text(text, budget)
         .into_iter()
-        .map(|line| {
-            RenderLine::plain(
-                format!("┃ {line}"),
-                Theme::default().style(Role::Text),
-            )
-        })
+        .map(|line| RenderLine::plain(format!("┃ {line}"), Theme::default().style(Role::Text)))
         .collect()
 }
 
-fn tool_lines(
-    name: &str,
-    state: ToolState,
-    payload: &str,
-    width: u16,
-) -> Vec<RenderLine> {
+fn tool_lines(name: &str, state: ToolState, payload: &str, width: u16) -> Vec<RenderLine> {
     let marker = match state {
         ToolState::Started => '⏺',
         ToolState::Progress => '…',
@@ -553,14 +553,11 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                 code_is_complete = false;
                 code_scratch.clear();
                 markdown.reset();
-                output.push(RenderLine::plain(
-                    "└",
-                    {
-                        let mut style = Theme::default().style(Role::Muted);
-                        style.bold = true;
-                        style
-                    },
-                ));
+                output.push(RenderLine::plain("└", {
+                    let mut style = Theme::default().style(Role::Muted);
+                    style.bold = true;
+                    style
+                }));
             } else {
                 let _ = markdown.highlight_into(raw.as_bytes(), &mut markdown_scratch);
                 markdown.reset();
@@ -581,14 +578,11 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                 code_highlighter = Language::from_name(language_name).map(Highlighter::new);
                 in_code = true;
                 let label = if info.is_empty() { "code" } else { info };
-                output.push(RenderLine::plain(
-                    format!("┌ {label}"),
-                    {
-                        let mut style = Theme::default().style(Role::Muted);
-                        style.bold = true;
-                        style
-                    },
-                ));
+                output.push(RenderLine::plain(format!("┌ {label}"), {
+                    let mut style = Theme::default().style(Role::Muted);
+                    style.bold = true;
+                    style
+                }));
             }
             index += 1;
             continue;
@@ -599,10 +593,7 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                     output.extend(diff_code_lines(raw, width));
                 } else {
                     output.extend(code_lines(
-                        &RenderLine::plain(
-                            raw,
-                            Theme::default().style(Role::Muted),
-                        ),
+                        &RenderLine::plain(raw, Theme::default().style(Role::Muted)),
                         width,
                     ));
                 }
@@ -616,10 +607,7 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                 output.extend(code_lines(&highlighted, width));
             } else {
                 output.extend(code_lines(
-                    &RenderLine::plain(
-                        raw,
-                        Theme::default().style(Role::Muted),
-                    ),
+                    &RenderLine::plain(raw, Theme::default().style(Role::Muted)),
                     width,
                 ));
             }
@@ -627,13 +615,12 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
             continue;
         }
 
-        let highlighted =
-            highlighted_line(
-                raw,
-                &mut markdown,
-                &mut markdown_scratch,
-                Theme::default().style(Role::Plain),
-            );
+        let highlighted = highlighted_line(
+            raw,
+            &mut markdown,
+            &mut markdown_scratch,
+            Theme::default().style(Role::Plain),
+        );
         if is_table_header(
             raw_lines.get(index).copied(),
             raw_lines.get(index + 1).copied(),
@@ -673,7 +660,7 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
             ));
         } else if let Some(quote) = trimmed.strip_prefix('>') {
             output.extend(wrap_lines(
-                    &format!("│ {}", quote.trim_start()),
+                &format!("│ {}", quote.trim_start()),
                 width,
                 Theme::default().style(Role::Muted),
             ));
@@ -796,15 +783,9 @@ fn code_lines(line: &RenderLine, width: u16) -> Vec<RenderLine> {
     let available = width.saturating_sub(2);
     let chunks = wrap_styled_line(line, available, true);
     if chunks.is_empty() {
-        return vec![RenderLine::plain(
-            "│ ",
-            Theme::default().style(Role::Muted),
-        )];
+        return vec![RenderLine::plain("│ ", Theme::default().style(Role::Muted))];
     }
-    chunks
-        .into_iter()
-        .map(prepend_code_rail)
-        .collect()
+    chunks.into_iter().map(prepend_code_rail).collect()
 }
 
 fn prepend_code_rail(line: RenderLine) -> RenderLine {
@@ -1082,17 +1063,16 @@ mod tests {
     fn fixture_style(value: &JsonValue) -> Style {
         let foreground = fixture_field(value, "foreground");
         let background = fixture_field(value, "background");
-        assert!(background.is_null(), "startup fixture does not use backgrounds");
+        assert!(
+            background.is_null(),
+            "startup fixture does not use backgrounds"
+        );
         let attributes = fixture_field(value, "attributes")
             .as_array()
             .expect("fixture attributes array");
         Style {
             foreground: (!foreground.is_null()).then(|| {
-                fixture_color(
-                    foreground
-                        .as_str()
-                        .expect("fixture foreground color name"),
-                )
+                fixture_color(foreground.as_str().expect("fixture foreground color name"))
             }),
             background: None,
             bold: attributes
@@ -1131,17 +1111,10 @@ mod tests {
                 .as_str()
                 .expect("fixture run text");
             let repeat = run.get("repeat").and_then(JsonValue::as_u64).unwrap_or(1);
-            let style = run
-                .get("style")
-                .map(fixture_style)
-                .unwrap_or(default_style);
+            let style = run.get("style").map(fixture_style).unwrap_or(default_style);
             for (offset, symbol) in text.repeat(repeat as usize).chars().enumerate() {
                 expected
-                    .set(
-                        column + offset as u16,
-                        row,
-                        Cell { symbol, style },
-                    )
+                    .set(column + offset as u16, row, Cell { symbol, style })
                     .expect("fixture run stays in bounds");
             }
         }
@@ -1329,7 +1302,12 @@ mod tests {
             '┃'
         );
         assert_eq!(regions.composer.y, 2);
-        assert_ne!(grid.get(0, regions.composer.y).expect("composer cell").symbol, '❯');
+        assert_ne!(
+            grid.get(0, regions.composer.y)
+                .expect("composer cell")
+                .symbol,
+            '❯'
+        );
     }
 
     #[test]
@@ -1338,11 +1316,17 @@ mod tests {
             include_str!("../fixtures/fx-ui/tea/minimal-startup-80x24.cells.json"),
             include_str!("../fixtures/fx-ui/tea/minimal-startup-120x40.cells.json"),
         ] {
-            let fixture = JsonValue::parse(fixture_text).expect("checked-in tea fixture is valid JSON");
+            let fixture =
+                JsonValue::parse(fixture_text).expect("checked-in tea fixture is valid JSON");
             let (expected, cursor) = fixture_grid(&fixture);
             let mut state = AppState::new();
             state.welcome_line();
-            let actual = render(&state, &ProviderRegistry::new(), expected.width(), expected.height());
+            let actual = render(
+                &state,
+                &ProviderRegistry::new(),
+                expected.width(),
+                expected.height(),
+            );
             assert_eq!(actual, expected, "reviewed startup cell grid changed");
             assert_eq!(
                 composer_cursor_position(&state, expected.width(), expected.height()),
@@ -1381,8 +1365,10 @@ mod tests {
 
     #[test]
     fn checked_in_tea_slash_fixture_matches_grid_style_and_cursor() {
-        let fixture = JsonValue::parse(include_str!("../fixtures/fx-ui/tea/minimal-slash-menu-80x24.cells.json"))
-            .expect("checked-in tea fixture is valid JSON");
+        let fixture = JsonValue::parse(include_str!(
+            "../fixtures/fx-ui/tea/minimal-slash-menu-80x24.cells.json"
+        ))
+        .expect("checked-in tea fixture is valid JSON");
         let (expected, cursor) = fixture_grid(&fixture);
         let mut state = AppState::new();
         state.welcome_line();
@@ -1401,7 +1387,12 @@ mod tests {
             "/followup".into(),
             "/quit".into(),
         ]);
-        let actual = render(&state, &ProviderRegistry::new(), expected.width(), expected.height());
+        let actual = render(
+            &state,
+            &ProviderRegistry::new(),
+            expected.width(),
+            expected.height(),
+        );
         assert_eq!(actual, expected, "reviewed slash-menu cell grid changed");
         assert_eq!(
             composer_cursor_position(&state, expected.width(), expected.height()),
@@ -1419,13 +1410,26 @@ mod tests {
             .replace_from_editor("one\ntwo\nthree\nfour\nfive");
         let grid = render(&state, &ProviderRegistry::new(), 20, 5);
         let regions = frame_for(&state, 20, 5);
-        assert_eq!(grid.get(0, regions.composer.y).expect("visible composer rail").symbol, '┃');
-        assert_eq!(grid.get(1, regions.composer.y).expect("hidden composer marker").symbol, '↑');
+        assert_eq!(
+            grid.get(0, regions.composer.y)
+                .expect("visible composer rail")
+                .symbol,
+            '┃'
+        );
+        assert_eq!(
+            grid.get(1, regions.composer.y)
+                .expect("hidden composer marker")
+                .symbol,
+            '↑'
+        );
         for (width, height) in [(0, 0), (1, 1), (2, 2)] {
             let grid = render(&state, &ProviderRegistry::new(), width, height);
             assert_eq!((grid.width(), grid.height()), (width, height));
             if let Some((x, y)) = composer_cursor_position(&state, width, height) {
-                assert!(x < width && y < height, "cursor must address a drawable cell");
+                assert!(
+                    x < width && y < height,
+                    "cursor must address a drawable cell"
+                );
             }
         }
     }

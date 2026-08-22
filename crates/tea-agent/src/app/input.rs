@@ -4,8 +4,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tea_core::state::AgentPhase;
 use tea_core::{CoreError, Usage};
 
-use super::error::AppError;
 use super::commands;
+use super::error::AppError;
 use super::runtime::App;
 use super::state::{QueueDelivery, UiSurface};
 use super::support::format_footer_usage;
@@ -50,7 +50,10 @@ impl App {
                 KeyCode::PageDown | KeyCode::Down => self.state.page_surface_down(page),
                 _ => {}
             }
-            if matches!(key.code, KeyCode::PageUp | KeyCode::Up | KeyCode::PageDown | KeyCode::Down) {
+            if matches!(
+                key.code,
+                KeyCode::PageUp | KeyCode::Up | KeyCode::PageDown | KeyCode::Down
+            ) {
                 return Ok(());
             }
         }
@@ -69,15 +72,15 @@ impl App {
                 }
                 KeyCode::Up => {
                     self.state.move_slash_completion(-1);
-                    return Ok(())
+                    return Ok(());
                 }
                 KeyCode::Down => {
                     self.state.move_slash_completion(1);
-                    return Ok(())
+                    return Ok(());
                 }
                 KeyCode::Tab => {
                     self.complete_command();
-                    return Ok(())
+                    return Ok(());
                 }
                 KeyCode::Enter => {
                     if let Some(command) = self.state.selected_slash_completion().map(str::to_owned)

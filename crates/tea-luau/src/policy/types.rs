@@ -1,11 +1,11 @@
 //! Public policy values and private VM state.
 
 use mlua::{Function, Lua};
-use tea_core::tool::ToolExecutionMode;
-use tea_protocol::JsonValue;
 use std::fmt;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
+use tea_core::tool::ToolExecutionMode;
+use tea_protocol::JsonValue;
 
 /// Resource limits applied to one Lua policy virtual machine.
 ///

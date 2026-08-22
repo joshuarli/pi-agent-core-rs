@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+use std::sync::{Arc, Mutex};
 use tea_core::compaction::{
     AutomaticCompactionPolicy, AutomaticCompactionReason, AutomaticCompactionRequest,
     CompactionContext, CompactionError, CompactionFuture, CompactionResult, Compactor,
@@ -7,12 +9,8 @@ use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use tea_core::state::{AgentToolCall, SerializedJson, StopReason, ToolCallId, Usage};
-use tea_core::tool::{
-    AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdateSink,
-};
+use tea_core::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdateSink};
 use tea_core::{Agent, AgentMessage, CoreError};
-use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct RecordingProvider {
@@ -75,8 +73,7 @@ impl AgentTool for OutputTool {
     }
 
     fn schema(&self) -> &tea_protocol::JsonValue {
-        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> =
-            std::sync::OnceLock::new();
+        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> = std::sync::OnceLock::new();
         SCHEMA.get_or_init(|| tea_protocol::JsonValue::parse(r#"{"type":"object"}"#).unwrap())
     }
 

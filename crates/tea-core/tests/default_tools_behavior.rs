@@ -3,6 +3,11 @@
 //! These tests deliberately construct every tool over a unique temporary workspace.  They do
 //! not depend on the repository checkout, process cwd, home directory, or ambient credentials.
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tea_core::default_tools::{
     CodingOperations, CommandOutput, DirectoryEntry, EntryMetadata, GrepOptions, OperationError,
     OperationFuture,
@@ -12,11 +17,6 @@ use tea_core::scheduler::CancellationToken;
 use tea_core::state::{SerializedJson, ToolCallId};
 use tea_core::tool::{AgentTool, ToolCall, ToolContext, ToolUpdateSink};
 use tea_core::DefaultCodingTools;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
 

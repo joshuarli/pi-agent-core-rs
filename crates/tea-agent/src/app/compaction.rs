@@ -5,6 +5,9 @@
 //! tool-free summarization request and retaining the exact suffix selected by
 //! the core's automatic-compaction split.
 
+use std::collections::BTreeSet;
+use std::fmt;
+use std::sync::{Arc, RwLock};
 use tea_core::compaction::{
     AutomaticCompactionRequest, CompactionContext, CompactionError, CompactionFuture,
     CompactionResult, Compactor, ProviderContext,
@@ -15,9 +18,6 @@ use tea_core::scheduler::{CancellationToken, ModelProvider, ModelRequest, ModelS
 use tea_core::state::{AgentMessage, MessageId, ModelDescriptor, StopReason, ThinkingLevel};
 use tea_core::Usage;
 use tea_protocol::JsonValue;
-use std::collections::BTreeSet;
-use std::fmt;
-use std::sync::{Arc, RwLock};
 
 const SUMMARY_SYSTEM_PROMPT: &str = r#"You compact coding-agent conversation history.
 Produce a concise structured summary that preserves everything needed to continue the work.

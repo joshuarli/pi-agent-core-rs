@@ -9,11 +9,11 @@
 use crate::error::ToolError;
 use crate::scheduler::CancellationToken;
 use crate::state::{SerializedJson, ToolCallId, Usage};
-use tea_protocol::JsonValue;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tea_protocol::JsonValue;
 
 /// A stable, host-owned identifier for one class of retryable capability failure.
 ///

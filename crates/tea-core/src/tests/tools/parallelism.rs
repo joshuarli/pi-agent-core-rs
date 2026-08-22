@@ -12,8 +12,7 @@ impl AgentTool for CancellingPendingParallelTool {
     }
 
     fn schema(&self) -> &tea_protocol::JsonValue {
-        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> =
-            std::sync::OnceLock::new();
+        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> = std::sync::OnceLock::new();
         SCHEMA.get_or_init(|| tea_protocol::JsonValue::parse(r#"{"type":"object"}"#).unwrap())
     }
 
@@ -222,10 +221,8 @@ fn after_tool_metadata_is_preserved_in_the_transcript() {
             .hooks(Arc::new(MetadataAfterToolHook))
             .tool(Arc::new(EchoTool {
                 calls: Arc::new(Mutex::new(Vec::new())),
-                schema: tea_protocol::JsonValue::parse(
-                    r#"{"type":"object","required":["text"]}"#,
-                )
-                .expect("test schema is valid JSON"),
+                schema: tea_protocol::JsonValue::parse(r#"{"type":"object","required":["text"]}"#)
+                    .expect("test schema is valid JSON"),
             }))
             .build();
         let run = agent.start_prompt("attach metadata to echo")?;
@@ -282,10 +279,8 @@ fn invalid_tool_arguments_become_an_error_result_and_the_model_can_continue() {
             .model_provider(provider.clone())
             .tool(Arc::new(EchoTool {
                 calls: Arc::clone(&executed),
-                schema: tea_protocol::JsonValue::parse(
-                    r#"{"type":"object","required":["text"]}"#,
-                )
-                .expect("test schema is valid JSON"),
+                schema: tea_protocol::JsonValue::parse(r#"{"type":"object","required":["text"]}"#)
+                    .expect("test schema is valid JSON"),
             }))
             .build();
         let run = agent.start_prompt("send malformed echo arguments")?;

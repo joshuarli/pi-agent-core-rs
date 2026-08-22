@@ -1,8 +1,8 @@
-use tea_core::ThinkingLevel;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
+use tea_core::ThinkingLevel;
 
 /// Explicit command-line inputs accepted by the v0 terminal host.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

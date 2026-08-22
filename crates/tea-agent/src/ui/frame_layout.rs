@@ -60,8 +60,8 @@ pub fn plan_flow(
         // and navigation affordance, so no ordinary status hint is appended.
         let menu_height = menu_rows.min(usize::from(height.saturating_sub(composer_height))) as u16;
         let content_budget = height.saturating_sub(composer_height + menu_height);
-        let transcript_height = transcript_rows
-            .min(usize::from(content_budget.saturating_sub(1))) as u16;
+        let transcript_height =
+            transcript_rows.min(usize::from(content_budget.saturating_sub(1))) as u16;
         let gap = u16::from(transcript_height != 0 && transcript_height < content_budget);
         let composer_y = transcript_height + gap;
         let menu_y = composer_y.saturating_add(composer_height);
@@ -114,8 +114,8 @@ pub fn plan_flow(
     let before_composer_gap = u16::from(transcript_rows != 0 && after_gap_remaining != 0);
     let content_budget = after_gap_remaining.saturating_sub(before_composer_gap);
     let activity_height = activity_rows.min(usize::from(content_budget)) as u16;
-    let transcript_height = transcript_rows
-        .min(usize::from(content_budget.saturating_sub(activity_height))) as u16;
+    let transcript_height =
+        transcript_rows.min(usize::from(content_budget.saturating_sub(activity_height))) as u16;
     let activity_y = transcript_height.saturating_add(before_composer_gap);
     let composer_y = activity_y.saturating_add(activity_height);
     let hint_y = composer_y
@@ -188,7 +188,15 @@ mod tests {
     #[test]
     fn flow_places_a_short_transcript_before_the_composer() {
         let frame = plan_flow(80, 24, 1, 0, 1, 0, 1);
-        assert_eq!(frame.transcript, Rect { x: 0, y: 0, width: 80, height: 1 });
+        assert_eq!(
+            frame.transcript,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 1
+            }
+        );
         assert_eq!(frame.composer.y, 2);
         assert_eq!(frame.hint.y, 4);
     }

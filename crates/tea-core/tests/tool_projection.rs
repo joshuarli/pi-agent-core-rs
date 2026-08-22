@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
@@ -7,8 +9,6 @@ use tea_core::tool::{
     ToolContext, ToolFailure, ToolFuture, ToolResult, ToolResultProjectionPolicy, ToolUpdateSink,
 };
 use tea_core::{Agent, AgentMessage, CoreError};
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 #[test]
 fn projection_marks_error_details_truncation_and_repeated_payloads_deterministically() {
@@ -114,8 +114,7 @@ impl AgentTool for DetailedTool {
     }
 
     fn schema(&self) -> &tea_protocol::JsonValue {
-        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> =
-            std::sync::OnceLock::new();
+        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> = std::sync::OnceLock::new();
         SCHEMA.get_or_init(|| tea_protocol::JsonValue::parse(r#"{"type":"object"}"#).unwrap())
     }
 

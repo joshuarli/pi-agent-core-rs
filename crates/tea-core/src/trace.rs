@@ -14,11 +14,11 @@
 use crate::event::{AgentEvent, AgentEventKind, EventObserver, ObserverFuture};
 use crate::scheduler::CancellationToken;
 use crate::state::{AgentMessage, MessageId, StopReason, ToolCallId};
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 use tea_trace::{
     EndReason, EpisodeEnd, EpisodeHeader, IsolatedSink, Tool, TraceEvent, TraceSink, Turn,
 };
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 
 /// An awaited core observer that records a compact linear trace episode.
 ///

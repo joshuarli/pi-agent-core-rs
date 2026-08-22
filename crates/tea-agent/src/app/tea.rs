@@ -6,6 +6,11 @@
 //! for prompt composition, while declared handlers remain inert until a host supplies an
 //! explicit binding.
 
+use std::collections::BTreeSet;
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use tea_core::error::ToolError;
 use tea_core::tool::{
     AgentTool, AgentToolResult, ToolCall, ToolContext, ToolExecutionMode, ToolFuture,
@@ -14,11 +19,6 @@ use tea_core::tool::{
 use tea_luau::bundle::{Bundle, BundleManifest, BUNDLE_ABI_VERSION};
 use tea_luau::{LuaPolicy, PolicyError, PolicyTool};
 use tea_protocol::JsonValue;
-use std::collections::BTreeSet;
-use std::fs;
-use std::io;
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 const REGISTRY_FILE: &str = "extensions.json";
 const EXTENSION_MANIFEST_FILE: &str = "manifest.json";
@@ -584,16 +584,14 @@ impl TeaExtensionFilesTool {
     }
 
     fn resolve_existing(&self, relative: &str) -> Result<PathBuf, ToolError> {
-        let lexical =
-            contained_path(&self.root, relative).map_err(invalid_tool_args)?;
+        let lexical = contained_path(&self.root, relative).map_err(invalid_tool_args)?;
         let path = fs::canonicalize(&lexical).map_err(|error| tool_io(self.name(), error))?;
         ensure_contained_canonical(&self.root, &path)?;
         Ok(path)
     }
 
     fn resolve_for_write(&self, relative: &str) -> Result<PathBuf, ToolError> {
-        let path =
-            contained_path(&self.root, relative).map_err(invalid_tool_args)?;
+        let path = contained_path(&self.root, relative).map_err(invalid_tool_args)?;
         if path == self.root {
             return Err(invalid_tool_args("a file path is required"));
         }
@@ -1117,8 +1115,8 @@ entry and granting authority remain separate trusted host decisions."#;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tea_core::state::ToolCallId;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tea_core::state::ToolCallId;
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1127,10 +1125,8 @@ mod tests {
     impl TestHome {
         fn new() -> Self {
             let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "tea-tea-test-{}-{sequence}",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("tea-tea-test-{}-{sequence}", std::process::id()));
             fs::create_dir_all(&path).expect("test home should be created");
             Self(path)
         }

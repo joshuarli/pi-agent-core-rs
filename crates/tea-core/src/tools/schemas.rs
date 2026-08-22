@@ -1,7 +1,7 @@
 //! JSON schemas for the pinned standard coding tools.
 
-use tea_protocol::JsonValue;
 use std::collections::BTreeMap;
+use tea_protocol::JsonValue;
 
 pub(crate) fn schema_object(
     required: &[&str],

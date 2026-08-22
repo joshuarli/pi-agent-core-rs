@@ -1,16 +1,14 @@
 //! The pre-dispatch tool-start event is the auditable argument boundary.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tea_core::event::{AgentEvent, AgentEventKind, EventObserver, ObserverFuture};
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use tea_core::state::{AgentPhase, AssistantToolCall, SerializedJson, StopReason, ToolCallId};
-use tea_core::tool::{
-    AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdateSink,
-};
+use tea_core::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolUpdateSink};
 use tea_core::Agent;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 
 struct ScriptedProvider {
     streams: Mutex<VecDeque<ModelStream>>,
@@ -88,8 +86,7 @@ impl AgentTool for RecordingTool {
     }
 
     fn schema(&self) -> &tea_protocol::JsonValue {
-        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> =
-            std::sync::OnceLock::new();
+        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> = std::sync::OnceLock::new();
         SCHEMA.get_or_init(|| {
             tea_protocol::JsonValue::parse(r#"{"type":"object"}"#)
                 .expect("fixture schema is valid JSON")
@@ -171,10 +168,7 @@ fn tool_start_observer_receives_exact_arguments_before_dispatch_and_settlement()
             })
             .expect("tool-start event");
         assert_eq!(start.as_str(), r#"{"secret":"value"}"#);
-        assert_eq!(
-            run.snapshot().phase,
-            tea_core::state::RunPhase::Succeeded
-        );
+        assert_eq!(run.snapshot().phase, tea_core::state::RunPhase::Succeeded);
         assert_eq!(agent.snapshot().phase, AgentPhase::Idle);
         assert!(run
             .events()

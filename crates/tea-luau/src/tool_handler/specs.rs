@@ -1,8 +1,8 @@
 //! Public tool-handler metadata and construction validation.
 
+use std::fmt;
 use tea_core::tool::ToolExecutionMode;
 use tea_protocol::JsonValue;
-use std::fmt;
 
 /// Resource limits applied independently to each handler invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

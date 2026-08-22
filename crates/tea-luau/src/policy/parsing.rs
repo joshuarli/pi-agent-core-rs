@@ -2,10 +2,10 @@
 
 use super::{PolicyError, PolicyTool};
 use mlua::{Function, Table, Value};
+use std::collections::BTreeSet;
 use tea_core::hooks::BeforeToolCall;
 use tea_core::tool::ToolExecutionMode;
 use tea_protocol::JsonValue;
-use std::collections::BTreeSet;
 
 pub(super) fn parse_declaration(
     declaration: &Table,

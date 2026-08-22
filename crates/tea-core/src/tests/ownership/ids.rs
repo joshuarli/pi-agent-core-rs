@@ -16,8 +16,7 @@ impl AgentTool for ConfigurationTool {
     }
 
     fn schema(&self) -> &tea_protocol::JsonValue {
-        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> =
-            std::sync::OnceLock::new();
+        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> = std::sync::OnceLock::new();
         SCHEMA.get_or_init(|| tea_protocol::JsonValue::parse(r#"{"type":"object"}"#).unwrap())
     }
 

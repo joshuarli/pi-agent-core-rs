@@ -24,12 +24,12 @@ pub use policy::{LuaPolicy, LuaPolicyHookSet, PolicyError, PolicyLimits, PolicyT
 mod tests {
     use super::{LuaPolicy, LuaPolicyHookSet, PolicyError, PolicyLimits};
     use crate::bundle::{Bundle, BundleManifest, BUNDLE_ABI_VERSION};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tea_core::error::HookError;
     use tea_core::hooks::{AfterToolCall, BeforeToolCall, ContextEnvelope, HookSet};
     use tea_core::state::{SerializedJson, ToolCallId};
     use tea_core::tool::{ToolCall, ToolResult};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     const GAME_POLICY: &str = r#"
         return {

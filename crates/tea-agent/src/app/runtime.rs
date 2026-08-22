@@ -1,6 +1,11 @@
 use crate::grid::Grid;
 use crate::render;
 use crate::terminal::TerminalGuard;
+use std::ffi::OsStr;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
+use std::time::Duration;
 use tea_core::compaction::CompactionHandle;
 use tea_core::event::AgentEventKind;
 use tea_core::provider::ProviderRegistry;
@@ -8,21 +13,16 @@ use tea_core::state::AgentPhase;
 use tea_core::{
     Agent, AgentConfiguration, CoreError, DefaultCodingTools, LosslessEventSubscription, RunHandle,
 };
-use std::ffi::OsStr;
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
-use std::time::Duration;
 
 use super::cli::CliOptions;
 use super::compaction::ProviderCompactor;
 use super::error::AppError;
 use super::host::{build_host_agent_with_thinking, compose_tea_configuration};
 use super::preferences::load_last_model;
-use super::tea::{load_tea_extensions, resolve_tea_home, TeaExtensions};
 use super::session::{SessionRecord, SessionStore};
 use super::state::{AppState, UiStatus};
 use super::support::composer_cursor;
+use super::tea::{load_tea_extensions, resolve_tea_home, TeaExtensions};
 use std::sync::Arc;
 
 /// Assembled v0 terminal application.

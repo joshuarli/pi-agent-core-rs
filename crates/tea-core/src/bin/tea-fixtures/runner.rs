@@ -1,3 +1,9 @@
+use std::collections::VecDeque;
+use std::env;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 use tea_core::event::{AgentEvent, AgentEventKind, EventObserver, ObserverFuture};
 use tea_core::hooks::{
     AfterToolCall, AgentLoopTurnUpdate, BeforeToolCall, ContextEnvelope, HookFuture, HookSet,
@@ -12,12 +18,6 @@ use tea_core::tool::{
 };
 use tea_core::{Agent, CoreError};
 use tea_protocol::JsonValue;
-use std::collections::VecDeque;
-use std::env;
-use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::{Poll, Waker};
 
 use super::fixture::{
     Fixture, FixtureAction, FixtureActiveQueueArrival, FixtureAfterToolReplace,
@@ -396,8 +396,7 @@ pub(super) async fn run_fixture(fixture: Fixture) -> Result<JsonValue, String> {
         streams: Mutex::new(streams.into()),
         requests: Arc::new(Mutex::new(Vec::new())),
     });
-    let quality_capture_requests =
-        env::var("TEA_QUALITY_CAPTURE").ok().as_deref() == Some("1");
+    let quality_capture_requests = env::var("TEA_QUALITY_CAPTURE").ok().as_deref() == Some("1");
     let quality_request_contexts =
         quality_capture_requests.then(|| Arc::new(Mutex::new(Vec::new())));
     let active_queue_target = Arc::new(Mutex::new(None));

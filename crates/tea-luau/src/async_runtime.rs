@@ -15,13 +15,13 @@ use mlua::{
     thread::ThreadStatus, Error as LuaError, Function, IntoLuaMulti, Lua, MultiValue, Nil, Table,
     Thread,
 };
-use tea_core::scheduler::{CancellationToken, CancellationWait};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use tea_core::scheduler::{CancellationToken, CancellationWait};
 
 /// Global Luau function installed by [`install_await`].
 pub const AWAIT_GLOBAL: &str = "await";
@@ -410,12 +410,12 @@ fn lua_error(error: LuaError) -> AsyncRuntimeError {
 mod tests {
     use super::{install_await, AsyncRuntimeError, HostCallError, HostRequest, LuauAsyncRuntime};
     use mlua::{Function, Lua, StdLib};
-    use tea_core::scheduler::CancellationToken;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::task::{Context, Poll, Waker};
+    use tea_core::scheduler::CancellationToken;
 
     fn lua() -> Lua {
         Lua::new_with(

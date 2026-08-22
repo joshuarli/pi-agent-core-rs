@@ -33,10 +33,8 @@ fn prepared_next_turn_context_survives_a_tool_continuation_without_queued_input(
             .hooks(Arc::new(ReplacementContextHooks))
             .tool(Arc::new(EchoTool {
                 calls: Arc::new(Mutex::new(Vec::new())),
-                schema: tea_protocol::JsonValue::parse(
-                    r#"{"type":"object","required":["text"]}"#,
-                )
-                .expect("test schema is valid JSON"),
+                schema: tea_protocol::JsonValue::parse(r#"{"type":"object","required":["text"]}"#)
+                    .expect("test schema is valid JSON"),
             }))
             .build();
         let run = agent.start_prompt("echo with replaced continuation context")?;

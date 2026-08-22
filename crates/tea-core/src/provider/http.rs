@@ -11,7 +11,7 @@
 use super::super::scheduler::CancellationToken;
 use h12tiny_client_sync::{Client, ResponseBody};
 use http::{header::HeaderName, HeaderValue, Method as HttpMethod, Request as HttpRequest, Uri};
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -207,9 +207,7 @@ fn push_stream_event(state: &Arc<Mutex<StreamState>>, event: StreamEvent) {
 /// The sync client supplies explicit Graviola-backed public roots and offers only `http/1.1`
 /// through ALPN. It owns no idle pool or background driver.
 fn client() -> Client {
-    Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .build()
+    Client::builder().connect_timeout(CONNECT_TIMEOUT).build()
 }
 
 fn build_request(request: Request) -> Result<HttpRequest<Vec<u8>>, Failure> {
@@ -240,14 +238,12 @@ fn build_request(request: Request) -> Result<HttpRequest<Vec<u8>>, Failure> {
         })?;
         builder = builder.header(name, value);
     }
-    builder
-        .body(request.body)
-        .map_err(|error| Failure {
-            message: format!("cannot build HTTP request: {error}"),
-            status_code: None,
-            body: Vec::new(),
-            timeout: None,
-        })
+    builder.body(request.body).map_err(|error| Failure {
+        message: format!("cannot build HTTP request: {error}"),
+        status_code: None,
+        body: Vec::new(),
+        timeout: None,
+    })
 }
 
 fn append_query(mut url: String, query: &[(String, String)]) -> String {
@@ -275,7 +271,9 @@ struct OpenResponse {
 }
 
 fn deadline(timeout: Duration) -> Instant {
-    Instant::now().checked_add(timeout).unwrap_or_else(Instant::now)
+    Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now)
 }
 
 fn remaining(deadline: Instant, stall_timeout: Option<Duration>) -> Duration {
@@ -431,7 +429,10 @@ fn cancelled_failure(status_code: Option<u16>, body: Vec<u8>) -> Failure {
 
 impl Failure {
     pub(crate) fn is_stall(&self) -> bool {
-        matches!(self.timeout, Some(Timeout::RecvResponse | Timeout::RecvBody))
+        matches!(
+            self.timeout,
+            Some(Timeout::RecvResponse | Timeout::RecvBody)
+        )
     }
 }
 

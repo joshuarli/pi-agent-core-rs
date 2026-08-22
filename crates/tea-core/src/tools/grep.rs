@@ -9,8 +9,8 @@ use super::schemas::grep_schema;
 use super::search::TinyPattern;
 use super::workspace::WorkspaceRoot;
 use crate::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolUpdateSink};
-use tea_protocol::JsonValue;
 use std::sync::Arc;
+use tea_protocol::JsonValue;
 
 pub(crate) struct GrepTool {
     root: WorkspaceRoot,

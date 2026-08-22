@@ -1,13 +1,13 @@
 //! HookSet adapter for the policy-owned pre-tool decision.
 
 use super::{LuaPolicy, PolicyError};
+use std::sync::Arc;
 use tea_core::error::HookError;
 use tea_core::hooks::{
     AfterToolCall, BeforeToolCall, ContextEnvelope, HookFuture, HookSet, NextTurn,
 };
 use tea_core::scheduler::CancellationToken;
 use tea_core::tool::{ToolCall, ToolResult};
-use std::sync::Arc;
 
 /// A hook adapter that gives a Lua policy the first, narrow pre-tool decision.
 ///

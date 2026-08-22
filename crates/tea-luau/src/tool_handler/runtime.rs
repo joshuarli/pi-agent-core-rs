@@ -8,6 +8,12 @@ use super::specs::{
 };
 use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value};
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use tea_core::error::ToolError;
 #[cfg(test)]
 pub(super) use tea_core::scheduler::CancellationToken;
@@ -17,12 +23,6 @@ use tea_core::tool::{
     AgentTool, ToolCall, ToolContext, ToolExecutionMode, ToolFuture, ToolResult, ToolUpdateSink,
 };
 use tea_protocol::{JsonNumber, JsonValue};
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::task::{Context, Poll};
 
 const HANDLER_CHUNK_NAME: &str = "tea-tool-handler.luau";
 
@@ -600,9 +600,9 @@ fn runtime_error(error: mlua::Error) -> ToolHandlerInitError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tea_core::state::ToolCallId;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
+    use tea_core::state::ToolCallId;
 
     struct EchoCapability {
         calls: Arc<AtomicUsize>,

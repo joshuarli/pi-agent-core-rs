@@ -7,8 +7,8 @@
 
 use crate::error::ToolError;
 use crate::state::SerializedJson;
-use tea_protocol::JsonValue;
 use std::collections::BTreeSet;
+use tea_protocol::JsonValue;
 
 pub(crate) fn validate_tool_arguments(
     tool_name: &str,
@@ -336,8 +336,7 @@ fn type_matches(type_name: &str, value: &JsonValue) -> bool {
         "integer" => matches!(
             value,
             JsonValue::Number(
-                tea_protocol::JsonNumber::Signed(_)
-                    | tea_protocol::JsonNumber::Unsigned(_)
+                tea_protocol::JsonNumber::Signed(_) | tea_protocol::JsonNumber::Unsigned(_)
             )
         ),
         "number" => matches!(value, JsonValue::Number(_)),

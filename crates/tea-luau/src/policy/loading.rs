@@ -6,10 +6,10 @@ use super::{LuaPolicy, PolicyError, PolicyLimits};
 use crate::bundle::Bundle;
 use crate::bundle_runtime::BundleRuntime;
 use mlua::{Lua, LuaOptions, StdLib, Table, Value, VmState};
-use tea_core::hooks::BeforeToolCall;
-use tea_core::tool::ToolCall;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tea_core::hooks::BeforeToolCall;
+use tea_core::tool::ToolCall;
 
 const POLICY_CHUNK_NAME: &str = "tea-policy.luau";
 

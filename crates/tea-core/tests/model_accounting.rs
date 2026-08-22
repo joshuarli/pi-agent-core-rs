@@ -1,10 +1,10 @@
+use std::sync::{Arc, Mutex};
 use tea_core::event::AgentEventKind;
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use tea_core::state::{ModelDescriptor, StopReason, Usage};
 use tea_core::Agent;
-use std::sync::{Arc, Mutex};
 
 struct FixtureProvider {
     streams: Mutex<Vec<ModelStream>>,

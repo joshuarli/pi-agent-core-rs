@@ -1,4 +1,7 @@
-use ptytest::{Color as PtyColor, CommandSpec, ExitStatus, Key, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
+use ptytest::{
+    Color as PtyColor, CommandSpec, ExitStatus, Key, ProtocolProfile, PtyTest, Scenario, Size,
+    TestEnv,
+};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -99,8 +102,7 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
         .size(Size::new(COLUMNS, ROWS).expect("constant terminal size"))
         .environment(TestEnv::hermetic().expect("create hermetic test environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
-    let mut terminal =
-        PtyTest::spawn(scenario).expect("real tea binary should start in a PTY");
+    let mut terminal = PtyTest::spawn(scenario).expect("real tea binary should start in a PTY");
     let baseline = terminal.terminal_baseline();
 
     terminal
@@ -250,8 +252,7 @@ fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
         .size(Size::new(80, 16).expect("constant terminal size"))
         .environment(TestEnv::hermetic().expect("create hermetic test environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
-    let mut terminal =
-        PtyTest::spawn(scenario).expect("real tea binary should start in a PTY");
+    let mut terminal = PtyTest::spawn(scenario).expect("real tea binary should start in a PTY");
     let baseline = terminal.terminal_baseline();
 
     terminal
@@ -332,8 +333,12 @@ fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
             "slash completion menu",
             |screen| {
                 screen.row(3).is_some_and(|row| row.starts_with('─'))
-                    && screen.row(4).is_some_and(|row| row.starts_with("Results 12"))
-                    && screen.row(13).is_some_and(|row| row.starts_with("↑↓ Navigate"))
+                    && screen
+                        .row(4)
+                        .is_some_and(|row| row.starts_with("Results 12"))
+                    && screen
+                        .row(13)
+                        .is_some_and(|row| row.starts_with("↑↓ Navigate"))
             },
         )
         .expect("leading slash should open the measured inline menu");
@@ -383,7 +388,9 @@ fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
                     && screen.contains("Commands 12")
                     && screen.contains("show keybindings and commands")
                     && screen.row(14).is_some_and(|row| row.starts_with('─'))
-                    && screen.row(15).is_some_and(|row| row.starts_with("↑↓ Navigate"))
+                    && screen
+                        .row(15)
+                        .is_some_and(|row| row.starts_with("↑↓ Navigate"))
             },
         )
         .expect("help command should render a temporary command surface");

@@ -5,8 +5,8 @@ use super::domain::{
     CapabilityOperation, CapabilityRequest, JsonOperation, McpOperation, McpPermission,
     TaskOperation, TimeOperation, TraceOperation, WorldOperation, CAPABILITY_ABI_VERSION,
 };
-use tea_protocol::{JsonAdapter, JsonError, JsonNumber, JsonValue};
 use std::collections::BTreeMap;
+use tea_protocol::{JsonAdapter, JsonError, JsonNumber, JsonValue};
 
 /// A complete, deterministic capability grant set for one VM.
 #[derive(Clone, Debug, Eq, PartialEq)]

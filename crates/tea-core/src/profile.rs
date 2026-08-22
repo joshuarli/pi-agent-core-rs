@@ -6,9 +6,9 @@
 
 use crate::error::ProfileError;
 use crate::tool::{ToolDefinition, ToolRegistry};
-use tea_protocol::JsonValue;
 use std::collections::BTreeMap;
 use std::path::Path;
+use tea_protocol::JsonValue;
 
 const PINNED_DEFAULT_PROFILE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),

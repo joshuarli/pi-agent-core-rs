@@ -4,28 +4,25 @@
 //! only the public provider, tool, lifecycle, and profile seams, so a private implementation
 //! helper cannot make a contract appear covered accidentally.
 
+use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use tea_core::agent::Agent;
 use tea_core::event::AgentEventKind;
 use tea_core::profile::{PiDefaultCodingProfile, ProfileSpec};
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
-use tea_core::state::{
-    AgentPhase, AssistantToolCall, Message, RunPhase, StopReason, ToolCallId,
-};
+use tea_core::state::{AgentPhase, AssistantToolCall, Message, RunPhase, StopReason, ToolCallId};
 use tea_core::tool::{
     AgentTool, ToolCall, ToolContext, ToolDefinition, ToolExecutionMode, ToolFuture, ToolRegistry,
     ToolResult, ToolUpdateSink,
 };
-use std::collections::{BTreeMap, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 
 fn schema() -> tea_protocol::JsonValue {
-    tea_protocol::JsonValue::parse(r#"{"type":"object"}"#)
-        .expect("fixture schema is valid JSON")
+    tea_protocol::JsonValue::parse(r#"{"type":"object"}"#).expect("fixture schema is valid JSON")
 }
 
 fn tool_call(id: &str, name: &str) -> AssistantToolCall {

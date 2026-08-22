@@ -1,12 +1,12 @@
 //! Deterministic cacheability baseline for adjacent core model requests.
 
+use std::sync::{Arc, Mutex};
 use tea_core::measurement::measure_prompt_cacheability;
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use tea_core::state::{ModelDescriptor, StopReason, ThinkingLevel};
 use tea_core::Agent;
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
 struct RecordingProvider {

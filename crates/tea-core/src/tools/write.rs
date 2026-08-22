@@ -7,9 +7,9 @@ use super::contract::CodingOperations;
 use super::schemas::write_schema;
 use super::workspace::WorkspaceRoot;
 use crate::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolUpdateSink};
-use tea_protocol::JsonValue;
 use std::path::Path;
 use std::sync::Arc;
+use tea_protocol::JsonValue;
 
 pub(crate) struct WriteTool {
     root: WorkspaceRoot,

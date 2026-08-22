@@ -8,8 +8,8 @@ use super::contract::{CodingOperations, CommandEnvironment};
 use super::schemas::bash_schema;
 use super::workspace::WorkspaceRoot;
 use crate::tool::{AgentTool, AgentToolResult, ToolCall, ToolContext, ToolFuture, ToolUpdateSink};
-use tea_protocol::JsonValue;
 use std::sync::Arc;
+use tea_protocol::JsonValue;
 
 pub(crate) struct BashTool {
     root: WorkspaceRoot,

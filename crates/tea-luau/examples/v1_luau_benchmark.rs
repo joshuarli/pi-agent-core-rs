@@ -21,12 +21,12 @@
 //! not use threads, random input, or an external benchmark crate, so the workload remains
 //! deterministic and easy to reproduce while still surfacing gross isolation regressions.
 
+use std::hint::black_box;
+use std::time::{Duration, Instant};
 use tea_core::hooks::BeforeToolCall;
 use tea_core::state::{SerializedJson, ToolCallId};
 use tea_core::tool::ToolCall;
 use tea_luau::LuaPolicy;
-use std::hint::black_box;
-use std::time::{Duration, Instant};
 
 const STARTUP_SAMPLES: usize = 32;
 const HOOK_SAMPLES: usize = 32;

@@ -1,12 +1,12 @@
 //! Headless OpenRouter probe using the same agent assembly as `tea`.
 
-use tea_core::provider::openrouter::{OpenRouterConfig, OpenRouterProvider};
-use tea_core::state::{Message, ModelDescriptor};
-use tea_core::DefaultCodingTools;
-use tea_agent::build_host_agent;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tea_agent::build_host_agent;
+use tea_core::provider::openrouter::{OpenRouterConfig, OpenRouterProvider};
+use tea_core::state::{Message, ModelDescriptor};
+use tea_core::DefaultCodingTools;
 
 struct Args {
     model: String,

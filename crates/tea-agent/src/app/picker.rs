@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tea_core::compaction::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};
-use tea_core::provider::{ConfiguredProvider, ProviderConfiguration};
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use tea_core::compaction::{AutomaticCompactionPolicy, ContextBudgetSource, OverflowRecovery};
+use tea_core::provider::{ConfiguredProvider, ProviderConfiguration};
 
 use super::error::AppError;
 use super::host::model_candidates;
@@ -321,8 +321,9 @@ impl App {
         self.state.notice("model selected");
         if let Some(home) = self.tea_home.as_ref() {
             if let Err(error) = save_last_model(home, &descriptor) {
-                self.state
-                    .notice(format!("model selected but preference was not saved: {error}"));
+                self.state.notice(format!(
+                    "model selected but preference was not saved: {error}"
+                ));
             }
         }
         Ok(())
@@ -342,9 +343,8 @@ impl App {
                 let key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
                     AppError::Setup("OPENROUTER_API_KEY is required for OpenRouter".into())
                 })?;
-                let config =
-                    tea_core::provider::openrouter::OpenRouterConfig::try_new(key, model)
-                        .map_err(|error| AppError::Setup(error.to_string()))?;
+                let config = tea_core::provider::openrouter::OpenRouterConfig::try_new(key, model)
+                    .map_err(|error| AppError::Setup(error.to_string()))?;
                 #[cfg(feature = "pty-harness")]
                 let config = test_openrouter_config(config)?;
                 ProviderConfiguration::OpenRouter(config)

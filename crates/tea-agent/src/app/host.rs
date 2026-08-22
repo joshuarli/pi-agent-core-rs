@@ -1,8 +1,8 @@
+use std::path::Path;
+use std::sync::Arc;
 use tea_core::provider::{openai::OpenAiContextHook, ProviderRegistry};
 use tea_core::{Agent, AgentConfiguration, DefaultCodingTools, ThinkingLevel};
 use tea_luau::LuaPolicyHookSet;
-use std::path::Path;
-use std::sync::Arc;
 
 use super::error::AppError;
 use super::tea::{TeaDeclaredTool, TeaExtensionFilesTool, TeaExtensionHandbookTool, TeaExtensions};
@@ -22,9 +22,7 @@ prompt, and hooks.
 /// Provider adapters consume the standard OpenAI-compatible context produced by the host
 /// policy hook. Keeping this assembly in one function makes a headless provider probe exercise
 /// the same boundary as the terminal application.
-pub fn build_host_agent(
-    tools: DefaultCodingTools,
-) -> Result<tea_core::AgentBuilder, AppError> {
+pub fn build_host_agent(tools: DefaultCodingTools) -> Result<tea_core::AgentBuilder, AppError> {
     build_host_agent_with_thinking(tools, ThinkingLevel::Off)
 }
 

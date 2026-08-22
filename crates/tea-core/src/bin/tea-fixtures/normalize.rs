@@ -1,9 +1,9 @@
+use std::collections::BTreeMap;
 use tea_core::event::{AgentEvent, AgentEventKind};
 use tea_core::hooks::ContextEnvelope;
 use tea_core::scheduler::ModelRequest;
 use tea_core::state::{AgentMessage, StopReason, ThinkingLevel};
 use tea_protocol::JsonValue;
-use std::collections::BTreeMap;
 
 pub(super) fn normalize_request(request: &ModelRequest) -> JsonValue {
     JsonValue::object([

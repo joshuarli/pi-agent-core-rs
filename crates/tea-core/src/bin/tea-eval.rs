@@ -5,22 +5,20 @@
 //! concrete transport to exercise the otherwise provider-free core, while retaining the core's
 //! explicit workspace, profile, and Smol-owned execution boundaries.
 
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tea_core::event::AgentEventKind;
 use tea_core::provider::commandcode::{
     CommandCodeConfig, CommandCodeHostContext, CommandCodeProvider,
 };
 use tea_core::provider::openai::OpenAiContextHook;
-use tea_core::provider::openrouter::{
-    OpenRouterConfig, OpenRouterCostReport, OpenRouterProvider,
-};
+use tea_core::provider::openrouter::{OpenRouterConfig, OpenRouterCostReport, OpenRouterProvider};
 use tea_core::scheduler::ModelProvider;
 use tea_core::state::{AgentMessage, ModelDescriptor};
 use tea_core::{Agent, DefaultCodingTools};
 use tea_protocol::{JsonNumber, JsonValue};
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 const RESULT_SCHEMA: &str = "tea-coding-eval-result/v0";
 
@@ -293,9 +291,7 @@ fn terminal_code(result: &Result<(), tea_core::CoreError>) -> Option<&'static st
         Err(tea_core::CoreError::ModelAborted { .. }) => Some("model_aborted"),
         Err(tea_core::CoreError::ModelError { .. }) => Some("model_error"),
         Err(tea_core::CoreError::ModelProvider { .. }) => Some("model_provider"),
-        Err(tea_core::CoreError::UnsupportedModelStream { .. }) => {
-            Some("unsupported_model_stream")
-        }
+        Err(tea_core::CoreError::UnsupportedModelStream { .. }) => Some("unsupported_model_stream"),
         Err(tea_core::CoreError::Hook(_)) => Some("hook"),
         Err(tea_core::CoreError::MissingModelProvider) => Some("missing_model_provider"),
         Err(tea_core::CoreError::ActiveRun { .. }) => Some("active_run"),

@@ -9,8 +9,8 @@ use super::schemas::edit_schema;
 use super::workspace::WorkspaceRoot;
 use crate::error::ToolError;
 use crate::tool::{AgentTool, ToolCall, ToolContext, ToolFuture, ToolUpdateSink};
-use tea_protocol::JsonValue;
 use std::sync::Arc;
+use tea_protocol::JsonValue;
 
 pub(crate) struct EditTool {
     root: WorkspaceRoot,

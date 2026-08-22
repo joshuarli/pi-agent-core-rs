@@ -1,9 +1,9 @@
 //! Public ABI and domain types for host-controlled Luau capabilities.
 
-use tea_protocol::{JsonError, JsonValue};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
+use tea_protocol::{JsonError, JsonValue};
 
 /// The currently supported capability ABI version.
 pub const CAPABILITY_ABI_VERSION: u64 = 1;

@@ -4,12 +4,12 @@
 //! identity selected by the terminal host, so startup can restore the user's model without
 //! opening an interactive picker.
 
-use tea_core::ModelDescriptor;
-use tea_protocol::{JsonNumber, JsonValue};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tea_core::ModelDescriptor;
+use tea_protocol::{JsonNumber, JsonValue};
 
 const PREFERENCE_FILE: &str = "last-model.json";
 const PREFERENCE_VERSION: u64 = 1;
@@ -218,7 +218,11 @@ mod tests {
             NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join(PREFERENCE_FILE), r#"{"version":1,"provider":"local"}"#).unwrap();
+        fs::write(
+            root.join(PREFERENCE_FILE),
+            r#"{"version":1,"provider":"local"}"#,
+        )
+        .unwrap();
         assert!(matches!(
             load_last_model(&root),
             Err(PreferenceError::Contract { .. })

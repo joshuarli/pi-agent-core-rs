@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use tea_core::compaction::{
     CompactionContext, CompactionError, CompactionFuture, CompactionResult, Compactor,
 };
@@ -7,7 +8,6 @@ use tea_core::scheduler::{
 };
 use tea_core::state::StopReason;
 use tea_core::{Agent, CoreError};
-use std::sync::{Arc, Mutex};
 
 struct FixtureProvider {
     streams: Mutex<Vec<ModelStream>>,

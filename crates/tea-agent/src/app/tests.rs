@@ -1,6 +1,13 @@
 use super::compaction::ProviderCompactor;
 use super::state::ContextEstimate;
 use super::*;
+use std::ffi::OsString;
+use std::fs;
+use std::num::NonZeroU64;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
 use tea_core::compaction::{
     AutomaticCompactionReason, AutomaticCompactionRequest, CompactionContext, Compactor,
     OverflowRecovery, ProviderContext,
@@ -11,13 +18,6 @@ use tea_core::scheduler::{
 use tea_core::state::{Message, MessageId, SerializedJson, ToolCallId};
 use tea_core::tool::ToolUpdate;
 use tea_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, ThinkingLevel, Usage};
-use std::ffi::OsString;
-use std::fs;
-use std::num::NonZeroU64;
-use std::path::PathBuf;
-use std::sync::mpsc::sync_channel;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 fn test_tea_home(label: &str) -> PathBuf {
     static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
@@ -117,9 +117,7 @@ impl ModelProvider for ContextCheckingProvider {
 #[test]
 fn cli_rejects_ambiguous_and_unknown_inputs() {
     assert!(matches!(
-        CliOptions::parse(
-            ["tea", "--provider", "one", "--provider", "two"].map(OsString::from)
-        ),
+        CliOptions::parse(["tea", "--provider", "one", "--provider", "two"].map(OsString::from)),
         Err(CliError::DuplicateOption("--provider"))
     ));
     assert!(matches!(
@@ -188,9 +186,8 @@ fn cli_rejects_unknown_thinking_level() {
 
 #[test]
 fn cli_parses_and_validates_explicit_local_context_capacity() {
-    let options =
-        CliOptions::parse(["tea", "--local-context-window", "32768"].map(OsString::from))
-            .expect("local context capacity parses");
+    let options = CliOptions::parse(["tea", "--local-context-window", "32768"].map(OsString::from))
+        .expect("local context capacity parses");
     assert_eq!(options.local_context_window(), NonZeroU64::new(32_768));
     assert!(matches!(
         CliOptions::parse(["tea", "--local-context-window", "0"].map(OsString::from)),
@@ -203,9 +200,8 @@ fn cli_parses_and_validates_explicit_local_context_capacity() {
 
 #[test]
 fn cli_parses_explicit_tea_home() {
-    let options =
-        CliOptions::parse(["tea", "--tea-home", "/tmp/tea-test"].map(OsString::from))
-            .expect("Tea home parses");
+    let options = CliOptions::parse(["tea", "--tea-home", "/tmp/tea-test"].map(OsString::from))
+        .expect("Tea home parses");
     assert_eq!(
         options.tea_home(),
         Some(std::path::Path::new("/tmp/tea-test"))
@@ -217,8 +213,12 @@ fn cli_parses_explicit_tea_home() {
 fn startup_does_not_open_model_picker_without_a_saved_selection() {
     let tea_home = test_tea_home("startup");
     let options = CliOptions::parse(
-        ["tea", "--tea-home", tea_home.to_str().expect("UTF-8 test path")]
-            .map(OsString::from),
+        [
+            "tea",
+            "--tea-home",
+            tea_home.to_str().expect("UTF-8 test path"),
+        ]
+        .map(OsString::from),
     )
     .expect("startup options parse");
     let mut app = App::new(options);
@@ -234,8 +234,12 @@ fn startup_does_not_open_model_picker_without_a_saved_selection() {
 fn selected_model_is_saved_and_restored_without_starting_the_picker() {
     let tea_home = test_tea_home("last-model");
     let options = CliOptions::parse(
-        ["tea", "--tea-home", tea_home.to_str().expect("UTF-8 test path")]
-            .map(OsString::from),
+        [
+            "tea",
+            "--tea-home",
+            tea_home.to_str().expect("UTF-8 test path"),
+        ]
+        .map(OsString::from),
     )
     .expect("startup options parse");
     let mut first = App::new(options.clone());
@@ -249,14 +253,17 @@ fn selected_model_is_saved_and_restored_without_starting_the_picker() {
     assert!(tea_home.join("last-model.json").is_file());
 
     let mut second = App::new(options);
-    second.assemble_agent().expect("second host should assemble");
+    second
+        .assemble_agent()
+        .expect("second host should assemble");
 
     assert_eq!(second.state().surface(), UiSurface::None);
     assert_eq!(
-        second.state().selected_model.as_ref().map(|model| (
-            model.provider.as_str(),
-            model.model.as_str(),
-        )),
+        second
+            .state()
+            .selected_model
+            .as_ref()
+            .map(|model| (model.provider.as_str(), model.model.as_str(),)),
         Some(("local", tea_core::provider::local::LAGUNA_XS_2_1_MODEL))
     );
     let _ = fs::remove_dir_all(tea_home);
@@ -377,21 +384,22 @@ fn ctrl_o_opens_a_full_transcript_detail_viewer_and_preserves_live_state() {
     assert_eq!(tool.tool_name, "read");
     state.toggle_tool_detail();
     assert_eq!(state.surface(), UiSurface::ToolDetail);
-    assert!(state
-        .surface_lines()
-        .is_some_and(|lines| {
-            lines.iter().any(|line| line == "Welcome")
-                && lines.iter().any(|line| line == "User")
-                && lines.iter().any(|line| line == "Tool: read (Started)")
-                && lines.iter().any(|line| line.contains("src/lib.rs"))
-        }));
+    assert!(state.surface_lines().is_some_and(|lines| {
+        lines.iter().any(|line| line == "Welcome")
+            && lines.iter().any(|line| line == "User")
+            && lines.iter().any(|line| line == "Tool: read (Started)")
+            && lines.iter().any(|line| line.contains("src/lib.rs"))
+    }));
     let grid = crate::render::render(&state, &tea_core::provider::ProviderRegistry::new(), 40, 10);
     let title = (0..40)
         .filter_map(|column| grid.get(column, 2))
         .map(|cell| cell.symbol)
         .collect::<String>();
     assert!(title.starts_with("Full detail"));
-    assert_eq!(crate::render::composer_cursor_position(&state, 40, 10), Some((2, 0)));
+    assert_eq!(
+        crate::render::composer_cursor_position(&state, 40, 10),
+        Some((2, 0))
+    );
     state.page_surface_down(2);
     assert_eq!(state.surface_offset(), 2);
     state.page_surface_up(1);
@@ -415,7 +423,10 @@ fn temporary_surface_payload_does_not_enter_or_survive_transcript_close() {
     assert_eq!(grid.get(0, 0).expect("surface rail").symbol, '┃');
     assert_eq!(grid.get(0, 1).expect("surface divider").symbol, '─');
     assert_eq!(grid.get(0, 2).expect("surface payload").symbol, 'h');
-    assert_eq!(crate::render::composer_cursor_position(&state, 20, 6), Some((2, 0)));
+    assert_eq!(
+        crate::render::composer_cursor_position(&state, 20, 6),
+        Some((2, 0))
+    );
     state.close_surface();
     assert_eq!(state.surface(), UiSurface::None);
     assert!(state.surface_lines().is_none());
@@ -683,8 +694,8 @@ fn cache_friendly_compaction_appends_one_instruction_to_an_exact_source_prefix()
         let requests = requests.lock().expect("summary request mutex poisoned");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].system_prompt, "active system");
-        let converted = tea_protocol::JsonValue::parse(&requests[0].context)
-            .expect("summary context is JSON");
+        let converted =
+            tea_protocol::JsonValue::parse(&requests[0].context).expect("summary context is JSON");
         let tea_protocol::JsonValue::Array(messages) = converted else {
             panic!("summary context is not a message array")
         };

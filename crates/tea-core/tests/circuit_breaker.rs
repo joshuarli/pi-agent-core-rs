@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+use std::sync::{Arc, Mutex};
 use tea_core::scheduler::{
     CancellationToken, ModelFuture, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
@@ -7,8 +9,6 @@ use tea_core::tool::{
     ToolFailureCircuitBreaker, ToolFuture, ToolResult, ToolUpdateSink,
 };
 use tea_core::{Agent, AgentEventKind, AgentMessage, CoreError};
-use std::num::NonZeroU32;
-use std::sync::{Arc, Mutex};
 
 struct Provider {
     streams: Mutex<Vec<ModelStream>>,
@@ -56,8 +56,7 @@ impl AgentTool for FailureTool {
     }
 
     fn schema(&self) -> &tea_protocol::JsonValue {
-        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> =
-            std::sync::OnceLock::new();
+        static SCHEMA: std::sync::OnceLock<tea_protocol::JsonValue> = std::sync::OnceLock::new();
         SCHEMA.get_or_init(|| {
             tea_protocol::JsonValue::parse(r#"{"type":"object","required":["text"]}"#).unwrap()
         })

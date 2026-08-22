@@ -1,26 +1,38 @@
 use crate::composer::Composer;
+use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 use tea_core::event::{
     AgentEventKind, AutomaticCompactionOutcome, CompactionOutcome, ProviderRequestSkipReason,
 };
 use tea_core::provider::ProviderRegistry;
 use tea_core::state::{AgentMessage, AgentSnapshot, ToolCallId};
 use tea_core::{Agent, AgentEvent, ModelDescriptor, Usage};
-use std::collections::BTreeMap;
-use std::num::NonZeroU64;
 
-use super::host::{model_candidates, overlay_lines};
 use super::commands;
+use super::host::{model_candidates, overlay_lines};
 use super::session::SessionSummary;
 
 /// Typed transcript entry contract for presentation consumers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TranscriptEntry {
-    Welcome { text: String },
-    User { text: String },
-    Assistant { text: String, streaming: bool },
+    Welcome {
+        text: String,
+    },
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+        streaming: bool,
+    },
     Tool(ToolProjection),
-    Notice { text: String, severity: NoticeSeverity },
-    Error { text: String },
+    Notice {
+        text: String,
+        severity: NoticeSeverity,
+    },
+    Error {
+        text: String,
+    },
 }
 
 /// Generic tool lifecycle projection retained independently from rendered text.
@@ -209,16 +221,19 @@ impl AppState {
             AgentEventKind::AgentStart => self.status = UiStatus::Active,
             AgentEventKind::MessageStart { message } => {
                 if let tea_core::Message::User { content, .. } = message {
-                    self.push_entry(sequence, TranscriptEntry::User { text: content.clone() });
+                    self.push_entry(
+                        sequence,
+                        TranscriptEntry::User {
+                            text: content.clone(),
+                        },
+                    );
                 }
             }
             AgentEventKind::MessageUpdate {
                 message,
                 text_delta,
             } => {
-                if let (tea_core::Message::Assistant { .. }, Some(delta)) =
-                    (message, text_delta)
-                {
+                if let (tea_core::Message::Assistant { .. }, Some(delta)) = (message, text_delta) {
                     if let Some(index) = self.streaming_line {
                         if let Some(TranscriptEntry::Assistant { text, .. }) =
                             self.transcript.get_mut(index)
@@ -345,31 +360,43 @@ impl AppState {
                 retained_message_count,
                 ..
             } => {
-                self.notice(format!("compaction retained {retained_message_count} messages"));
+                self.notice(format!(
+                    "compaction retained {retained_message_count} messages"
+                ));
             }
             AgentEventKind::CompactionEnd { outcome } => match outcome {
                 CompactionOutcome::Succeeded {
                     retained_message_count,
-                } => self.notice(format!("compaction complete: {retained_message_count} messages")),
-                CompactionOutcome::Failed { message } => self.notice(format!("compaction failed: {message}")),
+                } => self.notice(format!(
+                    "compaction complete: {retained_message_count} messages"
+                )),
+                CompactionOutcome::Failed { message } => {
+                    self.notice(format!("compaction failed: {message}"))
+                }
                 CompactionOutcome::Cancelled => self.notice("compaction cancelled"),
             },
             AgentEventKind::AutomaticCompactionStart { .. } => {
                 self.status = UiStatus::Active;
             }
             AgentEventKind::AutomaticCompactionEnd { outcome, .. } => match outcome {
-                AutomaticCompactionOutcome::Succeeded { .. } => self.notice("automatic compaction complete"),
+                AutomaticCompactionOutcome::Succeeded { .. } => {
+                    self.notice("automatic compaction complete")
+                }
                 AutomaticCompactionOutcome::Failed { message } => {
                     self.notice(format!("automatic compaction failed: {message}"))
                 }
-                AutomaticCompactionOutcome::Cancelled => self.notice("automatic compaction cancelled"),
+                AutomaticCompactionOutcome::Cancelled => {
+                    self.notice("automatic compaction cancelled")
+                }
                 AutomaticCompactionOutcome::LimitReached => {
                     self.notice("automatic compaction limit reached")
                 }
                 AutomaticCompactionOutcome::StillAboveThreshold => self.notice(
                     "automatic compaction complete; retained context remains above threshold",
                 ),
-                AutomaticCompactionOutcome::Unavailable => self.notice("automatic compaction unavailable"),
+                AutomaticCompactionOutcome::Unavailable => {
+                    self.notice("automatic compaction unavailable")
+                }
             },
             AgentEventKind::ContextEstimate {
                 estimated_context_tokens,
@@ -382,23 +409,22 @@ impl AppState {
                 });
             }
             AgentEventKind::ProviderRequestSkipped { reason } => self.notice(match reason {
-                    ProviderRequestSkipReason::AutomaticCompaction => {
-                        "provider request deferred for automatic compaction"
-                    }
-                    ProviderRequestSkipReason::ToolCircuitBreaker => {
-                        "provider request skipped after terminal tool failure"
-                    }
-                },
-            ),
+                ProviderRequestSkipReason::AutomaticCompaction => {
+                    "provider request deferred for automatic compaction"
+                }
+                ProviderRequestSkipReason::ToolCircuitBreaker => {
+                    "provider request skipped after terminal tool failure"
+                }
+            }),
             AgentEventKind::ToolFailureObserved {
                 disposition,
                 consecutive_count,
                 terminal,
                 ..
             } => self.notice(format!(
-                    "tool failure {disposition:?} (consecutive {consecutive_count}){}",
-                    if *terminal { "; ending run" } else { "" }
-                )),
+                "tool failure {disposition:?} (consecutive {consecutive_count}){}",
+                if *terminal { "; ending run" } else { "" }
+            )),
             AgentEventKind::TurnEnd { reason, .. } => match reason {
                 tea_core::state::StopReason::Error => {
                     self.notice("turn failed; prompt remains available to retry")
@@ -431,7 +457,12 @@ impl AppState {
         for message in messages {
             match message {
                 AgentMessage::User { content, .. } => {
-                    self.push_entry(None, TranscriptEntry::User { text: content.clone() });
+                    self.push_entry(
+                        None,
+                        TranscriptEntry::User {
+                            text: content.clone(),
+                        },
+                    );
                 }
                 AgentMessage::Assistant {
                     content,
@@ -636,8 +667,8 @@ impl AppState {
             .skip(start)
             .take(visible)
             .map(|(index, command)| {
-                let help = commands::find(command)
-                    .map_or_else(String::new, |spec| spec.help.to_owned());
+                let help =
+                    commands::find(command).map_or_else(String::new, |spec| spec.help.to_owned());
                 (command.clone(), help, index == menu.selected)
             })
             .collect()
@@ -724,7 +755,11 @@ impl AppState {
             .last_snapshot
             .as_ref()
             .map(|snapshot| &snapshot.accounting.aggregate)
-            .or_else(|| self.reported_usage.is_reported().then_some(&self.reported_usage))
+            .or_else(|| {
+                self.reported_usage
+                    .is_reported()
+                    .then_some(&self.reported_usage)
+            })
             .filter(|usage| {
                 usage.input_tokens.is_some()
                     || usage.output_tokens.is_some()
@@ -994,7 +1029,11 @@ impl AppState {
 
 fn full_transcript_detail_lines(entries: &[TranscriptEntry]) -> Vec<String> {
     if entries.is_empty() {
-        return vec!["Full detail".into(), String::new(), "No transcript yet.".into()];
+        return vec![
+            "Full detail".into(),
+            String::new(),
+            "No transcript yet.".into(),
+        ];
     }
 
     let mut lines = vec!["Full detail".into(), String::new()];

@@ -4,17 +4,17 @@
 //! header followed by typed entries with `id`/`parentId` links. The repository keeps the
 //! feature linear (there is no tree UI), but it does not invent a second envelope format.
 
-use tea_core::state::{
-    AgentMessage, AgentToolCall, MessageId, ModelDescriptor, SerializedJson, StopReason,
-    ThinkingLevel, ToolCallId, Usage,
-};
-use tea_protocol::{JsonNumber, JsonValue};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tea_core::state::{
+    AgentMessage, AgentToolCall, MessageId, ModelDescriptor, SerializedJson, StopReason,
+    ThinkingLevel, ToolCallId, Usage,
+};
+use tea_protocol::{JsonNumber, JsonValue};
 
 /// Pi's current coding-agent session format version.
 pub(crate) const SESSION_VERSION: u64 = 3;
@@ -866,8 +866,7 @@ fn encoded_cwd(cwd: &Path) -> String {
     let path = cwd.to_string_lossy().replace('\\', "/");
     format!(
         "--{}--",
-        path.trim_start_matches('/')
-            .replace(['/', ':'], "-")
+        path.trim_start_matches('/').replace(['/', ':'], "-")
     )
 }
 

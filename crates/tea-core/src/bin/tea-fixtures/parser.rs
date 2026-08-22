@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use tea_core::queue::QueueMode;
 use tea_core::scheduler::{ModelStream, ModelStreamEvent};
 use tea_core::state::{
@@ -5,7 +6,6 @@ use tea_core::state::{
 };
 use tea_core::tool::ToolExecutionMode;
 use tea_protocol::{JsonNumber, JsonValue};
-use std::collections::{BTreeMap, BTreeSet};
 
 use super::fixture::{
     Fixture, FixtureAction, FixtureActiveQueueArrival, FixtureAfterToolReplace,

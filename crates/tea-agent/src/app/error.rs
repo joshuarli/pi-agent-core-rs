@@ -1,12 +1,12 @@
 use crate::editor::EditorError;
 use crate::terminal::TerminalError;
+use std::fmt;
 use tea_core::provider::RegistryError;
 use tea_core::CoreError;
-use std::fmt;
 
 use super::cli::CliError;
-use super::tea::TeaLoadError;
 use super::session::SessionError;
+use super::tea::TeaLoadError;
 
 /// Local application failures. Provider and core failures retain their typed source.
 #[derive(Debug)]
