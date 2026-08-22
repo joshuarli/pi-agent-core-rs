@@ -102,7 +102,7 @@ impl fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
-/// Store rooted below one explicit Phi home and, like Pi, partitioned by working directory.
+/// Store rooted below one explicit Tea home and, like Pi, partitioned by working directory.
 #[derive(Clone, Debug)]
 pub(crate) struct SessionStore {
     sessions_root: PathBuf,
@@ -110,8 +110,8 @@ pub(crate) struct SessionStore {
 }
 
 impl SessionStore {
-    pub(crate) fn new(phi_home: impl AsRef<Path>) -> Self {
-        let sessions_root = phi_home.as_ref().join("sessions");
+    pub(crate) fn new(tea_home: impl AsRef<Path>) -> Self {
+        let sessions_root = tea_home.as_ref().join("sessions");
         Self {
             directory: sessions_root.clone(),
             sessions_root,

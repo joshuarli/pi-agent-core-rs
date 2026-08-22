@@ -312,9 +312,9 @@ impl App {
                 }
             }
             "/reload-extensions" => {
-                if let Err(error) = self.reload_phi_extensions() {
+                if let Err(error) = self.reload_tea_extensions() {
                     self.state.notice(format!(
-                        "Phi extensions were not reloaded; the previous snapshot remains active: {error}"
+                        "Tea extensions were not reloaded; the previous snapshot remains active: {error}"
                     ));
                 }
             }

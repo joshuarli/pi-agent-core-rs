@@ -31,7 +31,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/reload-extensions",
-        help: "reload idle Phi extensions",
+        help: "reload idle Tea extensions",
         allowed_while_active: false,
     },
     CommandSpec {

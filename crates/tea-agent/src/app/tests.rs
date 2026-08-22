@@ -188,15 +188,15 @@ fn cli_parses_and_validates_explicit_local_context_capacity() {
 }
 
 #[test]
-fn cli_parses_explicit_phi_home() {
+fn cli_parses_explicit_tea_home() {
     let options =
-        CliOptions::parse(["tea", "--phi-home", "/tmp/phi-test"].map(OsString::from))
-            .expect("Phi home parses");
+        CliOptions::parse(["tea", "--tea-home", "/tmp/tea-test"].map(OsString::from))
+            .expect("Tea home parses");
     assert_eq!(
-        options.phi_home(),
-        Some(std::path::Path::new("/tmp/phi-test"))
+        options.tea_home(),
+        Some(std::path::Path::new("/tmp/tea-test"))
     );
-    assert!(CliOptions::help_text().contains("--phi-home <path>"));
+    assert!(CliOptions::help_text().contains("--tea-home <path>"));
 }
 
 #[test]

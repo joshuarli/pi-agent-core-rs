@@ -1,6 +1,6 @@
-//! TUI-owned Phi extension discovery and authoring boundaries.
+//! TUI-owned Tea extension discovery and authoring boundaries.
 //!
-//! Phi is deliberately an application concern.  This module resolves the optional home
+//! Tea is deliberately an application concern.  This module resolves the optional home
 //! directory, reads the explicit ordered registry, and turns each listed extension into a
 //! closed `tea-luau` bundle.  It never grants a Luau capability: declarations are useful
 //! for prompt composition, while declared handlers remain inert until a host supplies an
@@ -24,9 +24,9 @@ const REGISTRY_FILE: &str = "extensions.json";
 const EXTENSION_MANIFEST_FILE: &str = "manifest.json";
 const MAX_AUTHORED_FILE_BYTES: usize = 128 * 1024;
 
-/// A failure while resolving or loading the TUI-owned Phi extension registry.
+/// A failure while resolving or loading the TUI-owned Tea extension registry.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PhiLoadError {
+pub enum TeaLoadError {
     /// A filesystem operation failed at an explicit path.
     Io { path: PathBuf, message: String },
     /// JSON text did not meet the registry or extension manifest contract.
@@ -39,50 +39,50 @@ pub enum PhiLoadError {
     Policy { path: PathBuf, message: String },
 }
 
-impl std::fmt::Display for PhiLoadError {
+impl std::fmt::Display for TeaLoadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io { path, message } => {
-                write!(formatter, "Phi I/O failed at {}: {message}", path.display())
+                write!(formatter, "Tea I/O failed at {}: {message}", path.display())
             }
             Self::Json { path, message } => write!(
                 formatter,
-                "invalid Phi JSON at {}: {message}",
+                "invalid Tea JSON at {}: {message}",
                 path.display()
             ),
             Self::Contract { path, message } => write!(
                 formatter,
-                "invalid Phi contract at {}: {message}",
+                "invalid Tea contract at {}: {message}",
                 path.display()
             ),
             Self::Bundle { path, message } => write!(
                 formatter,
-                "invalid Phi bundle at {}: {message}",
+                "invalid Tea bundle at {}: {message}",
                 path.display()
             ),
             Self::Policy { path, message } => write!(
                 formatter,
-                "Phi policy failed at {}: {message}",
+                "Tea policy failed at {}: {message}",
                 path.display()
             ),
         }
     }
 }
 
-impl std::error::Error for PhiLoadError {}
+impl std::error::Error for TeaLoadError {}
 
 /// One extension loaded in registry order.
-pub struct PhiExtension {
+pub struct TeaExtension {
     name: String,
     root: PathBuf,
     bundle: Bundle,
     policy: Arc<LuaPolicy>,
 }
 
-impl std::fmt::Debug for PhiExtension {
+impl std::fmt::Debug for TeaExtension {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("PhiExtension")
+            .debug_struct("TeaExtension")
             .field("name", &self.name)
             .field("root", &self.root)
             .field("source_hash", &self.bundle.source_hash_hex())
@@ -90,7 +90,7 @@ impl std::fmt::Debug for PhiExtension {
     }
 }
 
-impl PhiExtension {
+impl TeaExtension {
     /// Return the deterministic registry name.
     pub fn name(&self) -> &str {
         &self.name
@@ -112,25 +112,25 @@ impl PhiExtension {
     }
 }
 
-/// Ordered Phi extensions and their prompt-facing declarations.
+/// Ordered Tea extensions and their prompt-facing declarations.
 #[derive(Debug, Default)]
-pub struct PhiExtensions {
-    extensions: Vec<PhiExtension>,
+pub struct TeaExtensions {
+    extensions: Vec<TeaExtension>,
 }
 
-impl PhiExtensions {
-    /// Load the explicit `extensions.json` registry under `phi_home`.
+impl TeaExtensions {
+    /// Load the explicit `extensions.json` registry under `tea_home`.
     ///
     /// A missing registry is an intentional empty configuration.  Once the registry exists,
     /// every listed entry is required to load successfully; malformed entries are not skipped.
-    pub fn load(phi_home: impl AsRef<Path>) -> Result<Self, PhiLoadError> {
-        let phi_home = phi_home.as_ref();
-        let registry_path = phi_home.join(REGISTRY_FILE);
+    pub fn load(tea_home: impl AsRef<Path>) -> Result<Self, TeaLoadError> {
+        let tea_home = tea_home.as_ref();
+        let registry_path = tea_home.join(REGISTRY_FILE);
         if let Ok(metadata) = fs::symlink_metadata(&registry_path) {
             if metadata.file_type().is_symlink() {
                 return Err(contract_error(
                     &registry_path,
-                    "symlinked Phi registries are not allowed",
+                    "symlinked Tea registries are not allowed",
                 ));
             }
         }
@@ -150,7 +150,7 @@ impl PhiExtensions {
                 ));
             }
         }
-        let home_root = canonical_directory(phi_home, false)?;
+        let home_root = canonical_directory(tea_home, false)?;
         let mut extensions = Vec::with_capacity(entries.len());
         for entry in entries {
             let root_path = contained_path(&home_root, &entry.path).map_err(|message| {
@@ -187,18 +187,18 @@ impl PhiExtensions {
     }
 
     /// Compatibility spelling for callers that prefer an explicit loader name.
-    pub fn load_from_home(phi_home: impl AsRef<Path>) -> Result<Self, PhiLoadError> {
-        Self::load(phi_home)
+    pub fn load_from_home(tea_home: impl AsRef<Path>) -> Result<Self, TeaLoadError> {
+        Self::load(tea_home)
     }
 
     /// Return extensions in exactly the order declared by `extensions.json`.
-    pub fn extensions(&self) -> &[PhiExtension] {
+    pub fn extensions(&self) -> &[TeaExtension] {
         &self.extensions
     }
 
     /// Return all policies in registry order.
     pub fn policies(&self) -> impl Iterator<Item = &Arc<LuaPolicy>> {
-        self.extensions.iter().map(PhiExtension::policy)
+        self.extensions.iter().map(TeaExtension::policy)
     }
 
     /// Return prompt-facing declarations in extension and declaration order.
@@ -218,16 +218,16 @@ impl PhiExtensions {
     }
 }
 
-/// Load Phi extensions from an explicit home directory.
-pub fn load_phi_extensions(phi_home: impl AsRef<Path>) -> Result<PhiExtensions, PhiLoadError> {
-    PhiExtensions::load(phi_home)
+/// Load Tea extensions from an explicit home directory.
+pub fn load_tea_extensions(tea_home: impl AsRef<Path>) -> Result<TeaExtensions, TeaLoadError> {
+    TeaExtensions::load(tea_home)
 }
 
-/// Resolve the TUI's Phi home.  Core never calls this function or reads `HOME`.
-pub fn resolve_phi_home(override_path: Option<&Path>) -> Result<PathBuf, PhiLoadError> {
+/// Resolve the TUI's Tea home.  Core never calls this function or reads `HOME`.
+pub fn resolve_tea_home(override_path: Option<&Path>) -> Result<PathBuf, TeaLoadError> {
     if let Some(path) = override_path {
         if path.as_os_str().is_empty() {
-            return Err(contract_error(path, "--phi-home must not be empty"));
+            return Err(contract_error(path, "--tea-home must not be empty"));
         }
         return Ok(path.to_path_buf());
     }
@@ -235,18 +235,18 @@ pub fn resolve_phi_home(override_path: Option<&Path>) -> Result<PathBuf, PhiLoad
         .or_else(|| std::env::var_os("USERPROFILE"))
         .ok_or_else(|| {
             contract_error(
-                Path::new("~/.phi"),
+                Path::new("~/.tea"),
                 "could not resolve the user home directory",
             )
         })?;
-    Ok(PathBuf::from(home).join(".phi"))
+    Ok(PathBuf::from(home).join(".tea"))
 }
 
-/// A declaration-only model tool from a Phi policy.
+/// A declaration-only model tool from a Tea policy.
 ///
 /// The tool is intentionally visible to the model but cannot perform an effect.  A policy
 /// handler source is not activated here because this host supplies zero `CapabilityBindings`.
-pub(crate) struct PhiDeclaredTool {
+pub(crate) struct TeaDeclaredTool {
     name: String,
     description: String,
     schema: JsonValue,
@@ -254,7 +254,7 @@ pub(crate) struct PhiDeclaredTool {
     extension: String,
 }
 
-impl PhiDeclaredTool {
+impl TeaDeclaredTool {
     pub(crate) fn from_policy(extension: &str, tool: &PolicyTool) -> Self {
         Self {
             name: tool.name.clone(),
@@ -266,7 +266,7 @@ impl PhiDeclaredTool {
     }
 }
 
-impl AgentTool for PhiDeclaredTool {
+impl AgentTool for TeaDeclaredTool {
     fn name(&self) -> &str {
         &self.name
     }
@@ -292,23 +292,23 @@ impl AgentTool for PhiDeclaredTool {
         Box::pin(std::future::ready(Err(ToolError::Execution {
             tool: call.name,
             message: format!(
-                "Phi extension {:?} declared this tool without an explicit host capability binding",
+                "Tea extension {:?} declared this tool without an explicit host capability binding",
                 self.extension
             ),
         })))
     }
 }
 
-/// A trusted, read-only handbook describing the Phi extension boundary.
-pub(crate) struct PhiExtensionHandbookTool;
+/// A trusted, read-only handbook describing the Tea extension boundary.
+pub(crate) struct TeaExtensionHandbookTool;
 
-impl AgentTool for PhiExtensionHandbookTool {
+impl AgentTool for TeaExtensionHandbookTool {
     fn name(&self) -> &str {
-        "phi_extension_handbook"
+        "tea_extension_handbook"
     }
 
     fn description(&self) -> &str {
-        "Explain the trusted Phi extension format and the host's no-activation/no-grants boundary."
+        "Explain the trusted Tea extension format and the host's no-activation/no-grants boundary."
     }
 
     fn schema(&self) -> &JsonValue {
@@ -326,35 +326,35 @@ impl AgentTool for PhiExtensionHandbookTool {
     ) -> ToolFuture<'a> {
         Box::pin(std::future::ready(Ok(result_ok(
             &call,
-            PHI_EXTENSION_HANDBOOK,
+            TEA_EXTENSION_HANDBOOK,
         ))))
     }
 }
 
-/// A model-visible authoring tool rooted at `<phi-home>/extensions`.
+/// A model-visible authoring tool rooted at `<tea-home>/extensions`.
 ///
 /// It can list and read files, write drafts, and validate a draft bundle.  The registry file is
 /// never writable through this tool, so authoring cannot activate an extension or grant a
 /// capability.
-pub(crate) struct PhiExtensionFilesTool {
+pub(crate) struct TeaExtensionFilesTool {
     root: PathBuf,
 }
 
-impl PhiExtensionFilesTool {
-    pub(crate) fn new(phi_home: impl AsRef<Path>) -> Self {
+impl TeaExtensionFilesTool {
+    pub(crate) fn new(tea_home: impl AsRef<Path>) -> Self {
         Self {
-            root: phi_home.as_ref().join("extensions"),
+            root: tea_home.as_ref().join("extensions"),
         }
     }
 }
 
-impl AgentTool for PhiExtensionFilesTool {
+impl AgentTool for TeaExtensionFilesTool {
     fn name(&self) -> &str {
-        "phi_extension_files"
+        "tea_extension_files"
     }
 
     fn description(&self) -> &str {
-        "List/read/write_draft/validate Phi extension files under the explicit Phi home; never activates or grants an extension."
+        "List/read/write_draft/validate Tea extension files under the explicit Tea home; never activates or grants an extension."
     }
 
     fn schema(&self) -> &JsonValue {
@@ -391,7 +391,7 @@ impl AgentTool for PhiExtensionFilesTool {
                                 (
                                     "description",
                                     JsonValue::String(
-                                        "Path relative to the Phi extensions root.".into(),
+                                        "Path relative to the Tea extensions root.".into(),
                                     ),
                                 ),
                             ]),
@@ -427,7 +427,7 @@ impl AgentTool for PhiExtensionFilesTool {
     }
 }
 
-impl PhiExtensionFilesTool {
+impl TeaExtensionFilesTool {
     fn execute_now(
         &self,
         call: &ToolCall,
@@ -485,7 +485,7 @@ impl PhiExtensionFilesTool {
         Ok(result_ok(
             call,
             if files.is_empty() {
-                "No Phi extension files".into()
+                "No Tea extension files".into()
             } else {
                 files.join("\n")
             },
@@ -503,7 +503,7 @@ impl PhiExtensionFilesTool {
         }
         let content = String::from_utf8(bytes).map_err(|_| ToolError::Execution {
             tool: self.name().into(),
-            message: "Phi extension files must be UTF-8 text".into(),
+            message: "Tea extension files must be UTF-8 text".into(),
         })?;
         Ok(result_ok(call, content))
     }
@@ -524,7 +524,7 @@ impl PhiExtensionFilesTool {
         if path.file_name().is_some_and(|name| name == REGISTRY_FILE) {
             return Err(ToolError::Blocked {
                 tool: self.name().into(),
-                reason: "the Phi registry cannot be changed by model authoring".into(),
+                reason: "the Tea registry cannot be changed by model authoring".into(),
             });
         }
         let parent = path.parent().unwrap_or(&self.root);
@@ -603,14 +603,14 @@ impl PhiExtensionFilesTool {
 
 fn collect_files(root: &Path, directory: &Path, output: &mut Vec<String>) -> Result<(), ToolError> {
     let mut entries = fs::read_dir(directory)
-        .map_err(|error| tool_io("phi_extension_files", error))?
+        .map_err(|error| tool_io("tea_extension_files", error))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| tool_io("phi_extension_files", error))?;
+        .map_err(|error| tool_io("tea_extension_files", error))?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
         let metadata =
-            fs::symlink_metadata(&path).map_err(|error| tool_io("phi_extension_files", error))?;
+            fs::symlink_metadata(&path).map_err(|error| tool_io("tea_extension_files", error))?;
         if metadata.file_type().is_symlink() {
             continue;
         }
@@ -618,11 +618,11 @@ fn collect_files(root: &Path, directory: &Path, output: &mut Vec<String>) -> Res
             collect_files(root, &path, output)?;
         } else if metadata.is_file() {
             let canonical =
-                fs::canonicalize(&path).map_err(|error| tool_io("phi_extension_files", error))?;
+                fs::canonicalize(&path).map_err(|error| tool_io("tea_extension_files", error))?;
             ensure_contained_canonical(root, &canonical)?;
             let relative = canonical
                 .strip_prefix(root)
-                .map_err(|_| invalid_tool_args("file escaped Phi extension root"))?;
+                .map_err(|_| invalid_tool_args("file escaped Tea extension root"))?;
             output.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
@@ -638,32 +638,32 @@ fn create_draft_parent(root: &Path, parent: &Path) -> Result<(), ToolError> {
     match fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(ToolError::Blocked {
-                tool: "phi_extension_files".into(),
-                reason: "Phi extensions root cannot be a symlink".into(),
+                tool: "tea_extension_files".into(),
+                reason: "Tea extensions root cannot be a symlink".into(),
             });
         }
         Ok(metadata) if !metadata.is_dir() => {
             return Err(ToolError::Execution {
-                tool: "phi_extension_files".into(),
-                message: "Phi extensions root is not a directory".into(),
+                tool: "tea_extension_files".into(),
+                message: "Tea extensions root is not a directory".into(),
             });
         }
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(root).map_err(|error| tool_io("phi_extension_files", error))?;
+            fs::create_dir_all(root).map_err(|error| tool_io("tea_extension_files", error))?;
         }
-        Err(error) => return Err(tool_io("phi_extension_files", error)),
+        Err(error) => return Err(tool_io("tea_extension_files", error)),
     }
 
     let relative_parent = parent.strip_prefix(root).map_err(|_| ToolError::Blocked {
-        tool: "phi_extension_files".into(),
-        reason: "draft parent escapes the Phi extensions root".into(),
+        tool: "tea_extension_files".into(),
+        reason: "draft parent escapes the Tea extensions root".into(),
     })?;
     let mut current = root.to_path_buf();
     for component in relative_parent.components() {
         let Component::Normal(component) = component else {
             return Err(ToolError::Blocked {
-                tool: "phi_extension_files".into(),
+                tool: "tea_extension_files".into(),
                 reason: "draft parent contains an invalid path component".into(),
             });
         };
@@ -671,21 +671,21 @@ fn create_draft_parent(root: &Path, parent: &Path) -> Result<(), ToolError> {
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(ToolError::Blocked {
-                    tool: "phi_extension_files".into(),
+                    tool: "tea_extension_files".into(),
                     reason: "draft parent cannot traverse a symlink".into(),
                 });
             }
             Ok(metadata) if !metadata.is_dir() => {
                 return Err(ToolError::Execution {
-                    tool: "phi_extension_files".into(),
+                    tool: "tea_extension_files".into(),
                     message: "draft parent contains a non-directory path component".into(),
                 });
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(&current).map_err(|error| tool_io("phi_extension_files", error))?;
+                fs::create_dir(&current).map_err(|error| tool_io("tea_extension_files", error))?;
             }
-            Err(error) => return Err(tool_io("phi_extension_files", error)),
+            Err(error) => return Err(tool_io("tea_extension_files", error)),
         }
     }
     ensure_contained_canonical(root, parent)
@@ -695,7 +695,7 @@ fn load_extension(
     extension_root: &Path,
     manifest_path: &Path,
     registry_name: &str,
-) -> Result<PhiExtension, PhiLoadError> {
+) -> Result<TeaExtension, TeaLoadError> {
     let source = read_contained_file(extension_root, manifest_path)?;
     let value = parse_json(manifest_path, &source)?;
     let object = expect_object(manifest_path, &value)?;
@@ -777,12 +777,12 @@ fn load_extension(
     let bundle = Bundle::from_sources(bundle_manifest, sources)
         .map_err(|error| bundle_error(manifest_path, error.to_string()))?;
     let policy = LuaPolicy::load_bundle(bundle.clone()).map_err(|error: PolicyError| {
-        PhiLoadError::Policy {
+        TeaLoadError::Policy {
             path: manifest_path.to_path_buf(),
             message: error.to_string(),
         }
     })?;
-    Ok(PhiExtension {
+    Ok(TeaExtension {
         name,
         root: extension_root.to_path_buf(),
         bundle,
@@ -797,7 +797,7 @@ struct RegistryEntry {
     manifest: Option<String>,
 }
 
-fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>, PhiLoadError> {
+fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>, TeaLoadError> {
     let object = expect_object(path, value)?;
     let version = optional_u64(object, "version")
         .or_else(|| optional_u64(object, "format_version"))
@@ -866,8 +866,8 @@ fn registry_entries(path: &Path, value: &JsonValue) -> Result<Vec<RegistryEntry>
     Ok(result)
 }
 
-fn parse_json(path: &Path, source: &str) -> Result<JsonValue, PhiLoadError> {
-    JsonValue::parse(source).map_err(|error| PhiLoadError::Json {
+fn parse_json(path: &Path, source: &str) -> Result<JsonValue, TeaLoadError> {
+    JsonValue::parse(source).map_err(|error| TeaLoadError::Json {
         path: path.to_path_buf(),
         message: error.to_string(),
     })
@@ -876,7 +876,7 @@ fn parse_json(path: &Path, source: &str) -> Result<JsonValue, PhiLoadError> {
 fn expect_object<'a>(
     path: &Path,
     value: &'a JsonValue,
-) -> Result<&'a std::collections::BTreeMap<String, JsonValue>, PhiLoadError> {
+) -> Result<&'a std::collections::BTreeMap<String, JsonValue>, TeaLoadError> {
     value
         .as_object()
         .ok_or_else(|| contract_error(path, "root must be a JSON object"))
@@ -886,7 +886,7 @@ fn required_string(
     path: &Path,
     object: &std::collections::BTreeMap<String, JsonValue>,
     field: &str,
-) -> Result<String, PhiLoadError> {
+) -> Result<String, TeaLoadError> {
     let value = object
         .get(field)
         .ok_or_else(|| contract_error(path, format!("{field} is required")))?;
@@ -904,7 +904,7 @@ fn required_string_alias(
     object: &std::collections::BTreeMap<String, JsonValue>,
     primary: &str,
     alias: &str,
-) -> Result<String, PhiLoadError> {
+) -> Result<String, TeaLoadError> {
     if object.contains_key(primary) {
         required_string(path, object, primary)
     } else {
@@ -916,7 +916,7 @@ fn optional_string(
     path: &Path,
     object: &std::collections::BTreeMap<String, JsonValue>,
     field: &str,
-) -> Result<Option<String>, PhiLoadError> {
+) -> Result<Option<String>, TeaLoadError> {
     match object.get(field) {
         None => Ok(None),
         Some(value) => value
@@ -934,7 +934,7 @@ fn optional_u64(
     object.get(field).and_then(JsonValue::as_u64)
 }
 
-fn validate_name(path: &Path, field: &str, value: &str) -> Result<(), PhiLoadError> {
+fn validate_name(path: &Path, field: &str, value: &str) -> Result<(), TeaLoadError> {
     if value.is_empty()
         || value == "."
         || value == ".."
@@ -978,7 +978,7 @@ fn contained_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(root.join(path))
 }
 
-fn canonical_directory(path: &Path, required: bool) -> Result<PathBuf, PhiLoadError> {
+fn canonical_directory(path: &Path, required: bool) -> Result<PathBuf, TeaLoadError> {
     match fs::canonicalize(path) {
         Ok(path) => Ok(path),
         Err(error) if !required && error.kind() == io::ErrorKind::NotFound => {
@@ -988,7 +988,7 @@ fn canonical_directory(path: &Path, required: bool) -> Result<PathBuf, PhiLoadEr
     }
 }
 
-fn read_contained_file(root: &Path, path: &Path) -> Result<String, PhiLoadError> {
+fn read_contained_file(root: &Path, path: &Path) -> Result<String, TeaLoadError> {
     let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
     if metadata.file_type().is_symlink() {
         return Err(contract_error(
@@ -1010,63 +1010,63 @@ fn read_contained_file(root: &Path, path: &Path) -> Result<String, PhiLoadError>
 fn ensure_contained(root: &Path, path: &Path) -> Result<(), String> {
     path.strip_prefix(root)
         .map(|_| ())
-        .map_err(|_| "path escapes the Phi home".to_owned())
+        .map_err(|_| "path escapes the Tea home".to_owned())
 }
 
 fn ensure_contained_canonical(root: &Path, path: &Path) -> Result<(), ToolError> {
     let canonical_root =
-        fs::canonicalize(root).map_err(|error| tool_io("phi_extension_files", error))?;
+        fs::canonicalize(root).map_err(|error| tool_io("tea_extension_files", error))?;
     let canonical_path =
-        fs::canonicalize(path).map_err(|error| tool_io("phi_extension_files", error))?;
+        fs::canonicalize(path).map_err(|error| tool_io("tea_extension_files", error))?;
     canonical_path
         .strip_prefix(canonical_root)
         .map(|_| ())
         .map_err(|_| ToolError::Blocked {
-            tool: "phi_extension_files".into(),
-            reason: "path escapes the Phi extensions root".into(),
+            tool: "tea_extension_files".into(),
+            reason: "path escapes the Tea extensions root".into(),
         })
 }
 
-fn io_error(path: &Path, error: io::Error) -> PhiLoadError {
-    PhiLoadError::Io {
+fn io_error(path: &Path, error: io::Error) -> TeaLoadError {
+    TeaLoadError::Io {
         path: path.to_path_buf(),
         message: error.to_string(),
     }
 }
 
-fn contract_error(path: &Path, message: impl Into<String>) -> PhiLoadError {
-    PhiLoadError::Contract {
+fn contract_error(path: &Path, message: impl Into<String>) -> TeaLoadError {
+    TeaLoadError::Contract {
         path: path.to_path_buf(),
         message: message.into(),
     }
 }
 
-fn bundle_error(path: &Path, message: impl Into<String>) -> PhiLoadError {
-    PhiLoadError::Bundle {
+fn bundle_error(path: &Path, message: impl Into<String>) -> TeaLoadError {
+    TeaLoadError::Bundle {
         path: path.to_path_buf(),
         message: message.into(),
     }
 }
 
-fn prefix_error(error: PhiLoadError, prefix: String) -> PhiLoadError {
+fn prefix_error(error: TeaLoadError, prefix: String) -> TeaLoadError {
     match error {
-        PhiLoadError::Io { path, message } => PhiLoadError::Io {
+        TeaLoadError::Io { path, message } => TeaLoadError::Io {
             path,
             message: prefix + &message,
         },
-        PhiLoadError::Json { path, message } => PhiLoadError::Json {
+        TeaLoadError::Json { path, message } => TeaLoadError::Json {
             path,
             message: prefix + &message,
         },
-        PhiLoadError::Contract { path, message } => PhiLoadError::Contract {
+        TeaLoadError::Contract { path, message } => TeaLoadError::Contract {
             path,
             message: prefix + &message,
         },
-        PhiLoadError::Bundle { path, message } => PhiLoadError::Bundle {
+        TeaLoadError::Bundle { path, message } => TeaLoadError::Bundle {
             path,
             message: prefix + &message,
         },
-        PhiLoadError::Policy { path, message } => PhiLoadError::Policy {
+        TeaLoadError::Policy { path, message } => TeaLoadError::Policy {
             path,
             message: prefix + &message,
         },
@@ -1075,7 +1075,7 @@ fn prefix_error(error: PhiLoadError, prefix: String) -> PhiLoadError {
 
 fn invalid_tool_args(message: impl Into<String>) -> ToolError {
     ToolError::InvalidArguments {
-        tool: "phi_extension_files".into(),
+        tool: "tea_extension_files".into(),
         message: message.into(),
     }
 }
@@ -1100,17 +1100,17 @@ fn result_ok(call: &ToolCall, content: impl Into<String>) -> AgentToolResult {
     }
 }
 
-const PHI_EXTENSION_HANDBOOK: &str = r#"Phi extensions are explicit, ordered, and inert by default.
+const TEA_EXTENSION_HANDBOOK: &str = r#"Tea extensions are explicit, ordered, and inert by default.
 
-Registry: ~/.phi/extensions.json contains {"version":1,"extensions":[{"name":"example","path":"extensions/example"}]}.
+Registry: ~/.tea/extensions.json contains {"version":1,"extensions":[{"name":"example","path":"extensions/example"}]}.
 Each extension directory contains manifest.json and an explicit list of Luau module paths. The
 manifest entrypoint must return { system_prompt_append = "...", tools = {...}, before_tool_call = ... }.
 Only closed bundle-local relative imports are available. The TUI composes prompt text and policy
 hooks in registry order. Declared tools are model-visible, but this host supplies zero
 CapabilityBindings, so a declaration never grants a world effect and declared handlers are inert.
 
-Use phi_extension_files with operation list, read, write_draft, or validate. Paths are rooted at
-the Phi extensions directory. write_draft cannot edit the registry or grant capabilities. Source
+Use tea_extension_files with operation list, read, write_draft, or validate. Paths are rooted at
+the Tea extensions directory. write_draft cannot edit the registry or grant capabilities. Source
 for an already registered extension reloads after its current run settles; adding a new registry
 entry and granting authority remain separate trusted host decisions."#;
 
@@ -1128,7 +1128,7 @@ mod tests {
         fn new() -> Self {
             let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "tea-phi-test-{}-{sequence}",
+                "tea-tea-test-{}-{sequence}",
                 std::process::id()
             ));
             fs::create_dir_all(&path).expect("test home should be created");
@@ -1149,7 +1149,7 @@ mod tests {
     #[test]
     fn missing_registry_is_empty_and_registry_order_is_preserved() {
         let home = TestHome::new();
-        assert!(PhiExtensions::load(home.path())
+        assert!(TeaExtensions::load(home.path())
             .expect("missing registry is empty")
             .is_empty());
 
@@ -1179,12 +1179,12 @@ mod tests {
         )
         .expect("registry should be written");
 
-        let loaded = PhiExtensions::load(home.path()).expect("registry should load");
+        let loaded = TeaExtensions::load(home.path()).expect("registry should load");
         assert_eq!(
             loaded
                 .extensions()
                 .iter()
-                .map(PhiExtension::name)
+                .map(TeaExtension::name)
                 .collect::<Vec<_>>(),
             ["second", "first"]
         );
@@ -1200,8 +1200,8 @@ mod tests {
         fs::write(home.path().join(REGISTRY_FILE), r#"{"extensions":[]}"#)
             .expect("registry should be written");
         assert!(matches!(
-            PhiExtensions::load(home.path()),
-            Err(PhiLoadError::Contract { .. })
+            TeaExtensions::load(home.path()),
+            Err(TeaLoadError::Contract { .. })
         ));
 
         fs::write(
@@ -1210,8 +1210,8 @@ mod tests {
         )
         .expect("registry should be rewritten");
         assert!(matches!(
-            PhiExtensions::load(home.path()),
-            Err(PhiLoadError::Contract { .. })
+            TeaExtensions::load(home.path()),
+            Err(TeaLoadError::Contract { .. })
         ));
 
         fs::write(
@@ -1220,8 +1220,8 @@ mod tests {
         )
         .expect("registry should be written");
         assert!(matches!(
-            PhiExtensions::load(home.path()),
-            Err(PhiLoadError::Contract { .. })
+            TeaExtensions::load(home.path()),
+            Err(TeaLoadError::Contract { .. })
         ));
 
         fs::write(
@@ -1230,8 +1230,8 @@ mod tests {
         )
         .expect("registry should be rewritten");
         assert!(matches!(
-            PhiExtensions::load(home.path()),
-            Err(PhiLoadError::Contract { .. })
+            TeaExtensions::load(home.path()),
+            Err(TeaLoadError::Contract { .. })
         ));
     }
 
@@ -1256,8 +1256,8 @@ mod tests {
         )
         .expect("registry");
         assert!(matches!(
-            PhiExtensions::load(home.path()),
-            Err(PhiLoadError::Contract { .. })
+            TeaExtensions::load(home.path()),
+            Err(TeaLoadError::Contract { .. })
         ));
 
         let root = home.path().join("extensions");
@@ -1265,10 +1265,10 @@ mod tests {
         fs::write(&target, "do not replace").expect("target");
         let leaf = root.join("leaf.txt");
         symlink(&target, &leaf).expect("leaf symlink");
-        let tool = PhiExtensionFilesTool::new(home.path());
+        let tool = TeaExtensionFilesTool::new(home.path());
         let call = ToolCall {
             id: ToolCallId::new("call-leaf").expect("call id"),
-            name: "phi_extension_files".into(),
+            name: "tea_extension_files".into(),
             arguments: tea_core::state::SerializedJson::new(
                 r#"{"operation":"write_draft","path":"leaf.txt","content":"changed"}"#,
             ),
@@ -1295,7 +1295,7 @@ mod tests {
         symlink(&outside_directory, root.join("nested")).expect("nested directory symlink");
         let nested_call = ToolCall {
             id: ToolCallId::new("call-nested").expect("call id"),
-            name: "phi_extension_files".into(),
+            name: "tea_extension_files".into(),
             arguments: tea_core::state::SerializedJson::new(
                 r#"{"operation":"write_draft","path":"nested/draft.luau","content":"return nil"}"#,
             ),

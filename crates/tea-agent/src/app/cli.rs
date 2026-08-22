@@ -13,7 +13,7 @@ pub struct CliOptions {
     local_context_window: Option<NonZeroU64>,
     cwd: Option<PathBuf>,
     prompt: Option<OsString>,
-    phi_home: Option<PathBuf>,
+    tea_home: Option<PathBuf>,
     thinking: Option<ThinkingLevel>,
 }
 
@@ -40,7 +40,7 @@ impl CliOptions {
 
     /// Render the command-line usage text.
     pub const fn help_text() -> &'static str {
-        "Usage: tea [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --local-base-url <url>  Set the local provider API root\n        --local-context-window <tokens>\n                                Set explicit local context capacity for automatic compaction\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n        --phi-home <path>      Use path as the explicit Phi extension home (default: ~/.phi)\n"
+        "Usage: tea [OPTIONS]\n\nOptions:\n    -h, --help                  Show this help text\n        --provider <id>         Select a compiled provider\n        --model <id>            Select a compiled model\n        --local-base-url <url>  Set the local provider API root\n        --local-context-window <tokens>\n                                Set explicit local context capacity for automatic compaction\n        --thinking <level>      Set reasoning level (off, minimal, low, medium, high, xhigh, max)\n    -p, --prompt <message>      Stream one response and exit (requires provider/model)\n        --cwd <path>            Use path as the explicit workspace\n        --tea-home <path>      Use path as the explicit Tea extension home (default: ~/.tea)\n"
     }
 
     /// Borrow the explicitly selected provider, if supplied.
@@ -73,9 +73,9 @@ impl CliOptions {
         self.prompt.as_deref()
     }
 
-    /// Borrow the explicit Phi extension home override, if supplied.
-    pub fn phi_home(&self) -> Option<&std::path::Path> {
-        self.phi_home.as_deref()
+    /// Borrow the explicit Tea extension home override, if supplied.
+    pub fn tea_home(&self) -> Option<&std::path::Path> {
+        self.tea_home.as_deref()
     }
 
     /// Return the selected reasoning budget, defaulting to disabled.
@@ -89,8 +89,8 @@ impl CliOptions {
             OptionSlot::Model => &mut self.model,
             OptionSlot::LocalBaseUrl => &mut self.local_base_url,
             OptionSlot::Prompt => &mut self.prompt,
-            OptionSlot::PhiHome => {
-                if self.phi_home.replace(PathBuf::from(value)).is_some() {
+            OptionSlot::TeaHome => {
+                if self.tea_home.replace(PathBuf::from(value)).is_some() {
                     return Err(CliError::DuplicateOption(slot.name()));
                 }
                 return Ok(());
@@ -150,7 +150,7 @@ where
             "--thinking" => OptionSlot::Thinking,
             "-p" | "--prompt" => OptionSlot::Prompt,
             "--cwd" => OptionSlot::Cwd,
-            "--phi-home" => OptionSlot::PhiHome,
+            "--tea-home" => OptionSlot::TeaHome,
             _ if argument.as_os_str().to_string_lossy().starts_with('-') => {
                 return Err(CliError::UnknownOption(argument));
             }
@@ -176,7 +176,7 @@ enum OptionSlot {
     Thinking,
     Prompt,
     Cwd,
-    PhiHome,
+    TeaHome,
 }
 
 impl OptionSlot {
@@ -189,7 +189,7 @@ impl OptionSlot {
             Self::Thinking => "--thinking",
             Self::Prompt => "-p/--prompt",
             Self::Cwd => "--cwd",
-            Self::PhiHome => "--phi-home",
+            Self::TeaHome => "--tea-home",
         }
     }
 }

@@ -59,7 +59,7 @@
     {
       "row": 10,
       "column": 0,
-      "text": "  /reload-extensions reload idle Phi extensions",
+      "text": "  /reload-extensions reload idle Tea extensions",
       "style": { "foreground": "White", "background": null, "attributes": ["bold"] }
     },
     {

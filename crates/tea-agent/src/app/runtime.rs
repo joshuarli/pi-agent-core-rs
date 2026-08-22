@@ -17,8 +17,8 @@ use std::time::Duration;
 use super::cli::CliOptions;
 use super::compaction::ProviderCompactor;
 use super::error::AppError;
-use super::host::{build_host_agent_with_thinking, compose_phi_configuration};
-use super::phi::{load_phi_extensions, resolve_phi_home, PhiExtensions};
+use super::host::{build_host_agent_with_thinking, compose_tea_configuration};
+use super::tea::{load_tea_extensions, resolve_tea_home, TeaExtensions};
 use super::session::{SessionRecord, SessionStore};
 use super::state::{AppState, UiStatus};
 use super::support::composer_cursor;
@@ -31,11 +31,11 @@ pub struct App {
     pub(super) state: AppState,
     pub(super) core: Option<Agent>,
     pub(super) compactor: Option<Arc<ProviderCompactor>>,
-    pub(super) phi_home: Option<PathBuf>,
-    pub(super) phi_extensions: PhiExtensions,
+    pub(super) tea_home: Option<PathBuf>,
+    pub(super) tea_extensions: TeaExtensions,
     pub(super) session_store: Option<SessionStore>,
     pub(super) current_session: Option<SessionRecord>,
-    pub(super) phi_base_configuration: Option<AgentConfiguration>,
+    pub(super) tea_base_configuration: Option<AgentConfiguration>,
     pub(super) registry: ProviderRegistry,
     pub(super) workspace: Option<PathBuf>,
     pub(super) subscription: Option<LosslessEventSubscription>,
@@ -55,11 +55,11 @@ impl App {
             state: AppState::new(),
             core: None,
             compactor: None,
-            phi_home: None,
-            phi_extensions: PhiExtensions::default(),
+            tea_home: None,
+            tea_extensions: TeaExtensions::default(),
             session_store: None,
             current_session: None,
-            phi_base_configuration: None,
+            tea_base_configuration: None,
             registry: ProviderRegistry::new(),
             workspace: None,
             subscription: None,
@@ -123,44 +123,44 @@ impl App {
         self.core.as_ref()
     }
 
-    /// Reload the explicit Phi registry into the current agent's future-run configuration.
+    /// Reload the explicit Tea registry into the current agent's future-run configuration.
     ///
     /// Core rejects this operation while a run is active. The previous configuration remains in
     /// place if discovery, policy loading, or the idle replacement fails.
-    pub fn reload_phi_extensions(&mut self) -> Result<(), AppError> {
-        self.reload_phi_extensions_inner(true)
+    pub fn reload_tea_extensions(&mut self) -> Result<(), AppError> {
+        self.reload_tea_extensions_inner(true)
     }
 
-    fn reload_phi_extensions_after_settlement(&mut self) {
+    fn reload_tea_extensions_after_settlement(&mut self) {
         // Tests and embedding integrations may attach an already-built agent without selecting
-        // the TUI's Phi base configuration. Such an agent has no Phi snapshot to refresh.
-        if self.phi_base_configuration.is_none() {
+        // the TUI's Tea base configuration. Such an agent has no Tea snapshot to refresh.
+        if self.tea_base_configuration.is_none() {
             return;
         }
-        if let Err(error) = self.reload_phi_extensions_inner(false) {
+        if let Err(error) = self.reload_tea_extensions_inner(false) {
             self.state.notice(format!(
-                "Phi extensions were not reloaded; the previous snapshot remains active: {error}"
+                "Tea extensions were not reloaded; the previous snapshot remains active: {error}"
             ));
         }
     }
 
-    fn reload_phi_extensions_inner(&mut self, announce: bool) -> Result<(), AppError> {
-        let home = resolve_phi_home(self.options.phi_home())?;
-        let extensions = load_phi_extensions(&home)?;
+    fn reload_tea_extensions_inner(&mut self, announce: bool) -> Result<(), AppError> {
+        let home = resolve_tea_home(self.options.tea_home())?;
+        let extensions = load_tea_extensions(&home)?;
         let agent = self
             .core
             .as_ref()
             .ok_or_else(|| AppError::Setup("agent is not initialized".into()))?;
         let base = self
-            .phi_base_configuration
+            .tea_base_configuration
             .as_ref()
-            .ok_or_else(|| AppError::Setup("Phi base configuration is not initialized".into()))?;
-        let configuration = compose_phi_configuration(base.clone(), &extensions, &home)?;
+            .ok_or_else(|| AppError::Setup("Tea base configuration is not initialized".into()))?;
+        let configuration = compose_tea_configuration(base.clone(), &extensions, &home)?;
         agent.replace_configuration(configuration)?;
-        self.phi_home = Some(home);
-        self.phi_extensions = extensions;
+        self.tea_home = Some(home);
+        self.tea_extensions = extensions;
         if announce {
-            self.state.notice("Phi extensions reloaded");
+            self.state.notice("Tea extensions reloaded");
         }
         Ok(())
     }
@@ -183,25 +183,25 @@ impl App {
         let compactor_capability: Arc<dyn tea_core::compaction::Compactor> = compactor.clone();
         let builder = builder.compactor(compactor_capability);
         self.compactor = Some(compactor);
-        let home = resolve_phi_home(self.options.phi_home())?;
-        let extensions = load_phi_extensions(&home)?;
+        let home = resolve_tea_home(self.options.tea_home())?;
+        let extensions = load_tea_extensions(&home)?;
         let agent = builder.build();
         let base = agent.configuration();
-        let configuration = compose_phi_configuration(base.clone(), &extensions, &home)?;
+        let configuration = compose_tea_configuration(base.clone(), &extensions, &home)?;
         agent.replace_configuration(configuration)?;
         self.attach_agent(agent);
-        self.phi_base_configuration = Some(base);
-        self.phi_home = Some(home);
-        self.phi_extensions = extensions;
+        self.tea_base_configuration = Some(base);
+        self.tea_home = Some(home);
+        self.tea_extensions = extensions;
         let workspace = self
             .workspace
             .as_ref()
             .ok_or_else(|| AppError::Setup("workspace is not initialized".into()))?;
         self.session_store = Some(
             SessionStore::new(
-                self.phi_home
+                self.tea_home
                     .as_ref()
-                    .expect("Phi home was just initialized"),
+                    .expect("Tea home was just initialized"),
             )
             .for_workspace(workspace),
         );
@@ -269,20 +269,20 @@ impl App {
                 self.active_task = None;
                 self.submitted_prompt = None;
                 self.state.status = UiStatus::Idle;
-                self.reload_phi_extensions_after_settlement();
+                self.reload_tea_extensions_after_settlement();
                 self.persist_session();
             }
             Ok(Err(CoreError::Cancelled)) => {
                 self.active_task = None;
                 self.restore_submitted_prompt("cancelled; prompt restored for explicit re-submit");
-                self.reload_phi_extensions_after_settlement();
+                self.reload_tea_extensions_after_settlement();
             }
             Ok(Err(error)) => {
                 self.active_task = None;
                 self.restore_submitted_prompt(format!(
                     "{error}; prompt restored for explicit re-submit"
                 ));
-                self.reload_phi_extensions_after_settlement();
+                self.reload_tea_extensions_after_settlement();
             }
             Err(TryRecvError::Disconnected) => {
                 self.active_task = None;

@@ -5,14 +5,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::error::AppError;
-use super::phi::{PhiDeclaredTool, PhiExtensionFilesTool, PhiExtensionHandbookTool, PhiExtensions};
+use super::tea::{TeaDeclaredTool, TeaExtensionFilesTool, TeaExtensionHandbookTool, TeaExtensions};
 
-const PHI_AUTHORING_PROMPT: &str = r#"
-Phi extensions
+const TEA_AUTHORING_PROMPT: &str = r#"
+Tea extensions
 
-When the user asks to create or modify a Phi extension, call `phi_extension_handbook` before
-writing source. Use `phi_extension_files` only for Phi extension files. Its writes are drafts:
-they cannot change the extension registry, activate a new extension, or grant authority. Phi
+When the user asks to create or modify a Tea extension, call `tea_extension_handbook` before
+writing source. Use `tea_extension_files` only for Tea extension files. Its writes are drafts:
+they cannot change the extension registry, activate a new extension, or grant authority. Tea
 extensions are reloaded only after a run has settled, so the current run keeps its original tools,
 prompt, and hooks.
 "#;
@@ -39,15 +39,15 @@ pub(super) fn build_host_agent_with_thinking(
         .map_err(|error| AppError::Setup(error.to_string()))
 }
 
-/// Compose the TUI's trusted host configuration with loaded Phi declarations.
+/// Compose the TUI's trusted host configuration with loaded Tea declarations.
 ///
 /// This operation is intentionally separate from `AgentBuilder`: it can be applied with the
-/// core's idle-only `Agent::replace_configuration` API when a host reloads Phi files. No
+/// core's idle-only `Agent::replace_configuration` API when a host reloads Tea files. No
 /// capability binding is created for a declaration or handler source.
-pub(super) fn compose_phi_configuration(
+pub(super) fn compose_tea_configuration(
     mut configuration: AgentConfiguration,
-    phi: &PhiExtensions,
-    phi_home: &Path,
+    tea: &TeaExtensions,
+    tea_home: &Path,
 ) -> Result<AgentConfiguration, AppError> {
     let mut seen = configuration
         .tools
@@ -55,7 +55,7 @@ pub(super) fn compose_phi_configuration(
         .map(str::to_owned)
         .collect::<std::collections::BTreeSet<_>>();
     let mut prompt = configuration.system_prompt;
-    for extension in phi.extensions() {
+    for extension in tea.extensions() {
         let append = extension.policy().system_prompt_append();
         if !append.is_empty() {
             if !prompt.is_empty() {
@@ -66,40 +66,40 @@ pub(super) fn compose_phi_configuration(
         for tool in extension.policy().tools() {
             if !seen.insert(tool.name.clone()) {
                 return Err(AppError::Setup(format!(
-                    "Phi extension {:?} duplicates tool {:?}",
+                    "Tea extension {:?} duplicates tool {:?}",
                     extension.name(),
                     tool.name
                 )));
             }
             configuration
                 .tools
-                .insert(Arc::new(PhiDeclaredTool::from_policy(
+                .insert(Arc::new(TeaDeclaredTool::from_policy(
                     extension.name(),
                     tool,
                 )));
         }
     }
-    for reserved in ["phi_extension_handbook", "phi_extension_files"] {
+    for reserved in ["tea_extension_handbook", "tea_extension_files"] {
         if !seen.insert(reserved.to_owned()) {
             return Err(AppError::Setup(format!(
-                "Phi extension tool name is reserved: {reserved:?}"
+                "Tea extension tool name is reserved: {reserved:?}"
             )));
         }
     }
     if !prompt.is_empty() {
         prompt.push('\n');
     }
-    prompt.push_str(PHI_AUTHORING_PROMPT.trim());
+    prompt.push_str(TEA_AUTHORING_PROMPT.trim());
     configuration
         .tools
-        .insert(Arc::new(PhiExtensionHandbookTool));
+        .insert(Arc::new(TeaExtensionHandbookTool));
     configuration
         .tools
-        .insert(Arc::new(PhiExtensionFilesTool::new(phi_home)));
+        .insert(Arc::new(TeaExtensionFilesTool::new(tea_home)));
 
     // Wrapping in reverse preserves registry order: the first extension's decision runs first.
     let mut hooks = configuration.hooks;
-    for extension in phi.extensions().iter().rev() {
+    for extension in tea.extensions().iter().rev() {
         hooks = Arc::new(LuaPolicyHookSet::new(Arc::clone(extension.policy()), hooks));
     }
     configuration.system_prompt = prompt;
@@ -196,20 +196,20 @@ mod tests {
     use tea_core::tool::ToolRegistry;
 
     #[test]
-    fn phi_authoring_tools_and_guidance_are_present_without_an_extension_registry() {
-        let configuration = compose_phi_configuration(
+    fn tea_authoring_tools_and_guidance_are_present_without_an_extension_registry() {
+        let configuration = compose_tea_configuration(
             AgentConfiguration::new("base prompt", ToolRegistry::default(), Arc::new(NoHooks)),
-            &PhiExtensions::default(),
-            Path::new("/fixture/phi"),
+            &TeaExtensions::default(),
+            Path::new("/fixture/tea"),
         )
-        .expect("empty Phi registry composes with the host configuration");
+        .expect("empty Tea registry composes with the host configuration");
 
         assert!(configuration
             .tools
             .names()
-            .eq(["phi_extension_handbook", "phi_extension_files"]));
+            .eq(["tea_extension_handbook", "tea_extension_files"]));
         assert!(configuration
             .system_prompt
-            .contains("call `phi_extension_handbook` before"));
+            .contains("call `tea_extension_handbook` before"));
     }
 }

@@ -28,7 +28,7 @@ profile, render the lossless core event stream, submit or steer prompts, cancel
 work, show generic tool activity, display provider-reported accounting, invoke
 manual compaction when configured, and edit the prompt in `$EDITOR`.
 
-It persists and resumes only explicit linear sessions below the Phi application
+It persists and resumes only explicit linear sessions below the Tea application
 home, never discovers a Pi installation, and does not become a general terminal
 framework. The normal screen is intentionally only a transcript, a compact
 multiline composer, and a status line; model and session pickers are temporary
@@ -40,7 +40,7 @@ The command line is deliberately narrow:
 
 ```text
 tea [--provider <id>] [--model <id>] [--local-base-url <url>]
-         [--local-context-window <tokens>] [--cwd <path>] [--phi-home <path>]
+         [--local-context-window <tokens>] [--cwd <path>] [--tea-home <path>]
 tea [-h | --help]
 tea --provider <id> --model <id> [--thinking <level>] -p <message>
 ```
@@ -56,9 +56,9 @@ bundle. With no provider/model pair, the host opens the cross-provider model
 selector rather than guessing a model. The host may read documented credential
 environment variables, but it must never log them or move credential discovery
 into core.
-No preferences, keys, themes, keymaps, credentials, or Phi source/configuration
+No preferences, keys, themes, keymaps, credentials, or Tea source/configuration
 are persisted. Linear session files are the one deliberate continuity feature
-and are stored below `<phi-home>/sessions` (normally `~/.phi/sessions`).
+and are stored below `<tea-home>/sessions` (normally `~/.tea/sessions`).
 
 ## Linear session persistence
 
@@ -66,7 +66,7 @@ The TUI owns a versioned, file-backed linear session store. The core remains
 file-system agnostic and receives a validated message vector only through
 `Agent::restore_messages`.
 
-Each session is a Pi-compatible v3 JSONL file below the explicit Phi home:
+Each session is a Pi-compatible v3 JSONL file below the explicit Tea home:
 `sessions/--<resolved-cwd-with-separators-replaced>--/<timestamp>_<uuid>.jsonl`.
 The first line is a `type: "session"` header with `version`, `id`, ISO
 `timestamp`, and `cwd`. Following lines are typed entries with Pi's
@@ -79,11 +79,11 @@ only the linear leaf; it does not add branch/tree controls.
 The application privacy contract is separate from the JSONL shape: it writes
 canonical user, assistant, and tool-result payloads without redaction because
 redacting them would change resumed model context. The file does not include
-the system prompt, Phi extension files or hooks, credentials, queues, composer/history,
+the system prompt, Tea extension files or hooks, credentials, queues, composer/history,
 partial responses, transient phases, or provider accounting. Prompts, tool
 arguments, tool output, and exact provider responses can contain secrets; the
 host creates the session directory with owner-only permissions and callers must
-choose the Phi home accordingly. Session state is not trace telemetry and does
+choose the Tea home accordingly. Session state is not trace telemetry and does
 not silently apply the trace crate's redactor.
 
 Files are bounded to 16 MiB, malformed entries are ignored during discovery,
@@ -102,10 +102,10 @@ it never selects an alternate provider or credential source. A session load
 rebuilds the visible transcript as a host projection rather than replaying
 historical core events.
 
-## Phi extension home
+## Tea extension home
 
-The terminal host resolves `~/.phi` only at its application boundary; use
-`--phi-home <path>` to select another root. Neither `tea-core` nor
+The terminal host resolves `~/.tea` only at its application boundary; use
+`--tea-home <path>` to select another root. Neither `tea-core` nor
 `tea-luau` discovers a home directory. A missing `extensions.json` is an
 empty registry. Otherwise, its `extensions` array is the authoritative load
 order:
@@ -125,9 +125,9 @@ duplicate, escaping, or symlinked source records. Every extension has zero
 effect authority: declared tools are visible but fail closed until a future
 host capability binding is separately designed and granted.
 
-The model receives `phi_extension_handbook` and `phi_extension_files`.
+The model receives `tea_extension_handbook` and `tea_extension_files`.
 The latter can list, read, write drafts, and validate files below
-`<phi-home>/extensions`; it cannot modify `extensions.json`, activate a new
+`<tea-home>/extensions`; it cannot modify `extensions.json`, activate a new
 extension, or grant capability authority. The host reloads registered bundles
 only after a run has settled, so a model's draft affects the next run at the
 earliest. `/reload-extensions` performs the same idle-only reload explicitly.
@@ -136,8 +136,8 @@ A failed reload retains the previous prompt, tool registry, and hook snapshot.
 For a reproducible provider check without terminal state, use the headless
 probe. It assembles the same default profile and OpenAI-compatible context
 hook as `tea`, then drives one OpenRouter prompt and prints the assistant
-text. It deliberately does not load Phi extensions, so an operator's
-`~/.phi` sources cannot change the provider smoke check. The probe does not
+text. It deliberately does not load Tea extensions, so an operator's
+`~/.tea` sources cannot change the provider smoke check. The probe does not
 read `.env`; source that file explicitly at the shell boundary:
 
 ```bash
@@ -289,7 +289,7 @@ The direct commands are intentionally not a plugin framework:
 /model     open the compiled cross-provider model selector
 /cost      print per-turn and aggregate reported accounting
 /compact   invoke the configured manual compactor
-/reload-extensions  reload the idle Phi extension snapshot
+/reload-extensions  reload the idle Tea extension snapshot
 /session   open the saved linear-session picker
 /resume    alias for /session
 /new       start a fresh linear session

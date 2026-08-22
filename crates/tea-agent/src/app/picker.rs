@@ -29,9 +29,9 @@ impl App {
             self.state.notice("session changes require an idle agent");
             return Ok(());
         }
-        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref())
+        let (Some(home), Some(workspace)) = (self.tea_home.as_ref(), self.workspace.as_ref())
         else {
-            return Err(AppError::Setup("Phi home is not initialized".into()));
+            return Err(AppError::Setup("Tea home is not initialized".into()));
         };
         let entries = SessionStore::new(home).for_workspace(workspace).list()?;
         if entries.is_empty() {
@@ -53,9 +53,9 @@ impl App {
             self.state.notice("session changes require an idle agent");
             return Ok(());
         }
-        let (Some(home), Some(workspace)) = (self.phi_home.as_ref(), self.workspace.as_ref())
+        let (Some(home), Some(workspace)) = (self.tea_home.as_ref(), self.workspace.as_ref())
         else {
-            return Err(AppError::Setup("Phi home is not initialized".into()));
+            return Err(AppError::Setup("Tea home is not initialized".into()));
         };
         let record = SessionStore::new(home).for_workspace(workspace).load(id)?;
         if !record.cwd.is_empty() && record.cwd != workspace.to_string_lossy() {

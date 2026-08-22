@@ -11,7 +11,7 @@ mod compaction;
 mod error;
 mod host;
 mod input;
-mod phi;
+mod tea;
 mod picker;
 mod runtime;
 mod session;
@@ -24,7 +24,7 @@ mod tests;
 pub use cli::{CliCommand, CliError, CliOptions};
 pub use error::AppError;
 pub use host::build_host_agent;
-pub use phi::{load_phi_extensions, resolve_phi_home, PhiExtension, PhiExtensions, PhiLoadError};
+pub use tea::{load_tea_extensions, resolve_tea_home, TeaExtension, TeaExtensions, TeaLoadError};
 pub use runtime::App;
 pub use state::{
     AppState, NoticeSeverity, ToolProjection, ToolState, TranscriptEntry, UiStatus, UiSurface,

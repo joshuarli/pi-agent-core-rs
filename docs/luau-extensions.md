@@ -180,29 +180,29 @@ thread.
 Tool handlers already use the core scheduler and should normally be preferred
 for model-visible effects.
 
-## Phi minimal extension host
+## Tea minimal extension host
 
-The minimal Phi host is an embedding convention around this crate, not an
-ambient resource layer in `tea-luau`. Phi may own a user-facing
+The minimal Tea host is an embedding convention around this crate, not an
+ambient resource layer in `tea-luau`. Tea may own a user-facing
 extension registry, but Rust still receives explicit source records, a closed
 bundle, and explicit capability bindings.
 
-### Host-only `~/.phi` ownership
+### Host-only `~/.tea` ownership
 
-`~/.phi` belongs to the Phi host if that host elects to use it. The core,
+`~/.tea` belongs to the Tea host if that host elects to use it. The core,
 `tea-luau`, and a policy VM must never discover, read, write, watch, or
 interpret that directory. A host may choose a different root, an in-memory
 registry, or no persistent registry at all. Path permissions, file formats,
 symlink handling, atomic writes, and user approval are host responsibilities.
 
-Reading a file from `~/.phi` is therefore an input step performed by Phi. The
+Reading a file from `~/.tea` is therefore an input step performed by Tea. The
 host converts the selected bytes into an explicit source registry before
 calling the bundle API; it does not pass a path or a promise of ambient
 discovery across the boundary.
 
 ### Explicit source registry and order
 
-Before evaluating extensions, Phi constructs an ordered source registry. Each
+Before evaluating extensions, Tea constructs an ordered source registry. Each
 record has a stable extension/source identity, a canonical module path, and
 the exact source bytes (plus the entry module and any host trust metadata
 needed by the host). The registry order is part of the input and must be
@@ -219,7 +219,7 @@ records. The loader accepts only `./...` and `../...` imports that resolve to a
 declared module inside that entry's bundle. Bare package names, absolute or
 drive paths, undeclared virtual modules, missing modules, and cycles are
 rejected. A fresh VM receives a fresh module cache. The loader never consults
-`~/.phi`, the current directory, environment variables, a package registry,
+`~/.tea`, the current directory, environment variables, a package registry,
 the network, or the host filesystem. Bundle source hashes are deterministic
 content identities; they are not signatures or cryptographic trust proofs.
 
@@ -247,7 +247,7 @@ state, scheduler order, cancellation, tool results, or event settlement.
 
 ### Zero default effect authority
 
-The default Phi host starts with zero effect authority. A declaration, prompt
+The default Tea host starts with zero effect authority. A declaration, prompt
 suffix, tool schema, handler source, capability-shaped yield, or capability
 manifest entry is data and never an effect. Authority has two separate parts:
 
@@ -258,15 +258,15 @@ manifest entry is data and never an effect. Authority has two separate parts:
 Both are required. A manifest without a binding is inert, and a binding that
 is not explicitly granted is unreachable. Composition does not union grants,
 inherit authority from another extension, or turn a model-visible tool into a
-capability. Phi must choose and install each grant and binding explicitly;
+capability. Tea must choose and install each grant and binding explicitly;
 otherwise the request fails closed. Credentials and other effectful state
 remain in the host and never enter source text or the policy VM.
 
 ### Trusted dynamic extensions: handbook and authoring tool
 
-“Dynamic” means that Phi selected new source records at a host-defined
+“Dynamic” means that Tea selected new source records at a host-defined
 boundary; it does not mean that an extension can install itself or approve its
-own authority. A Phi distribution that supports trusted dynamic extensions
+own authority. A Tea distribution that supports trusted dynamic extensions
 should provide a host handbook and an authoring tool. The handbook should
 define the registry record, canonical module and bundle rules, composition
 order, resource budgets, grant review, source identity, reload lifecycle, and
@@ -291,10 +291,10 @@ an extension name or path is not sufficient.
 
 Reload is an idle-only host transaction. `Idle` means that the Agent has no
 active run and its terminal observers have settled. If a reload is requested
-while a run is active, Phi rejects or defers the request; it never mutates the
+while a run is active, Tea rejects or defers the request; it never mutates the
 policy underneath that run.
 
-To reload, Phi builds and validates a complete candidate snapshot containing
+To reload, Tea builds and validates a complete candidate snapshot containing
 the explicit source registry, its ordered closed bundles, the composed
 declaration, and the separately selected grants/bindings. Only after every
 part succeeds does the host atomically replace the current snapshot. A failed
@@ -324,9 +324,9 @@ means a handler cannot leak a coroutine or mutable global into another call.
 For crate ownership and benchmark/test evidence see
 [architecture](architecture.md) and [verification](verification.md).
 
-### Phi host limitations
+### Tea host limitations
 
-The minimal host design does not make `~/.phi` a repository-wide convention or
+The minimal host design does not make `~/.tea` a repository-wide convention or
 add it to the Luau crate. It has no ambient extension discovery, package
 registry, marketplace, remote source loader, signature/trust store, automatic
 grant approval, or active-run hot reload. It also has no cross-extension
