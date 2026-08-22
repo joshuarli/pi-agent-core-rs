@@ -6,6 +6,7 @@
 //! helpers.
 
 mod cli;
+mod commands;
 mod compaction;
 mod error;
 mod host;
@@ -25,5 +26,7 @@ pub use error::AppError;
 pub use host::build_host_agent;
 pub use phi::{load_phi_extensions, resolve_phi_home, PhiExtension, PhiExtensions, PhiLoadError};
 pub use runtime::App;
-pub use state::{AppState, ToolState, TranscriptKind, TranscriptLine, UiStatus};
+pub use state::{
+    AppState, NoticeSeverity, ToolProjection, ToolState, TranscriptEntry, UiStatus, UiSurface,
+};
 pub use support::format_usage;

@@ -12,8 +12,9 @@ pub mod editor;
 pub mod grid;
 pub mod render;
 pub mod terminal;
+pub mod ui;
 
 pub use app::{
-    build_host_agent, App, AppError, AppState, CliCommand, CliOptions, ToolState, TranscriptKind,
-    TranscriptLine,
+    build_host_agent, App, AppError, AppState, CliCommand, CliOptions, NoticeSeverity,
+    ToolProjection, ToolState, TranscriptEntry, UiSurface,
 };

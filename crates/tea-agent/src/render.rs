@@ -4,13 +4,30 @@
 //! Core events remain lossless; this layer decides how a user, assistant,
 //! tool, notice, or Markdown table occupies terminal rows.
 
-use crate::app::{AppState, ToolState, TranscriptKind};
+use crate::app::{AppState, NoticeSeverity, ToolProjection, ToolState, TranscriptEntry, UiSurface};
+#[cfg(test)]
 use crate::composer::Composer;
-use crate::grid::{Cell, Grid, Rect, Style};
+use crate::grid::{Cell, Grid, Style};
+use crate::ui::frame_layout;
+use crate::ui::theme::{Role, Theme};
+use crate::ui::visual_layout::VisualLayout;
+#[cfg(test)]
 use crossterm::style::Color;
 use hi_lite::{Highlighter, Kind, Language};
 use tea_core::provider::ProviderRegistry;
-use tea_protocol::JsonValue;
+
+/// Public measured-frame contract for consumers that need layout without painting.
+pub use crate::ui::frame_layout::FrameLayout;
+
+/// Plan the fx-style footer regions independently of the legacy compatibility layout.
+pub fn measured_frame_layout(
+    width: u16,
+    height: u16,
+    composer_rows: usize,
+    menu_rows: usize,
+) -> FrameLayout {
+    frame_layout::plan_flow(width, height, 0, 0, composer_rows, menu_rows, 1)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RenderLine {
@@ -37,105 +54,48 @@ impl RenderLine {
     }
 }
 
-/// Fixed regions of a rendered frame.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Layout {
-    /// Startup identity/header region.
-    pub header: Rect,
-    /// Transcript region.
-    pub transcript: Rect,
-    /// Multiline composer region.
-    pub composer: Rect,
-    /// Compact hint/status region.
-    pub status: Rect,
-}
-
-/// Compute the default empty-composer layout.
-pub fn layout(width: u16, height: u16) -> Layout {
-    layout_for_composer(width, height, 1, 0)
-}
-
-/// Compute a frame layout that gives the composer enough rows for its current
-/// visual content while retaining at least one transcript row when possible.
-pub fn layout_for(state: &AppState, width: u16, height: u16) -> Layout {
-    let desired = composer_lines(state.composer(), width).len().max(1) as u16;
-    let header_height = welcome_lines(state, width).len() as u16;
-    let status_height = if height >= 2 {
-        2
+fn frame_for(state: &AppState, width: u16, height: u16) -> FrameLayout {
+    let desired_composer_rows = VisualLayout::measure(
+        state.composer().text(),
+        state.composer().cursor(),
+        width,
+    )
+    .rows
+    .len()
+    .max(1);
+    // The composer grows with its content but keeps a bounded viewport once a
+    // conversation exists. That leaves room for the transcript/status and
+    // makes the hidden-above rail an observable affordance on short terminals.
+    let composer_capacity = if state.transcript().is_empty() {
+        usize::from(height)
     } else {
-        u16::from(height > 0)
+        usize::from(height.saturating_sub(3).max(1))
     };
-    let available = height.saturating_sub(status_height + header_height);
-    let max_composer = (available / 2).max(1);
-    layout_for_composer(
+    let composer_rows = desired_composer_rows.min(composer_capacity.max(1));
+    let transcript_rows = wrapped_transcript(state, width).len();
+    let menu_rows = slash_menu_lines(state, width).len();
+    // Measure exactly the rows that `activity_lines` will paint. A queue prompt
+    // may soft-wrap, so counting prompts would reserve too little footer space.
+    let activity_rows = activity_lines(state, width).len();
+    frame_layout::plan_flow(
         width,
         height,
-        desired.min(max_composer),
-        header_height.min(height.saturating_sub(status_height)),
+        transcript_rows,
+        activity_rows,
+        composer_rows,
+        menu_rows,
+        usize::from(menu_rows == 0),
     )
-}
-
-fn layout_for_composer(
-    width: u16,
-    height: u16,
-    composer_height: u16,
-    header_height: u16,
-) -> Layout {
-    let status_height = if height >= 2 {
-        2
-    } else {
-        u16::from(height > 0)
-    };
-    let header_height = header_height.min(height.saturating_sub(status_height));
-    let composer_height = composer_height.min(height.saturating_sub(status_height + header_height));
-    let transcript_height = height.saturating_sub(composer_height + status_height + header_height);
-    Layout {
-        header: Rect {
-            x: 0,
-            y: 0,
-            width,
-            height: header_height,
-        },
-        transcript: Rect {
-            x: 0,
-            y: header_height + composer_height,
-            width,
-            height: transcript_height,
-        },
-        composer: Rect {
-            x: 0,
-            y: header_height,
-            width,
-            height: composer_height,
-        },
-        status: Rect {
-            x: 0,
-            y: header_height + composer_height + transcript_height,
-            width,
-            height: status_height,
-        },
-    }
 }
 
 /// Render the current presentation state into a fresh frame.
 pub fn render(state: &AppState, registry: &ProviderRegistry, width: u16, height: u16) -> Grid {
-    let mut grid = Grid::new(width, height);
-    let regions = layout_for(state, width, height);
-    for (row, line) in welcome_lines(state, regions.header.width)
-        .into_iter()
-        .enumerate()
-    {
-        if row >= regions.header.height as usize {
-            break;
-        }
-        put_line(
-            &mut grid,
-            regions.header.x,
-            regions.header.y + row as u16,
-            regions.header.width,
-            &line,
-        );
+    if !matches!(state.surface(), UiSurface::None) {
+        return render_surface(state, registry, width, height);
     }
+    let mut grid = Grid::new(width, height);
+    let theme = Theme::default();
+    let regions = frame_for(state, width, height);
     let transcript = wrapped_transcript(state, regions.transcript.width);
     let visible_rows = regions.transcript.height as usize;
     let start = if state.follows_output() {
@@ -156,74 +116,223 @@ pub fn render(state: &AppState, registry: &ProviderRegistry, width: u16, height:
         );
     }
 
-    let composer = composer_lines(state.composer(), regions.composer.width);
-    let composer_start = composer_view_start(
-        state.composer(),
-        regions.composer.height,
-        regions.composer.width,
-        &composer,
-    );
-    for (row, line) in composer.into_iter().skip(composer_start).enumerate() {
+    let activity = activity_lines(state, regions.activity.width);
+    for (row, line) in activity.into_iter().enumerate() {
+        if row >= regions.activity.height as usize {
+            break;
+        }
+        put_line(
+            &mut grid,
+            regions.activity.x,
+            regions.activity.y + row as u16,
+            regions.activity.width,
+            &line,
+        );
+    }
+
+    let visual = composer_layout(state, regions.composer.width);
+    let composer_start = composer_view_start(&visual, regions.composer.height);
+    for (row, line) in visual.rows.into_iter().skip(composer_start).enumerate() {
         if row >= regions.composer.height as usize {
             break;
         }
+        let text = line.text.strip_prefix("❯ ").unwrap_or(&line.text);
+        let prefix = if composer_start != 0 && row == 0 {
+            "┃↑"
+        } else {
+            "┃ "
+        };
         put_text(
             &mut grid,
             regions.composer.x,
             regions.composer.y + row as u16,
             regions.composer.width,
-            &line,
-            Style {
-                foreground: Some(Color::White),
-                bold: true,
-                ..Style::default()
-            },
+            &format!("{prefix}{text}"),
+            theme.style(Role::Text),
         );
     }
 
-    if regions.status.height != 0 {
-        for (row, status) in state.footer_lines(registry).into_iter().enumerate() {
-            if row >= regions.status.height as usize {
+    if regions.hint.height != 0 {
+        for (row, status) in footer_lines(state, registry).into_iter().enumerate() {
+            if row >= regions.hint.height as usize {
                 break;
             }
             put_text(
                 &mut grid,
-                regions.status.x,
-                regions.status.y + row as u16,
-                regions.status.width,
+                regions.hint.x,
+                regions.hint.y + row as u16,
+                regions.hint.width,
                 &status,
-                Style {
-                    foreground: Some(Color::DarkGrey),
-                    ..Style::default()
-                },
+                theme.style(Role::Muted),
             );
         }
     }
 
-    if let Some(lines) = state.picker_lines_visible(registry, regions.transcript.height as usize) {
-        for (row, line) in lines.into_iter().enumerate() {
-            if row >= regions.transcript.height as usize {
+    if regions.menu.height != 0 {
+        let completion_rows = slash_menu_lines(state, regions.menu.width);
+        for (row, line) in completion_rows.into_iter().enumerate() {
+            if row >= regions.menu.height as usize {
                 break;
             }
-            put_text(
+            put_line(
                 &mut grid,
-                regions.transcript.x,
-                regions.transcript.y + row as u16,
-                regions.transcript.width,
+                regions.menu.x,
+                regions.menu.y + row as u16,
+                regions.menu.width,
                 &line,
-                Style {
-                    foreground: Some(Color::White),
-                    ..Style::default()
-                },
             );
         }
     }
     grid
 }
 
+fn footer_lines(state: &AppState, registry: &ProviderRegistry) -> [String; 2] {
+    let mut lines = state.footer_lines(registry);
+    // Active work is represented by the transient activity row. Keeping the fixed footer
+    // stable avoids leaving the legacy `Asking` label behind while tools stream.
+    lines[0] = lines[0].replace("⏺ Asking · ", "");
+    lines
+}
+
+fn render_surface(
+    state: &AppState,
+    registry: &ProviderRegistry,
+    width: u16,
+    height: u16,
+) -> Grid {
+    let mut grid = Grid::new(width, height);
+    let theme = Theme::default();
+    let payload = state.surface_lines().map(<[String]>::to_vec);
+    let lines: Vec<String> = match state.surface() {
+        UiSurface::Help => payload.clone().unwrap_or_else(|| vec![
+                "Commands".into(),
+                String::new(),
+                "General".into(),
+                "  /help  show keybindings and commands".into(),
+            ]),
+        UiSurface::Cost if payload.is_some() => payload.clone().unwrap_or_default(),
+        UiSurface::Cost => {
+            let [primary, secondary] = footer_lines(state, registry);
+            vec!["Cost and context".into(), String::new(), primary, secondary]
+        }
+        UiSurface::ToolDetail => payload.unwrap_or_else(|| vec!["No transcript yet.".into()]),
+        UiSurface::ModelPicker | UiSurface::CustomModel | UiSurface::SessionPicker =>
+            state
+                .picker_lines_visible(registry, usize::MAX)
+                .unwrap_or_default(),
+        // Keep this branch forward-compatible with a future full-transcript surface. A
+        // temporary surface still owns the whole frame even when its content is not yet
+        // specialized here.
+        _ => Vec::new(),
+    };
+    if height == 0 {
+        return grid;
+    }
+    put_text(&mut grid, 0, 0, width, "┃ ", theme.style(Role::Text));
+    if height > 1 {
+        put_text(
+            &mut grid,
+            0,
+            1,
+            width,
+            &"─".repeat(usize::from(width)),
+            theme.style(Role::Muted),
+        );
+    }
+    let content_limit = height.saturating_sub(2);
+    let mut y = 2_u16;
+    let surface_start = state.surface_offset().min(lines.len());
+    for line in lines.into_iter().skip(surface_start) {
+        for wrapped in wrap_lines(&line, width, theme.style(Role::Text)) {
+            if y >= content_limit {
+                break;
+            }
+            put_line(&mut grid, 0, y, width, &wrapped);
+            y = y.saturating_add(1);
+        }
+        if y >= content_limit {
+            break;
+        }
+    }
+    if height > 2 {
+        let divider = height - 2;
+        put_text(
+            &mut grid,
+            0,
+            divider,
+            width,
+            &"─".repeat(usize::from(width)),
+            theme.style(Role::Muted),
+        );
+        let hint = match state.surface() {
+            UiSurface::Help => "↑↓ Navigate · Enter Open · Esc Close",
+            UiSurface::ToolDetail => "↑↓ Scroll · Ctrl+O Close · Esc Close",
+            UiSurface::ModelPicker | UiSurface::CustomModel | UiSurface::SessionPicker => {
+                "↑↓ Navigate · Enter Select · Esc Close"
+            }
+            _ => "Esc Close",
+        };
+        put_text(&mut grid, 0, height - 1, width, hint, theme.style(Role::Muted));
+    }
+    grid
+}
+
+fn activity_lines(state: &AppState, width: u16) -> Vec<RenderLine> {
+    let mut lines = Vec::new();
+    if matches!(state.status(), crate::app::UiStatus::Active) {
+        lines.push(RenderLine::plain("• Thinking", Theme::default().style(Role::Activity)));
+    }
+    lines.extend(
+        state
+            .queued_lines()
+            .into_iter()
+            .flat_map(|line| wrap_lines(&line, width, Theme::default().style(Role::Muted))),
+    );
+    lines
+}
+
+fn slash_menu_lines(state: &AppState, width: u16) -> Vec<RenderLine> {
+    let rows = state.slash_completion_rows(6);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let theme = Theme::default();
+    let mut lines = vec![RenderLine::plain(
+        "─".repeat(usize::from(width)),
+        theme.style(Role::Muted),
+    )];
+    lines.push(RenderLine::plain(
+        format!(
+            "Results {} · Type to filter",
+            state.slash_completion_count()
+        ),
+        theme.style(Role::Text),
+    ));
+    lines.push(RenderLine::plain(String::new(), theme.style(Role::Text)));
+    lines.extend(rows.into_iter().map(|(command, help, selected)| {
+        RenderLine::plain(
+            format!("  {command:<14} {help}"),
+            if selected {
+                theme.style(Role::Accent)
+            } else {
+                theme.style(Role::Text)
+            },
+        )
+    }));
+    lines.push(RenderLine::plain(
+        "─".repeat(usize::from(width)),
+        theme.style(Role::Muted),
+    ));
+    lines.push(RenderLine::plain(
+        "↑↓ Navigate · Enter Use · Esc Close",
+        theme.style(Role::Muted),
+    ));
+    lines
+}
+
 /// Return the count and available row count used by scrolling calculations.
 pub fn transcript_metrics(state: &AppState, width: u16, height: u16) -> (usize, usize) {
-    let regions = layout_for(state, width, height);
+    let regions = frame_for(state, width, height);
     (
         wrapped_transcript(state, regions.transcript.width).len(),
         regions.transcript.height as usize,
@@ -232,44 +341,44 @@ pub fn transcript_metrics(state: &AppState, width: u16, height: u16) -> (usize, 
 
 /// Return the number of visual rows occupied by the composer.
 pub fn composer_height(state: &AppState, width: u16) -> u16 {
-    composer_lines(state.composer(), width).len().max(1) as u16
+    composer_layout(state, width).rows.len().max(1) as u16
 }
 
 /// Return the native cursor location for the visible composer.
 pub fn composer_cursor_position(state: &AppState, width: u16, height: u16) -> Option<(u16, u16)> {
-    let regions = layout_for(state, width, height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if !matches!(state.surface(), UiSurface::None) {
+        return (width > 2).then_some((2, 0));
+    }
+    let regions = frame_for(state, width, height);
     if regions.composer.height == 0 {
         return None;
     }
-    let (row, column) = composer_visual_cursor(state.composer(), width);
-    let composer = composer_lines(state.composer(), width);
-    let composer_start =
-        composer_view_start(state.composer(), regions.composer.height, width, &composer);
-    let row = row.saturating_sub(composer_start as u16);
+    let visual = composer_layout(state, width);
+    let composer_start = composer_view_start(&visual, regions.composer.height);
+    let row = visual.cursor_row.saturating_sub(composer_start);
     Some((
-        column.min(width.saturating_sub(1)),
-        regions.composer.y + row.min(regions.composer.height.saturating_sub(1)),
+        visual
+            .cursor_column
+            .min(usize::from(width.saturating_sub(1))) as u16,
+        regions.composer.y + (row as u16).min(regions.composer.height.saturating_sub(1)),
     ))
 }
 
-fn composer_visual_cursor(composer: &Composer, width: u16) -> (u16, u16) {
-    let mut row = 0_u16;
-    let mut column = 2_u16;
-    let budget = width.saturating_sub(2).max(1);
-    for symbol in composer.text()[..composer.cursor()].chars() {
-        if symbol == '\n' {
-            row = row.saturating_add(1);
-            column = 2;
-            continue;
-        }
-        let symbol_width = char_width(symbol) as u16;
-        if column.saturating_sub(2).saturating_add(symbol_width) > budget {
-            row = row.saturating_add(1);
-            column = 2;
-        }
-        column = column.saturating_add(symbol_width);
+fn composer_layout(state: &AppState, width: u16) -> VisualLayout {
+    VisualLayout::measure(state.composer().text(), state.composer().cursor(), width)
+}
+
+fn composer_view_start(layout: &VisualLayout, visible_rows: u16) -> usize {
+    if visible_rows == 0 || layout.rows.len() <= usize::from(visible_rows) {
+        return 0;
     }
-    (column, row)
+    layout
+        .cursor_row
+        .saturating_sub(usize::from(visible_rows).saturating_sub(1))
+        .min(layout.rows.len().saturating_sub(usize::from(visible_rows)))
 }
 
 fn put_text(grid: &mut Grid, x: u16, y: u16, width: u16, text: &str, style: Style) {
@@ -329,88 +438,46 @@ fn put_line(grid: &mut Grid, x: u16, y: u16, width: u16, line: &RenderLine) {
 
 fn wrapped_transcript(state: &AppState, width: u16) -> Vec<RenderLine> {
     let mut output = Vec::new();
-    let mut emitted = false;
-    for (index, line) in state.transcript().iter().enumerate() {
-        if matches!(&line.kind, TranscriptKind::Welcome) {
-            continue;
-        }
-        if emitted {
+    for (index, entry) in state.entries().into_iter().enumerate() {
+        if index != 0 {
             output.push(RenderLine::plain(String::new(), Style::default()));
         }
-        output.extend(entry_lines_for_state(
-            line,
-            width,
-            state.is_streaming_transcript(index),
-            state.tool_output_expanded(),
-        ));
-        emitted = true;
-    }
-    for text in state.queued_lines() {
-        output.push(RenderLine::plain(String::new(), Style::default()));
-        output.extend(wrap_lines(
-            &text,
-            width,
-            Style {
-                foreground: Some(Color::DarkGrey),
-                ..Style::default()
-            },
-        ));
+        output.extend(entry_lines_for_entry(&entry, width));
     }
     output
 }
 
-fn welcome_lines(state: &AppState, width: u16) -> Vec<RenderLine> {
-    state
-        .transcript()
-        .iter()
-        .find(|line| matches!(&line.kind, TranscriptKind::Welcome))
-        .map_or_else(Vec::new, |line| entry_lines(line, width))
-}
-
-fn entry_lines(line: &crate::app::TranscriptLine, width: u16) -> Vec<RenderLine> {
-    entry_lines_for_state(line, width, false, true)
-}
-
-fn entry_lines_for_state(
-    line: &crate::app::TranscriptLine,
-    width: u16,
-    streaming: bool,
-    tool_output_expanded: bool,
-) -> Vec<RenderLine> {
-    match &line.kind {
-        TranscriptKind::Welcome => wrap_lines(
-            &line.text,
-            width,
-            Style {
-                foreground: Some(Color::DarkGrey),
-                bold: true,
-                ..Style::default()
-            },
-        ),
-        TranscriptKind::User => rail_lines(strip_prefix(&line.text, "you: "), width),
-        TranscriptKind::Assistant => {
-            markdown_lines(strip_prefix(&line.text, "assistant: "), width, !streaming)
+fn entry_lines_for_entry(entry: &TranscriptEntry, width: u16) -> Vec<RenderLine> {
+    match entry {
+        TranscriptEntry::Welcome { text } => wrap_lines(text, width, Theme::default().style(Role::Muted)),
+        TranscriptEntry::User { text } => rail_lines(text, width),
+        TranscriptEntry::Assistant { text, streaming } => markdown_lines(text, width, !streaming),
+        TranscriptEntry::Tool(tool) => tool_projection_lines(tool, width),
+        TranscriptEntry::Error { text } => {
+            wrap_lines(strip_prefix(text, "assistant error: "), width, Theme::default().style(Role::Error))
         }
-        TranscriptKind::Tool { name, state } => {
-            tool_lines(name, *state, &line.text, width, tool_output_expanded)
-        }
-        TranscriptKind::Error => wrap_lines(
-            strip_prefix(&line.text, "assistant error: "),
+        TranscriptEntry::Notice { text, severity } => wrap_lines(
+            text,
             width,
-            Style {
-                foreground: Some(Color::Red),
-                ..Style::default()
-            },
-        ),
-        TranscriptKind::Notice => wrap_lines(
-            &line.text,
-            width,
-            Style {
-                foreground: Some(Color::DarkGrey),
-                ..Style::default()
+            match severity {
+                NoticeSeverity::Info => Theme::default().style(Role::Muted),
+                NoticeSeverity::Warning => Theme::default().style(Role::Activity),
             },
         ),
     }
+}
+
+fn tool_projection_lines(tool: &ToolProjection, width: u16) -> Vec<RenderLine> {
+    let payload = match tool.state {
+        ToolState::Started => Some(tool.arguments.as_str()),
+        ToolState::Progress => tool.latest_progress.as_deref().or(Some(tool.arguments.as_str())),
+        ToolState::Completed | ToolState::Failed => tool
+            .settled_result
+            .as_deref()
+            .or(tool.latest_progress.as_deref()),
+    }
+    .unwrap_or_default();
+    tool_lines(&tool.tool_name, tool.state, payload, width)
 }
 
 fn rail_lines(text: &str, width: u16) -> Vec<RenderLine> {
@@ -420,11 +487,7 @@ fn rail_lines(text: &str, width: u16) -> Vec<RenderLine> {
         .map(|line| {
             RenderLine::plain(
                 format!("┃ {line}"),
-                Style {
-                    foreground: Some(Color::White),
-                    bold: true,
-                    ..Style::default()
-                },
+                Theme::default().style(Role::Text),
             )
         })
         .collect()
@@ -433,9 +496,8 @@ fn rail_lines(text: &str, width: u16) -> Vec<RenderLine> {
 fn tool_lines(
     name: &str,
     state: ToolState,
-    raw: &str,
+    payload: &str,
     width: u16,
-    expanded: bool,
 ) -> Vec<RenderLine> {
     let marker = match state {
         ToolState::Started => '⏺',
@@ -443,158 +505,30 @@ fn tool_lines(
         ToolState::Completed => '✓',
         ToolState::Failed => '✗',
     };
-    let (phase, payload) = tool_phase_and_payload(name, raw);
-    let mut detail = payload.lines().next().unwrap_or_default().trim();
-    let summary = (phase == "started")
-        .then(|| tool_argument_summary(name, payload))
-        .flatten();
-    if let Some(summary) = summary.as_deref() {
-        detail = summary;
-    }
+    let detail = payload.lines().next().unwrap_or_default().trim();
     let label = if detail.is_empty() {
         format!("{marker} {name}")
     } else {
         format!("{marker} {name}: {}", compact_tool_detail(detail))
     };
-    let style = Style {
-        foreground: Some(match state {
-            ToolState::Failed => Color::Red,
-            ToolState::Completed => Color::Green,
-            ToolState::Started | ToolState::Progress => Color::DarkGrey,
-        }),
-        bold: state == ToolState::Failed,
-        ..Style::default()
+    let mut style = match state {
+        ToolState::Failed => Theme::default().style(Role::Error),
+        ToolState::Completed => Theme::default().style(Role::Success),
+        ToolState::Started | ToolState::Progress => Theme::default().style(Role::Muted),
     };
+    style.bold = state == ToolState::Failed;
     let mut output = wrap_lines(&label, width, style);
-    // Keep a multiline result readable without letting its first line hide the
-    // lifecycle card. Standard tools can return source files, command output,
-    // or search matches; each continuation line gets a low-contrast body rail.
-    if phase != "started" && expanded {
-        let continuation = payload
-            .split_once('\n')
-            .map(|(_, continuation)| continuation)
-            .unwrap_or_default();
-        let body_style = Style {
-            foreground: Some(if state == ToolState::Failed {
-                Color::Red
-            } else {
-                Color::DarkGrey
-            }),
-            ..Style::default()
-        };
-        output.extend(tool_body_lines(continuation, width, body_style));
-    } else if phase != "started" && payload.lines().count() > 1 {
+    if !matches!(state, ToolState::Started) && payload.lines().count() > 1 {
         output.push(RenderLine::plain(
-            "  └ … (Ctrl+O to expand)",
-            Style {
-                foreground: Some(Color::DarkGrey),
-                ..Style::default()
-            },
+            "  └ … (Ctrl+O to view)",
+            Theme::default().style(Role::Muted),
         ));
     }
     output
 }
 
-fn tool_phase_and_payload<'a>(name: &str, raw: &'a str) -> (&'a str, &'a str) {
-    let prefix = format!("tool {name} — ");
-    let body = raw.strip_prefix(&prefix).unwrap_or(raw);
-    body.split_once(": ").unwrap_or(("", body))
-}
-
-fn tool_body_lines(text: &str, width: u16, style: Style) -> Vec<RenderLine> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let body_width = width.saturating_sub(4);
-    wrap_raw_text_preserving_indentation(text, body_width)
-        .into_iter()
-        .map(|line| RenderLine::plain(format!("  │ {line}"), style))
-        .collect()
-}
-
-/// Render stable, human-oriented summaries for the pinned coding tools. The
-/// tool event still owns the raw JSON; parsing it here keeps presentation from
-/// becoming another semantic tool contract and preserves a generic fallback
-/// for extension-defined tools.
-fn tool_argument_summary(name: &str, payload: &str) -> Option<String> {
-    let object = JsonValue::parse(payload).ok()?.as_object()?.clone();
-    let value = |key: &str| object.get(key).and_then(JsonValue::as_str);
-    match name {
-        "bash" | "shell" => {
-            value("command").map(|command| format!("$ {}", truncate_display(command.trim(), 72)))
-        }
-        "read" => value("path").map(|path| {
-            let range = match (json_u64(&object, "offset"), json_u64(&object, "limit")) {
-                (Some(offset), Some(limit)) => format!(
-                    " lines {offset}–{}",
-                    offset.saturating_add(limit.saturating_sub(1))
-                ),
-                (Some(offset), None) => format!(" from line {offset}"),
-                _ => String::new(),
-            };
-            format!("{}{}", truncate_display(path, 64), range)
-        }),
-        "write" => value("path").map(|path| {
-            let bytes = value("content").map_or(0, str::len);
-            format!("{} ({bytes} bytes)", truncate_display(path, 56))
-        }),
-        "edit" => value("path").map(|path| {
-            let count = object
-                .get("edits")
-                .and_then(JsonValue::as_array)
-                .map_or(0, |edits| edits.len());
-            let noun = if count == 1 {
-                "replacement"
-            } else {
-                "replacements"
-            };
-            format!("{} ({count} {noun})", truncate_display(path, 56))
-        }),
-        "grep" => value("pattern").map(|pattern| {
-            let location = value("path").or_else(|| value("glob"));
-            match location {
-                Some(location) => format!(
-                    "/{}/ in {}",
-                    truncate_display(pattern, 36),
-                    truncate_display(location, 28)
-                ),
-                None => format!("/{}/", truncate_display(pattern, 64)),
-            }
-        }),
-        "find" => value("pattern").map(|pattern| {
-            let location = value("path").map_or(".", |path| path);
-            format!(
-                "{} in {}",
-                truncate_display(pattern, 44),
-                truncate_display(location, 24)
-            )
-        }),
-        "ls" => Some(value("path").map_or_else(|| ".".into(), |path| truncate_display(path, 72))),
-        _ => None,
-    }
-}
-
-fn json_u64(object: &std::collections::BTreeMap<String, JsonValue>, key: &str) -> Option<u64> {
-    object
-        .get(key)
-        .and_then(JsonValue::as_f64)
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .map(|value| value as u64)
-}
-
 fn compact_tool_detail(detail: &str) -> String {
-    let detail = detail.trim();
-    if detail.starts_with('{') {
-        for key in ["command", "path", "query", "pattern"] {
-            let marker = format!("\"{key}\":");
-            if let Some(index) = detail.find(&marker) {
-                let value = detail[index + marker.len()..].trim_start();
-                let value = value.trim_matches(['"', '}', ' ']);
-                return truncate_display(value, 72);
-            }
-        }
-    }
-    truncate_display(detail, 72)
+    truncate_display(detail.trim(), 72)
 }
 
 fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> {
@@ -621,10 +555,10 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                 markdown.reset();
                 output.push(RenderLine::plain(
                     "└",
-                    Style {
-                        foreground: Some(Color::DarkGrey),
-                        bold: true,
-                        ..Style::default()
+                    {
+                        let mut style = Theme::default().style(Role::Muted);
+                        style.bold = true;
+                        style
                     },
                 ));
             } else {
@@ -649,10 +583,10 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                 let label = if info.is_empty() { "code" } else { info };
                 output.push(RenderLine::plain(
                     format!("┌ {label}"),
-                    Style {
-                        foreground: Some(Color::DarkGrey),
-                        bold: true,
-                        ..Style::default()
+                    {
+                        let mut style = Theme::default().style(Role::Muted);
+                        style.bold = true;
+                        style
                     },
                 ));
             }
@@ -667,10 +601,7 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                     output.extend(code_lines(
                         &RenderLine::plain(
                             raw,
-                            Style {
-                                foreground: Some(Color::DarkGrey),
-                                ..Style::default()
-                            },
+                            Theme::default().style(Role::Muted),
                         ),
                         width,
                     ));
@@ -680,20 +611,14 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
                     raw,
                     highlighter,
                     &mut code_scratch,
-                    Style {
-                        foreground: Some(Color::DarkGrey),
-                        ..Style::default()
-                    },
+                    Theme::default().style(Role::Muted),
                 );
                 output.extend(code_lines(&highlighted, width));
             } else {
                 output.extend(code_lines(
                     &RenderLine::plain(
                         raw,
-                        Style {
-                            foreground: Some(Color::DarkGrey),
-                            ..Style::default()
-                        },
+                        Theme::default().style(Role::Muted),
                     ),
                     width,
                 ));
@@ -703,7 +628,12 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
         }
 
         let highlighted =
-            highlighted_line(raw, &mut markdown, &mut markdown_scratch, Style::default());
+            highlighted_line(
+                raw,
+                &mut markdown,
+                &mut markdown_scratch,
+                Theme::default().style(Role::Plain),
+            );
         if is_table_header(
             raw_lines.get(index).copied(),
             raw_lines.get(index + 1).copied(),
@@ -720,31 +650,32 @@ fn markdown_lines(text: &str, width: u16, style_diffs: bool) -> Vec<RenderLine> 
             output.extend(wrap_lines(
                 heading.trim_start_matches('#').trim_start(),
                 width,
-                Style {
-                    foreground: Some(Color::White),
-                    bold: true,
-                    ..Style::default()
+                {
+                    let mut style = Theme::default().style(Role::Text);
+                    style.bold = true;
+                    style
                 },
             ));
         } else if let Some(item) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
         {
-            output.extend(wrap_lines(&format!("• {item}"), width, Style::default()));
+            output.extend(wrap_lines(
+                &format!("• {item}"),
+                width,
+                Theme::default().style(Role::Plain),
+            ));
         } else if let Some((marker, item)) = ordered_list_item(trimmed) {
             output.extend(wrap_lines(
                 &format!("{marker} {item}"),
                 width,
-                Style::default(),
+                Theme::default().style(Role::Plain),
             ));
         } else if let Some(quote) = trimmed.strip_prefix('>') {
             output.extend(wrap_lines(
-                &format!("│ {}", quote.trim_start()),
+                    &format!("│ {}", quote.trim_start()),
                 width,
-                Style {
-                    foreground: Some(Color::DarkGrey),
-                    ..Style::default()
-                },
+                Theme::default().style(Role::Muted),
             ));
         } else {
             output.extend(wrap_styled_line(&highlighted, width, false));
@@ -779,20 +710,21 @@ fn highlighted_line(
 }
 
 fn style_for_kind(kind: Kind, base: Style) -> Style {
-    let mut style = base;
-    style.foreground = match kind {
-        Kind::Normal => base.foreground,
-        Kind::Keyword => Some(Color::Blue),
-        Kind::Type => Some(Color::Cyan),
-        Kind::String => Some(Color::Green),
-        Kind::Comment => Some(Color::DarkGrey),
-        Kind::Number => Some(Color::Yellow),
-        Kind::Bracket => Some(Color::White),
-        Kind::Operator => Some(Color::Magenta),
-        Kind::Function => Some(Color::Blue),
-        Kind::Constant => Some(Color::Yellow),
-        Kind::Macro => Some(Color::Magenta),
+    let role = match kind {
+        Kind::Normal => return base,
+        Kind::Keyword => Role::CodeKeyword,
+        Kind::Type => Role::CodeType,
+        Kind::String => Role::CodeString,
+        Kind::Comment => Role::CodeComment,
+        Kind::Number => Role::CodeNumber,
+        Kind::Bracket => Role::CodeBracket,
+        Kind::Operator => Role::CodeOperator,
+        Kind::Function => Role::CodeFunction,
+        Kind::Constant => Role::CodeConstant,
+        Kind::Macro => Role::CodeMacro,
     };
+    let mut style = Theme::default().style(role);
+    style.bold = base.bold;
     style
 }
 
@@ -866,10 +798,7 @@ fn code_lines(line: &RenderLine, width: u16) -> Vec<RenderLine> {
     if chunks.is_empty() {
         return vec![RenderLine::plain(
             "│ ",
-            Style {
-                foreground: Some(Color::DarkGrey),
-                ..Style::default()
-            },
+            Theme::default().style(Role::Muted),
         )];
     }
     chunks
@@ -879,10 +808,7 @@ fn code_lines(line: &RenderLine, width: u16) -> Vec<RenderLine> {
 }
 
 fn prepend_code_rail(line: RenderLine) -> RenderLine {
-    let rail_style = Style {
-        foreground: Some(Color::DarkGrey),
-        ..Style::default()
-    };
+    let rail_style = Theme::default().style(Role::Muted);
     let mut text = String::from("│ ");
     text.push_str(&line.text);
     let mut styles = vec![rail_style; 2];
@@ -895,26 +821,15 @@ fn prepend_code_rail(line: RenderLine) -> RenderLine {
 
 fn diff_code_lines(raw: &str, width: u16) -> Vec<RenderLine> {
     let style = if raw.starts_with('+') && !raw.starts_with("+++") {
-        Style {
-            foreground: Some(Color::Green),
-            ..Style::default()
-        }
+        Theme::default().style(Role::Success)
     } else if raw.starts_with('-') && !raw.starts_with("---") {
-        Style {
-            foreground: Some(Color::Red),
-            ..Style::default()
-        }
+        Theme::default().style(Role::Error)
     } else if raw.starts_with("@@") || raw.starts_with("diff ") {
-        Style {
-            foreground: Some(Color::Cyan),
-            bold: true,
-            ..Style::default()
-        }
+        let mut style = Theme::default().style(Role::Accent);
+        style.bold = true;
+        style
     } else {
-        Style {
-            foreground: Some(Color::DarkGrey),
-            ..Style::default()
-        }
+        Theme::default().style(Role::Muted)
     };
     code_lines(&RenderLine::plain(raw, style), width)
 }
@@ -987,10 +902,7 @@ fn render_table(rows: &[&str], width: u16) -> Vec<RenderLine> {
     };
     let mut output = vec![RenderLine::plain(
         border('┌', '┬', '┐'),
-        Style {
-            foreground: Some(Color::Cyan),
-            ..Style::default()
-        },
+        Theme::default().style(Role::Accent),
     )];
     for (row_index, row) in cells.iter().enumerate() {
         let content = widths
@@ -1002,23 +914,20 @@ fn render_table(rows: &[&str], width: u16) -> Vec<RenderLine> {
             })
             .collect::<Vec<_>>()
             .join("│");
-        output.push(RenderLine::plain(format!("│{content}│"), Style::default()));
+        output.push(RenderLine::plain(
+            format!("│{content}│"),
+            Theme::default().style(Role::Plain),
+        ));
         if row_index == 0 {
             output.push(RenderLine::plain(
                 border('├', '┼', '┤'),
-                Style {
-                    foreground: Some(Color::Cyan),
-                    ..Style::default()
-                },
+                Theme::default().style(Role::Accent),
             ));
         }
     }
     output.push(RenderLine::plain(
         border('└', '┴', '┘'),
-        Style {
-            foreground: Some(Color::Cyan),
-            ..Style::default()
-        },
+        Theme::default().style(Role::Accent),
     ));
     output
 }
@@ -1029,39 +938,6 @@ fn is_separator_table_row(row: &str) -> bool {
         .all(|cell| !cell.is_empty() && cell.chars().all(|character| character == '-'))
 }
 
-fn composer_lines(composer: &Composer, width: u16) -> Vec<String> {
-    let budget = width.saturating_sub(2);
-    let mut output = Vec::new();
-    for logical in composer.text().split('\n') {
-        let wrapped = wrap_raw_text_preserving_indentation(logical, budget);
-        if wrapped.is_empty() {
-            output.push("┃ ".into());
-        } else {
-            output.extend(wrapped.into_iter().map(|line| format!("┃ {line}")));
-        }
-    }
-    if output.is_empty() {
-        output.push("┃ ".into());
-    }
-    output
-}
-
-fn composer_view_start(
-    composer: &Composer,
-    visible_rows: u16,
-    width: u16,
-    lines: &[String],
-) -> usize {
-    if visible_rows == 0 || lines.len() <= usize::from(visible_rows) {
-        return 0;
-    }
-    let (_, cursor_row) = composer_visual_cursor(composer, width);
-    let visible = usize::from(visible_rows);
-    usize::from(cursor_row)
-        .saturating_sub(visible - 1)
-        .min(lines.len() - visible)
-}
-
 fn wrap_lines(text: &str, width: u16, style: Style) -> Vec<RenderLine> {
     wrap_raw_text(text, width)
         .into_iter()
@@ -1070,14 +946,10 @@ fn wrap_lines(text: &str, width: u16, style: Style) -> Vec<RenderLine> {
 }
 
 fn wrap_raw_text(text: &str, width: u16) -> Vec<String> {
-    wrap_raw_text_inner(text, width, false)
+    wrap_raw_text_inner(text, width)
 }
 
-fn wrap_raw_text_preserving_indentation(text: &str, width: u16) -> Vec<String> {
-    wrap_raw_text_inner(text, width, true)
-}
-
-fn wrap_raw_text_inner(text: &str, width: u16, preserve_indentation: bool) -> Vec<String> {
+fn wrap_raw_text_inner(text: &str, width: u16) -> Vec<String> {
     if width == 0 {
         return Vec::new();
     }
@@ -1087,11 +959,7 @@ fn wrap_raw_text_inner(text: &str, width: u16, preserve_indentation: bool) -> Ve
             output.push(String::new());
             continue;
         }
-        let mut remaining = if preserve_indentation {
-            logical.to_owned()
-        } else {
-            logical.trim_start().to_owned()
-        };
+        let mut remaining = logical.trim_start().to_owned();
         while !remaining.is_empty() {
             let mut used = 0;
             let mut end = 0;
@@ -1182,7 +1050,111 @@ fn char_width(symbol: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TranscriptLine;
+    use tea_protocol::JsonValue;
+
+    fn fixture_field<'a>(value: &'a JsonValue, name: &str) -> &'a JsonValue {
+        value
+            .get(name)
+            .unwrap_or_else(|| panic!("fixture is missing {name}"))
+    }
+
+    fn fixture_dimension(value: &JsonValue, name: &str) -> u16 {
+        u16::try_from(
+            fixture_field(value, name)
+                .as_u64()
+                .unwrap_or_else(|| panic!("fixture {name} must be an unsigned integer")),
+        )
+        .unwrap_or_else(|_| panic!("fixture {name} exceeds terminal limits"))
+    }
+
+    fn fixture_color(value: &str) -> Color {
+        match value {
+            "DarkGrey" => Color::DarkGrey,
+            "White" => Color::White,
+            "Cyan" => Color::Cyan,
+            "Yellow" => Color::Yellow,
+            "Green" => Color::Green,
+            "Red" => Color::Red,
+            other => panic!("fixture uses unsupported color {other}"),
+        }
+    }
+
+    fn fixture_style(value: &JsonValue) -> Style {
+        let foreground = fixture_field(value, "foreground");
+        let background = fixture_field(value, "background");
+        assert!(background.is_null(), "startup fixture does not use backgrounds");
+        let attributes = fixture_field(value, "attributes")
+            .as_array()
+            .expect("fixture attributes array");
+        Style {
+            foreground: (!foreground.is_null()).then(|| {
+                fixture_color(
+                    foreground
+                        .as_str()
+                        .expect("fixture foreground color name"),
+                )
+            }),
+            background: None,
+            bold: attributes
+                .iter()
+                .any(|attribute| attribute.as_str() == Some("bold")),
+        }
+    }
+
+    fn fixture_grid(value: &JsonValue) -> (Grid, Option<(u16, u16)>) {
+        let size = fixture_field(value, "size");
+        let width = fixture_dimension(size, "columns");
+        let height = fixture_dimension(size, "rows");
+        let default_style = fixture_style(fixture_field(value, "cell_defaults"));
+        let mut expected = Grid::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                expected
+                    .set(
+                        x,
+                        y,
+                        Cell {
+                            symbol: ' ',
+                            style: default_style,
+                        },
+                    )
+                    .expect("fixture coordinate is in bounds");
+            }
+        }
+        for run in fixture_field(value, "runs")
+            .as_array()
+            .expect("fixture runs array")
+        {
+            let row = fixture_dimension(run, "row");
+            let column = fixture_dimension(run, "column");
+            let text = fixture_field(run, "text")
+                .as_str()
+                .expect("fixture run text");
+            let repeat = run.get("repeat").and_then(JsonValue::as_u64).unwrap_or(1);
+            let style = run
+                .get("style")
+                .map(fixture_style)
+                .unwrap_or(default_style);
+            for (offset, symbol) in text.repeat(repeat as usize).chars().enumerate() {
+                expected
+                    .set(
+                        column + offset as u16,
+                        row,
+                        Cell { symbol, style },
+                    )
+                    .expect("fixture run stays in bounds");
+            }
+        }
+        let cursor = fixture_field(value, "cursor");
+        let cursor = (!cursor.is_null()).then(|| {
+            assert_eq!(fixture_field(cursor, "visible").as_bool(), Some(true));
+            (
+                fixture_dimension(cursor, "column"),
+                fixture_dimension(cursor, "row"),
+            )
+        });
+        (expected, cursor)
+    }
 
     #[test]
     fn markdown_table_has_unicode_borders_and_header_rule() {
@@ -1196,12 +1168,12 @@ mod tests {
 
     #[test]
     fn user_entries_render_as_connected_rails() {
-        let line = TranscriptLine {
-            sequence: None,
-            text: "you: hello world".into(),
-            kind: TranscriptKind::User,
-        };
-        let lines = entry_lines(&line, 20);
+        let lines = entry_lines_for_entry(
+            &TranscriptEntry::User {
+                text: "hello world".into(),
+            },
+            20,
+        );
         assert_eq!(lines[0].text, "┃ hello world");
     }
 
@@ -1299,65 +1271,162 @@ mod tests {
     }
 
     #[test]
-    fn standard_tool_arguments_render_as_type_specific_cards() {
-        let bash = tool_lines(
-            "bash",
+    fn tool_cards_preserve_generic_names_and_raw_payloads() {
+        let tool = tool_lines(
+            "acme.custom",
             ToolState::Started,
-            r#"tool bash — started: {"command":"cargo test -p tea-agent","timeout":30}"#,
+            r#"{"command":"cargo test -p tea-agent","timeout":30}"#,
             80,
-            true,
         );
-        assert_eq!(bash[0].text, "⏺ bash: $ cargo test -p tea-agent");
-
-        let edit = tool_lines(
-            "edit",
-            ToolState::Started,
-            r#"tool edit — started: {"path":"src/render.rs","edits":[{"oldText":"a","newText":"b"},{"oldText":"c","newText":"d"}]}"#,
-            80,
-            true,
+        assert_eq!(
+            tool[0].text,
+            "⏺ acme.custom: {\"command\":\"cargo test -p tea-agent\",\"timeout\":30}"
         );
-        assert_eq!(edit[0].text, "⏺ edit: src/render.rs (2 replacements)");
     }
 
     #[test]
     fn multiline_tool_results_render_a_body_rail() {
         let lines = tool_lines(
-            "read",
+            "arbitrary-tool",
             ToolState::Completed,
-            "tool read — completed: first line\n  second line\nthird line",
+            "first line\n  second line\nthird line",
             30,
-            true,
         );
-        assert_eq!(lines[0].text, "✓ read: first line");
-        assert_eq!(lines[1].text, "  │   second line");
-        assert_eq!(lines[2].text, "  │ third line");
+        assert_eq!(lines[0].text, "✓ arbitrary-tool: first line");
+        assert_eq!(lines[1].text, "  └ … (Ctrl+O to view)");
         assert_eq!(lines[0].style.foreground, Some(Color::Green));
-
-        let collapsed = tool_lines(
-            "read",
-            ToolState::Completed,
-            "tool read — completed: first line\nsecond line",
-            30,
-            false,
-        );
-        assert_eq!(collapsed[1].text, "  └ … (Ctrl+O to expand)");
     }
 
     #[test]
     fn composer_preserves_indentation_and_scrolls_to_the_cursor() {
         let mut composer = Composer::new();
         composer.replace_from_editor("  first\n    second\n      third");
-        let lines = composer_lines(&composer, 20);
-        assert_eq!(lines[0], "┃   first");
-        assert_eq!(lines[2], "┃       third");
-        assert_eq!(composer_view_start(&composer, 2, 20, &lines), 1);
+        let layout = VisualLayout::measure(composer.text(), composer.cursor(), 20);
+        assert_eq!(layout.rows[0].text, "❯   first");
+        assert_eq!(layout.rows[2].text, "❯       third");
+        assert_eq!(composer_view_start(&layout, 2), 1);
     }
 
     #[test]
-    fn empty_composer_starts_at_the_top_of_the_frame() {
-        let regions = layout(80, 24);
-        assert_eq!(regions.header.height, 0);
-        assert_eq!(regions.composer.y, 0);
-        assert!(regions.transcript.y > regions.composer.y);
+    fn startup_composer_follows_the_welcome_transcript() {
+        let regions = frame_layout::plan_flow(80, 24, 1, 0, 1, 0, 1);
+        assert_eq!(regions.composer.height, 1);
+        assert_eq!(regions.composer.y, 2);
+        assert_eq!(regions.activity.height, 0);
+    }
+
+    #[test]
+    fn live_startup_frame_uses_the_minimal_transcript_flow_rail() {
+        let mut state = AppState::new();
+        state.welcome_line();
+        let grid = render(&state, &ProviderRegistry::new(), 80, 24);
+        let regions = frame_for(&state, 80, 24);
+        assert_eq!(grid.get(0, 0).expect("welcome cell").symbol, '𝒕');
+        assert_eq!(
+            grid.get(regions.composer.x, regions.composer.y)
+                .expect("composer cell")
+                .symbol,
+            '┃'
+        );
+        assert_eq!(regions.composer.y, 2);
+        assert_ne!(grid.get(0, regions.composer.y).expect("composer cell").symbol, '❯');
+    }
+
+    #[test]
+    fn checked_in_tea_startup_fixture_matches_grid_style_and_cursor() {
+        for fixture_text in [
+            include_str!("../fixtures/fx-ui/tea/minimal-startup-80x24.cells.json"),
+            include_str!("../fixtures/fx-ui/tea/minimal-startup-120x40.cells.json"),
+        ] {
+            let fixture = JsonValue::parse(fixture_text).expect("checked-in tea fixture is valid JSON");
+            let (expected, cursor) = fixture_grid(&fixture);
+            let mut state = AppState::new();
+            state.welcome_line();
+            let actual = render(&state, &ProviderRegistry::new(), expected.width(), expected.height());
+            assert_eq!(actual, expected, "reviewed startup cell grid changed");
+            assert_eq!(
+                composer_cursor_position(&state, expected.width(), expected.height()),
+                cursor,
+                "reviewed startup cursor changed"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_slash_menu_uses_the_captured_minimal_geometry() {
+        let mut state = AppState::new();
+        state.welcome_line();
+        state.composer_mut().insert('/').expect("insert slash");
+        state.update_slash_completion(vec![
+            "/help".into(),
+            "/model".into(),
+            "/cost".into(),
+            "/compact".into(),
+            "/session".into(),
+            "/quit".into(),
+        ]);
+        let grid = render(&state, &ProviderRegistry::new(), 80, 24);
+        assert_eq!(grid.get(0, 2).expect("composer rail").symbol, '┃');
+        assert_eq!(grid.get(0, 3).expect("menu divider").symbol, '─');
+        assert_eq!(
+            (0..9)
+                .filter_map(|column| grid.get(column, 4))
+                .map(|cell| cell.symbol)
+                .collect::<String>(),
+            "Results 6"
+        );
+        assert_eq!(grid.get(0, 13).expect("menu navigation hint").symbol, '↑');
+        assert_eq!(composer_cursor_position(&state, 80, 24), Some((3, 2)));
+    }
+
+    #[test]
+    fn checked_in_tea_slash_fixture_matches_grid_style_and_cursor() {
+        let fixture = JsonValue::parse(include_str!("../fixtures/fx-ui/tea/minimal-slash-menu-80x24.cells.json"))
+            .expect("checked-in tea fixture is valid JSON");
+        let (expected, cursor) = fixture_grid(&fixture);
+        let mut state = AppState::new();
+        state.welcome_line();
+        state.composer_mut().insert('/').expect("insert slash");
+        state.update_slash_completion(vec![
+            "/help".into(),
+            "/model".into(),
+            "/cost".into(),
+            "/compact".into(),
+            "/reload-extensions".into(),
+            "/session".into(),
+            "/resume".into(),
+            "/new".into(),
+            "/clear".into(),
+            "/steer".into(),
+            "/followup".into(),
+            "/quit".into(),
+        ]);
+        let actual = render(&state, &ProviderRegistry::new(), expected.width(), expected.height());
+        assert_eq!(actual, expected, "reviewed slash-menu cell grid changed");
+        assert_eq!(
+            composer_cursor_position(&state, expected.width(), expected.height()),
+            cursor,
+            "reviewed slash-menu cursor changed"
+        );
+    }
+
+    #[test]
+    fn tiny_frames_keep_cursor_targets_in_bounds_and_mark_hidden_composer_rows() {
+        let mut state = AppState::new();
+        state.welcome_line();
+        state
+            .composer_mut()
+            .replace_from_editor("one\ntwo\nthree\nfour\nfive");
+        let grid = render(&state, &ProviderRegistry::new(), 20, 5);
+        let regions = frame_for(&state, 20, 5);
+        assert_eq!(grid.get(0, regions.composer.y).expect("visible composer rail").symbol, '┃');
+        assert_eq!(grid.get(1, regions.composer.y).expect("hidden composer marker").symbol, '↑');
+        for (width, height) in [(0, 0), (1, 1), (2, 2)] {
+            let grid = render(&state, &ProviderRegistry::new(), width, height);
+            assert_eq!((grid.width(), grid.height()), (width, height));
+            if let Some((x, y)) = composer_cursor_position(&state, width, height) {
+                assert!(x < width && y < height, "cursor must address a drawable cell");
+            }
+        }
     }
 }

@@ -8,7 +8,7 @@ use super::error::AppError;
 use super::host::model_candidates;
 use super::runtime::App;
 use super::session::{SessionRecord, SessionStore};
-use super::state::Picker;
+use super::state::{Picker, UiSurface};
 use super::support::utc_date;
 
 impl App {
@@ -21,6 +21,7 @@ impl App {
             filter: String::new(),
             selected: 0,
         });
+        self.state.set_surface(UiSurface::ModelPicker);
     }
 
     pub(super) fn open_session_picker(&mut self) -> Result<(), AppError> {
@@ -34,6 +35,7 @@ impl App {
         };
         let entries = SessionStore::new(home).for_workspace(workspace).list()?;
         if entries.is_empty() {
+            self.state.close_surface();
             self.state.notice("no saved sessions");
             return Ok(());
         }
@@ -42,6 +44,7 @@ impl App {
             selected: 0,
             entries,
         });
+        self.state.set_surface(UiSurface::SessionPicker);
         Ok(())
     }
 
@@ -73,7 +76,7 @@ impl App {
         self.state.restore_messages(&messages);
         self.state.set_snapshot(agent.snapshot());
         self.current_session = Some(record);
-        self.state.picker = None;
+        self.state.close_surface();
         self.state.notice(format!("resumed session {id}"));
         Ok(())
     }
@@ -95,6 +98,7 @@ impl App {
         self.state.clear_history();
         self.state.composer_mut().clear();
         self.state.set_snapshot(agent.snapshot());
+        self.state.close_surface();
         self.current_session = Some(
             SessionRecord::new(self.state.selected_model.clone(), thinking_level).with_workspace(
                 self.workspace
@@ -109,7 +113,7 @@ impl App {
 
     pub(super) fn handle_picker_key(&mut self, key: KeyEvent) -> Result<(), AppError> {
         match key.code {
-            KeyCode::Esc => self.state.picker = None,
+            KeyCode::Esc => self.state.close_surface(),
             KeyCode::Up => self.picker_move(-1),
             KeyCode::Down => self.picker_move(1),
             KeyCode::Backspace => self.picker_backspace(),
@@ -212,12 +216,14 @@ impl App {
                         {
                             self.state.notice(error.to_string());
                             self.state.picker = Some(Picker::Model { filter, selected });
+                            self.state.set_surface(UiSurface::ModelPicker);
                         }
                     } else {
                         self.state.picker = Some(Picker::CustomModel {
                             provider: candidate.provider.to_owned(),
                             input: String::new(),
                         });
+                        self.state.set_surface(UiSurface::CustomModel);
                     }
                 }
             }
@@ -228,6 +234,7 @@ impl App {
                     if let Err(error) = self.select_model(provider.clone(), input.clone()) {
                         self.state.notice(error.to_string());
                         self.state.picker = Some(Picker::CustomModel { provider, input });
+                        self.state.set_surface(UiSurface::CustomModel);
                     }
                 }
             }
@@ -258,6 +265,7 @@ impl App {
                             selected,
                             entries,
                         });
+                        self.state.set_surface(UiSurface::SessionPicker);
                     }
                 }
             }
@@ -307,7 +315,7 @@ impl App {
             session.model = self.state.selected_model.clone();
         }
         self.state.context_estimate = None;
-        self.state.picker = None;
+        self.state.close_surface();
         self.state.set_snapshot(self.agent_or_setup()?.snapshot());
         self.state.notice("model selected");
         Ok(())

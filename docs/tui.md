@@ -32,7 +32,7 @@ It persists and resumes only explicit linear sessions below the Phi application
 home, never discovers a Pi installation, and does not become a general terminal
 framework. The normal screen is intentionally only a transcript, a compact
 multiline composer, and a status line; model and session pickers are temporary
-overlays.
+surfaces.
 
 ## Ownership and explicit inputs
 
@@ -215,12 +215,14 @@ caller-owned memory until drained or dropped. `AgentSnapshot` is for recovery
 and inspection; it is not the usual transcript source.
 
 ```text
-AgentEvent -> AppState projection -> Grid<Cell> -> frame diff -> Crossterm
+AgentEvent -> typed AppState projection -> FrameLayout + VisualLayout + Theme + UiSurface
+           -> Grid<Cell> -> frame diff -> Crossterm
 ```
 
-`AppState` may contain viewport position, composer text/cursor, picker state,
-status presentation, and transient notices. It must not own model, provider,
-accounting, tool, compaction, or conversation semantics.
+`AppState` holds typed `TranscriptEntry` records, a generic `ToolProjection`,
+viewport position, composer text/cursor, picker state, temporary-surface
+payload, and presentation-only status/usage projections. It must not own the
+core model, provider, accounting, tool, compaction, or conversation semantics.
 
 The renderer displays incrementally delivered assistant text with bounded
 plain-text, heading/list, fenced-code, error, and Unicode Markdown-table
@@ -230,17 +232,23 @@ padding. Markdown, fenced code, and completed diff blocks use the shared
 its closing fence (or `MessageEnd`) arrives so a partial patch cannot acquire
 misleading colors.
 Styles are projected into cells rather than emitted as an unterminated ANSI
-stream, so every redraw is independent and safe during streaming. It renders
-tool calls generically as one lifecycle activity from their name, serialized
-arguments, progress, and settled result/error rather than type-specific
-widgets. `PageUp` and `PageDown` provide basic scroll/follow behavior.
+stream, so every redraw is independent and safe during streaming. The default
+minimal flow places a short transcript at the top, then a blank row, the `┃ `
+composer rail, another blank row, and the tea status hint. When the terminal is
+full, the transcript is the scrollable region while the cursor-containing
+composer remains visible. The leading-slash menu is an inline measured surface
+below the composer. Tool calls stay generic and compact—name, lifecycle, and a
+short raw payload—rather than becoming type-specific widgets; `Ctrl+O` opens a
+scrollable full-transcript/detail surface and returns to the live view without
+changing transcript follow state. `PageUp` and `PageDown` scroll the transcript
+or, in that surface, its detail payload.
 
-The fixed footer keeps provider/model, run state, provider-reported token and
-cache counters, exact cost, and context status visible. Every unavailable
-field is rendered as `unknown`; the host never substitutes a price, cache hit,
-or context capacity. When a catalog model has a source-backed capacity, the
-footer also reports `context N% used` and whether automatic compaction is
-available. Custom models without capacity remain explicitly unknown and do
+The status flow keeps the current provider/model and run notice close to the
+composer; `/cost` owns the detailed provider-reported accounting/context
+surface. Every unavailable accounting value is rendered as `unknown`; the host
+never substitutes a price, cache hit, or context capacity. Catalog models with
+a source-backed capacity can report `context N% used` and compaction
+availability; custom models without capacity remain explicitly unknown and do
 not opt into automatic compaction.
 
 The local terminal substrate is deliberately small: `Cell`, `Style`, `Rect`,
@@ -260,7 +268,8 @@ retain the fixed OpenRouter endpoint and never read that test input.
 
 The native composer supports insertion, multiline paste, Shift+Enter, left/right,
 Home/End, word motions (`Alt+B`/`Alt+F`), backspace/delete, prompt history
-(`Up`/`Down`), command completion (`Tab`), submission, and `Ctrl+G`. Long
+(`Up`/`Down`), command completion (`Tab`), submission, `Ctrl+G`, and `Ctrl+O`
+for full detail. Long
 multiline input follows the cursor within the bounded composer region. `$EDITOR`
 remains available for larger edits: the host creates a private temporary file,
 suspends raw/alternate-screen state, parses and invokes `$EDITOR` without a
@@ -355,7 +364,7 @@ agent loop, hidden session store, or ambient configuration system.
 | Area | Deferred work |
 | --- | --- |
 | Transcript | More complete Markdown rendering, code-block horizontal handling, richer generic tool hints, search/copy, new-output markers, refined scrolling |
-| Composer and commands | Multiline native editing, grapheme/wide-cell correctness, word movement, history, paste presentation, richer editor integration, completion, and a narrow explicit command registry |
+| Composer and commands | Refined word-aware wrapping/tab behavior, richer editor integration, completion ranking, and a narrow explicit command registry |
 | Extensions | Capability-scoped bindings for declared Luau tools; no package manager, marketplace, or automatic authority grant |
 | Providers | Authorized cached remote model discovery, catalog update tooling, richer metadata, and explicit user-managed authentication flows |
 | Accounting | Budgets, warnings, richer history, and clearly labelled local estimates where they are ever justified |

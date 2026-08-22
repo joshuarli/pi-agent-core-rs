@@ -4,46 +4,57 @@ use tea_core::event::{
 };
 use tea_core::provider::ProviderRegistry;
 use tea_core::state::{AgentMessage, AgentSnapshot, ToolCallId};
-use tea_core::{Agent, AgentEvent, ModelDescriptor};
+use tea_core::{Agent, AgentEvent, ModelDescriptor, Usage};
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use super::host::{model_candidates, overlay_lines};
+use super::commands;
 use super::session::SessionSummary;
-use super::support::format_usage;
 
-/// One display row derived from a core event, never a second source of state.
+/// Typed transcript entry contract for presentation consumers.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TranscriptLine {
-    /// Core event sequence, or `None` for a local command/help notice.
-    pub sequence: Option<u64>,
-    /// Raw, deliberately unrendered text for the v0 terminal projection.
-    pub text: String,
-    /// Semantic presentation class retained alongside the event text.
-    pub kind: TranscriptKind,
+pub enum TranscriptEntry {
+    Welcome { text: String },
+    User { text: String },
+    Assistant { text: String, streaming: bool },
+    Tool(ToolProjection),
+    Notice { text: String, severity: NoticeSeverity },
+    Error { text: String },
 }
 
-/// Presentation classes used by the terminal renderer. Core semantics remain
-/// in [`AgentEvent`]; this is only the host's stable visual projection.
+/// Generic tool lifecycle projection retained independently from rendered text.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TranscriptKind {
-    /// Startup identity and help hint.
-    Welcome,
-    /// A submitted user prompt.
-    User,
-    /// Incrementally streamed assistant text.
-    Assistant,
-    /// A generic tool lifecycle row.
-    Tool {
-        /// Model-visible tool name.
-        name: String,
-        /// Current lifecycle phase.
-        state: ToolState,
-    },
-    /// Informational host/core notice.
-    Notice,
-    /// Error or cancellation notice.
-    Error,
+pub struct ToolProjection {
+    pub call_id: ToolCallId,
+    /// Core event sequence most recently associated with this lifecycle.
+    pub sequence: Option<u64>,
+    pub transcript_index: usize,
+    pub tool_name: String,
+    pub arguments: String,
+    pub latest_progress: Option<String>,
+    pub settled_result: Option<String>,
+    pub state: ToolState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NoticeSeverity {
+    Info,
+    Warning,
+}
+
+/// Temporary presentation surfaces. Core/session/provider state remains outside this enum.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UiSurface {
+    #[default]
+    None,
+    Help,
+    ModelPicker,
+    CustomModel,
+    SessionPicker,
+    Cost,
+    /// Full-transcript/detail inspection surface.
+    ToolDetail,
 }
 
 /// Generic tool lifecycle state for compact rendering.
@@ -91,7 +102,13 @@ pub(super) enum Picker {
 /// Terminal-owned state: event-derived rows plus local input and overlay state.
 #[derive(Clone, Debug, Default)]
 pub struct AppState {
-    pub(super) transcript: Vec<TranscriptLine>,
+    /// Raw, typed presentation entries. This is the only transcript collection
+    /// owned by the host; rendered labels are a renderer concern.
+    pub(super) transcript: Vec<TranscriptEntry>,
+    /// Core event sequence aligned with `transcript` entries. Local entries use
+    /// `None`; retaining it keeps event identity available without formatting it
+    /// into user-visible text.
+    pub(super) transcript_sequences: Vec<Option<u64>>,
     pub(super) composer: Composer,
     pub(super) status: UiStatus,
     pub(super) viewport_offset: usize,
@@ -121,8 +138,24 @@ pub struct AppState {
     pub(super) history_index: Option<usize>,
     /// Draft saved when history navigation first leaves the live composer.
     pub(super) history_draft: Option<String>,
-    /// Whether multiline tool output and diff bodies are expanded.
-    pub(super) tool_output_expanded: bool,
+    pub(super) surface: UiSurface,
+    /// Payload for data-bearing temporary surfaces such as help and cost.
+    pub(super) surface_lines: Vec<String>,
+    /// First unwrapped payload line shown by the temporary surface viewer.
+    /// It is separate from transcript scrolling so return-to-live preserves
+    /// the transcript's own viewport and follow state.
+    pub(super) surface_offset: usize,
+    pub(super) slash_completion: Option<SlashCompletion>,
+    /// Field-wise provider accounting observed directly from the lossless event stream.
+    pub(super) reported_usage: Usage,
+}
+
+/// State for the literal-prefix slash completion menu.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SlashCompletion {
+    pub(super) prefix: String,
+    pub(super) selected: usize,
+    pub(super) matches: Vec<String>,
 }
 
 /// Context-policy information carried by the core event stream for footer projection.
@@ -153,18 +186,20 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             follow_output: true,
-            tool_output_expanded: true,
             ..Self::default()
         }
     }
 
-    pub(super) fn toggle_tool_output(&mut self) {
-        self.tool_output_expanded = !self.tool_output_expanded;
-        self.notice(if self.tool_output_expanded {
-            "tool output expanded"
-        } else {
-            "tool output collapsed"
-        });
+    /// Open or close the temporary full-transcript/detail surface.
+    pub(super) fn toggle_tool_detail(&mut self) {
+        if self.surface == UiSurface::ToolDetail {
+            self.close_surface();
+            return;
+        }
+        self.set_surface_lines(
+            UiSurface::ToolDetail,
+            full_transcript_detail_lines(&self.transcript),
+        );
     }
 
     /// Apply one typed core event after its reducer has committed state.
@@ -174,7 +209,7 @@ impl AppState {
             AgentEventKind::AgentStart => self.status = UiStatus::Active,
             AgentEventKind::MessageStart { message } => {
                 if let tea_core::Message::User { content, .. } = message {
-                    self.push_kind(sequence, format!("you: {content}"), TranscriptKind::User);
+                    self.push_entry(sequence, TranscriptEntry::User { text: content.clone() });
                 }
             }
             AgentEventKind::MessageUpdate {
@@ -185,14 +220,18 @@ impl AppState {
                     (message, text_delta)
                 {
                     if let Some(index) = self.streaming_line {
-                        if let Some(line) = self.transcript.get_mut(index) {
-                            line.text.push_str(delta);
+                        if let Some(TranscriptEntry::Assistant { text, .. }) =
+                            self.transcript.get_mut(index)
+                        {
+                            text.push_str(delta);
                         }
                     } else {
-                        self.push_kind(
+                        self.push_entry(
                             sequence,
-                            format!("assistant: {delta}"),
-                            TranscriptKind::Assistant,
+                            TranscriptEntry::Assistant {
+                                text: delta.clone(),
+                                streaming: true,
+                            },
                         );
                         self.streaming_line = self.transcript.len().checked_sub(1);
                     }
@@ -205,20 +244,36 @@ impl AppState {
                     ..
                 } = message
                 {
-                    if self.streaming_line.is_none() {
+                    if let Some(index) = self.streaming_line {
                         if let Some(error) = error_message {
-                            self.push_kind(
-                                sequence,
-                                format!("assistant error: {error}"),
-                                TranscriptKind::Error,
-                            );
-                        } else {
-                            self.push_kind(
-                                sequence,
-                                format!("assistant: {content}"),
-                                TranscriptKind::Assistant,
-                            );
+                            if let Some(entry) = self.transcript.get_mut(index) {
+                                *entry = TranscriptEntry::Error {
+                                    text: error.clone(),
+                                };
+                                self.transcript_sequences[index] = sequence;
+                            }
+                        } else if let Some(TranscriptEntry::Assistant { text, streaming }) =
+                            self.transcript.get_mut(index)
+                        {
+                            *text = content.clone();
+                            *streaming = false;
+                            self.transcript_sequences[index] = sequence;
                         }
+                    } else if let Some(error) = error_message {
+                        self.push_entry(
+                            sequence,
+                            TranscriptEntry::Error {
+                                text: error.clone(),
+                            },
+                        );
+                    } else {
+                        self.push_entry(
+                            sequence,
+                            TranscriptEntry::Assistant {
+                                text: content.clone(),
+                                streaming: false,
+                            },
+                        );
                     }
                     self.streaming_line = None;
                 }
@@ -228,15 +283,20 @@ impl AppState {
                 tool_name,
                 arguments,
             } => {
-                self.push_kind(
+                let index = self.transcript.len();
+                self.push_entry(
                     sequence,
-                    format!("tool {tool_name} — started: {}", arguments.as_str()),
-                    TranscriptKind::Tool {
-                        name: tool_name.clone(),
+                    TranscriptEntry::Tool(ToolProjection {
+                        call_id: tool_call_id.clone(),
+                        sequence,
+                        transcript_index: index,
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.as_str().to_owned(),
+                        latest_progress: None,
+                        settled_result: None,
                         state: ToolState::Started,
-                    },
+                    }),
                 );
-                let index = self.transcript.len().saturating_sub(1);
                 self.active_tool_lines.insert(tool_call_id.clone(), index);
             }
             AgentEventKind::ToolExecutionUpdate {
@@ -247,9 +307,10 @@ impl AppState {
                 self.update_tool_line(
                     tool_call_id,
                     sequence,
-                    format!("tool {tool_name} — progress: {}", update.content),
-                    ToolState::Progress,
                     tool_name,
+                    ToolState::Progress,
+                    Some(update.content.clone()),
+                    None,
                 );
             }
             AgentEventKind::ToolExecutionEnd {
@@ -258,98 +319,57 @@ impl AppState {
                 result,
                 ..
             } => {
-                let label = if result.is_error {
-                    "failed"
-                } else {
-                    "completed"
-                };
                 self.update_tool_line(
                     tool_call_id,
                     sequence,
-                    format!("tool {tool_name} — {label}: {}", result.content),
+                    tool_name,
                     if result.is_error {
                         ToolState::Failed
                     } else {
                         ToolState::Completed
                     },
-                    tool_name,
+                    None,
+                    Some(result.content.clone()),
                 );
                 self.active_tool_lines.remove(tool_call_id);
             }
-            AgentEventKind::ModelTurnUsage { accounting } => self.push_kind(
-                sequence,
-                format!("cost: {}", format_usage(&accounting.usage)),
-                TranscriptKind::Notice,
-            ),
-            AgentEventKind::CompactionStart {
-                source_message_count,
-            } => {
+            // Usage is projected by the attached snapshot/footer and `/cost`; a transcript row
+            // would duplicate accounting and blur unknown values with zeroes.
+            AgentEventKind::ModelTurnUsage { accounting } => {
+                self.reported_usage.merge(accounting.usage.clone());
+            }
+            AgentEventKind::CompactionStart { .. } => {
                 self.status = UiStatus::Active;
-                self.push(
-                    sequence,
-                    format!("compacting {source_message_count} messages"),
-                );
             }
             AgentEventKind::CompactionResult {
                 retained_message_count,
-                usage,
+                ..
             } => {
-                let usage = usage
-                    .as_ref()
-                    .map(|usage| format!(" ({})", format_usage(usage)))
-                    .unwrap_or_default();
-                self.push(
-                    sequence,
-                    format!("compaction retained {retained_message_count} messages{usage}"),
-                );
+                self.notice(format!("compaction retained {retained_message_count} messages"));
             }
             AgentEventKind::CompactionEnd { outcome } => match outcome {
                 CompactionOutcome::Succeeded {
                     retained_message_count,
-                } => self.push(
-                    sequence,
-                    format!("compaction complete: {retained_message_count} messages"),
-                ),
-                CompactionOutcome::Failed { message } => {
-                    self.push(sequence, format!("compaction failed: {message}"));
-                }
-                CompactionOutcome::Cancelled => self.push(sequence, "compaction cancelled".into()),
+                } => self.notice(format!("compaction complete: {retained_message_count} messages")),
+                CompactionOutcome::Failed { message } => self.notice(format!("compaction failed: {message}")),
+                CompactionOutcome::Cancelled => self.notice("compaction cancelled"),
             },
-            AgentEventKind::AutomaticCompactionStart {
-                source_message_count,
-                reason,
-                count,
-                ..
-            } => {
+            AgentEventKind::AutomaticCompactionStart { .. } => {
                 self.status = UiStatus::Active;
-                self.push(
-                    sequence,
-                    format!(
-                        "automatic compaction #{count} ({reason:?}): {source_message_count} messages"
-                    ),
-                );
             }
             AgentEventKind::AutomaticCompactionEnd { outcome, .. } => match outcome {
-                AutomaticCompactionOutcome::Succeeded { .. } => {
-                    self.push(sequence, "automatic compaction complete".into())
-                }
+                AutomaticCompactionOutcome::Succeeded { .. } => self.notice("automatic compaction complete"),
                 AutomaticCompactionOutcome::Failed { message } => {
-                    self.push(sequence, format!("automatic compaction failed: {message}"))
+                    self.notice(format!("automatic compaction failed: {message}"))
                 }
-                AutomaticCompactionOutcome::Cancelled => {
-                    self.push(sequence, "automatic compaction cancelled".into())
-                }
+                AutomaticCompactionOutcome::Cancelled => self.notice("automatic compaction cancelled"),
                 AutomaticCompactionOutcome::LimitReached => {
-                    self.push(sequence, "automatic compaction limit reached".into())
+                    self.notice("automatic compaction limit reached")
                 }
-                AutomaticCompactionOutcome::StillAboveThreshold => self.push(
-                    sequence,
-                    "automatic compaction complete; retained context remains above threshold"
-                        .into(),
+                AutomaticCompactionOutcome::StillAboveThreshold => self.notice(
+                    "automatic compaction complete; retained context remains above threshold",
                 ),
-                AutomaticCompactionOutcome::Unavailable => {
-                    self.push(sequence, "automatic compaction unavailable".into())
-                }
+                AutomaticCompactionOutcome::Unavailable => self.notice("automatic compaction unavailable"),
             },
             AgentEventKind::ContextEstimate {
                 estimated_context_tokens,
@@ -361,14 +381,12 @@ impl AppState {
                     message_count: *message_count,
                 });
             }
-            AgentEventKind::ProviderRequestSkipped { reason } => self.push(
-                sequence,
-                match reason {
+            AgentEventKind::ProviderRequestSkipped { reason } => self.notice(match reason {
                     ProviderRequestSkipReason::AutomaticCompaction => {
-                        "provider request deferred for automatic compaction".into()
+                        "provider request deferred for automatic compaction"
                     }
                     ProviderRequestSkipReason::ToolCircuitBreaker => {
-                        "provider request skipped after terminal tool failure".into()
+                        "provider request skipped after terminal tool failure"
                     }
                 },
             ),
@@ -377,27 +395,23 @@ impl AppState {
                 consecutive_count,
                 terminal,
                 ..
-            } => self.push(
-                sequence,
-                format!(
+            } => self.notice(format!(
                     "tool failure {disposition:?} (consecutive {consecutive_count}){}",
                     if *terminal { "; ending run" } else { "" }
-                ),
-            ),
+                )),
             AgentEventKind::TurnEnd { reason, .. } => match reason {
-                tea_core::state::StopReason::Error => self.push(
-                    sequence,
-                    "turn failed; prompt remains available to retry".into(),
-                ),
-                tea_core::state::StopReason::Aborted => {
-                    self.push(sequence, "turn aborted".into())
+                tea_core::state::StopReason::Error => {
+                    self.notice("turn failed; prompt remains available to retry")
                 }
-                tea_core::state::StopReason::Cancelled => {
-                    self.push(sequence, "turn cancelled".into())
-                }
+                tea_core::state::StopReason::Aborted => self.notice("turn aborted"),
+                tea_core::state::StopReason::Cancelled => self.notice("turn cancelled"),
                 _ => {}
             },
-            AgentEventKind::AgentEnd { .. } => self.status = UiStatus::Idle,
+            AgentEventKind::AgentEnd { .. } => {
+                if matches!(self.status, UiStatus::Active) {
+                    self.status = UiStatus::Idle;
+                }
+            }
             AgentEventKind::TurnStart { .. } => {}
         }
     }
@@ -417,7 +431,7 @@ impl AppState {
         for message in messages {
             match message {
                 AgentMessage::User { content, .. } => {
-                    self.push_kind(None, format!("you: {content}"), TranscriptKind::User);
+                    self.push_entry(None, TranscriptEntry::User { text: content.clone() });
                 }
                 AgentMessage::Assistant {
                     content,
@@ -425,21 +439,24 @@ impl AppState {
                     ..
                 } => {
                     if let Some(error) = error_message {
-                        self.push_kind(
+                        self.push_entry(
                             None,
-                            format!("assistant error: {error}"),
-                            TranscriptKind::Error,
+                            TranscriptEntry::Error {
+                                text: error.clone(),
+                            },
                         );
-                    } else if !content.is_empty() {
-                        self.push_kind(
+                    } else {
+                        self.push_entry(
                             None,
-                            format!("assistant: {content}"),
-                            TranscriptKind::Assistant,
+                            TranscriptEntry::Assistant {
+                                text: content.clone(),
+                                streaming: false,
+                            },
                         );
                     }
                 }
                 AgentMessage::ToolResult {
-                    tool_call_id: _,
+                    tool_call_id,
                     tool_name,
                     content,
                     is_error,
@@ -450,14 +467,19 @@ impl AppState {
                     } else {
                         ToolState::Completed
                     };
-                    let label = if *is_error { "failed" } else { "completed" };
-                    self.push_kind(
+                    let transcript_index = self.transcript.len();
+                    self.push_entry(
                         None,
-                        format!("tool {tool_name} — {label}: {content}"),
-                        TranscriptKind::Tool {
-                            name: tool_name.clone(),
+                        TranscriptEntry::Tool(ToolProjection {
+                            call_id: tool_call_id.clone(),
+                            sequence: None,
+                            transcript_index,
+                            tool_name: tool_name.clone(),
+                            arguments: String::new(),
+                            latest_progress: None,
+                            settled_result: Some(content.clone()),
                             state,
-                        },
+                        }),
                     );
                 }
             }
@@ -494,9 +516,19 @@ impl AppState {
             .collect();
     }
 
-    /// Borrow the event-derived transcript.
-    pub fn transcript(&self) -> &[TranscriptLine] {
+    /// Borrow the raw typed transcript projection.
+    pub fn transcript(&self) -> &[TranscriptEntry] {
         &self.transcript
+    }
+
+    /// Snapshot the typed presentation contract for callers that need ownership.
+    pub fn transcript_entries(&self) -> Vec<TranscriptEntry> {
+        self.transcript.clone()
+    }
+
+    /// Alias used by presentation callers that do not need the legacy line projection.
+    pub fn entries(&self) -> Vec<TranscriptEntry> {
+        self.transcript_entries()
     }
 
     /// Borrow the local composer.
@@ -514,6 +546,110 @@ impl AppState {
         &self.status
     }
 
+    /// Return the active temporary presentation surface.
+    pub fn surface(&self) -> UiSurface {
+        self.surface
+    }
+
+    /// Borrow the temporary surface payload, if the active surface owns one.
+    pub fn surface_lines(&self) -> Option<&[String]> {
+        (!self.surface_lines.is_empty()).then_some(self.surface_lines.as_slice())
+    }
+
+    /// Return the first unwrapped line displayed by the active surface.
+    pub(crate) fn surface_offset(&self) -> usize {
+        self.surface_offset
+    }
+
+    pub(super) fn set_surface(&mut self, surface: UiSurface) {
+        self.surface = surface;
+        self.surface_lines.clear();
+        self.surface_offset = 0;
+    }
+
+    pub(super) fn set_surface_lines(&mut self, surface: UiSurface, lines: Vec<String>) {
+        self.surface = surface;
+        self.surface_lines = lines;
+        self.surface_offset = 0;
+        self.picker = None;
+        self.slash_completion = None;
+    }
+
+    pub(super) fn close_surface(&mut self) {
+        self.surface = UiSurface::None;
+        self.surface_lines.clear();
+        self.surface_offset = 0;
+        self.picker = None;
+        self.slash_completion = None;
+    }
+
+    pub(crate) fn update_slash_completion(&mut self, matches: Vec<String>) {
+        if matches.is_empty() {
+            self.slash_completion = None;
+            return;
+        }
+        let prefix = self.composer.text().to_owned();
+        let selected = self
+            .slash_completion
+            .as_ref()
+            .map_or(0, |menu| menu.selected.min(matches.len() - 1));
+        self.slash_completion = Some(SlashCompletion {
+            prefix,
+            selected,
+            matches,
+        });
+    }
+
+    pub(super) fn move_slash_completion(&mut self, delta: isize) {
+        let Some(menu) = self.slash_completion.as_mut() else {
+            return;
+        };
+        if !menu.matches.is_empty() {
+            menu.selected =
+                (menu.selected as isize + delta).rem_euclid(menu.matches.len() as isize) as usize;
+        }
+    }
+
+    pub(super) fn selected_slash_completion(&self) -> Option<&str> {
+        self.slash_completion
+            .as_ref()
+            .and_then(|menu| menu.matches.get(menu.selected))
+            .map(String::as_str)
+    }
+
+    /// Return visible command names, descriptions, and selection state.
+    pub(crate) fn slash_completion_rows(&self, max_rows: usize) -> Vec<(String, String, bool)> {
+        let Some(menu) = self.slash_completion.as_ref() else {
+            return Vec::new();
+        };
+        let visible = max_rows.min(menu.matches.len());
+        if visible == 0 {
+            return Vec::new();
+        }
+        let start = menu
+            .selected
+            .saturating_sub(visible.saturating_sub(1))
+            .min(menu.matches.len().saturating_sub(visible));
+        menu.matches
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+            .map(|(index, command)| {
+                let help = commands::find(command)
+                    .map_or_else(String::new, |spec| spec.help.to_owned());
+                (command.clone(), help, index == menu.selected)
+            })
+            .collect()
+    }
+
+    /// Return the number of command candidates before the visible row cap.
+    pub(crate) fn slash_completion_count(&self) -> usize {
+        self.slash_completion
+            .as_ref()
+            .map_or(0, |menu| menu.matches.len())
+    }
+
     /// Return the requested transcript top row for manual scrolling.
     pub fn viewport_offset(&self) -> usize {
         self.viewport_offset
@@ -522,15 +658,6 @@ impl AppState {
     /// Whether output should continue to follow the newest event.
     pub fn follows_output(&self) -> bool {
         self.follow_output
-    }
-
-    pub(crate) fn tool_output_expanded(&self) -> bool {
-        self.tool_output_expanded
-    }
-
-    /// Whether the transcript row is still receiving assistant deltas.
-    pub(crate) fn is_streaming_transcript(&self, index: usize) -> bool {
-        self.streaming_line == Some(index)
     }
 
     /// Return the latest core snapshot, if one has been attached.
@@ -545,8 +672,14 @@ impl AppState {
             .map(|model| compact_model_label(&model.model))
             .unwrap_or_else(|| "provider/model unknown".into());
         let hint = if self.composer.text().starts_with('/') {
-            "commands: /help · /model · /cost · /compact · /reload-extensions · /clear · /quit"
-                .into()
+            format!(
+                "commands: {}",
+                commands::all()
+                    .iter()
+                    .map(|command| command.name)
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
         } else {
             match &self.status {
                 UiStatus::Idle => format!("yolo · {model}"),
@@ -591,6 +724,7 @@ impl AppState {
             .last_snapshot
             .as_ref()
             .map(|snapshot| &snapshot.accounting.aggregate)
+            .or_else(|| self.reported_usage.is_reported().then_some(&self.reported_usage))
             .filter(|usage| {
                 usage.input_tokens.is_some()
                     || usage.output_tokens.is_some()
@@ -684,46 +818,49 @@ impl AppState {
         })
     }
 
-    pub(super) fn push(&mut self, sequence: Option<u64>, text: String) {
-        self.push_kind(sequence, text, TranscriptKind::Notice);
-    }
-
-    fn push_kind(&mut self, sequence: Option<u64>, text: String, kind: TranscriptKind) {
-        self.transcript.push(TranscriptLine {
-            sequence,
-            text,
-            kind,
-        });
+    pub(super) fn push_entry(&mut self, sequence: Option<u64>, entry: TranscriptEntry) {
+        self.transcript.push(entry);
+        self.transcript_sequences.push(sequence);
     }
 
     fn update_tool_line(
         &mut self,
         tool_call_id: &ToolCallId,
         sequence: Option<u64>,
-        text: String,
-        state: ToolState,
         tool_name: &str,
+        state: ToolState,
+        progress: Option<String>,
+        result: Option<String>,
     ) {
         if let Some(index) = self.active_tool_lines.get(tool_call_id).copied() {
-            if let Some(line) = self.transcript.get_mut(index) {
-                line.sequence = sequence;
-                line.text = text;
-                line.kind = TranscriptKind::Tool {
-                    name: tool_name.to_owned(),
-                    state,
-                };
+            if let Some(TranscriptEntry::Tool(projection)) = self.transcript.get_mut(index) {
+                projection.sequence = sequence;
+                projection.tool_name = tool_name.to_owned();
+                projection.state = state;
+                if progress.is_some() {
+                    projection.latest_progress = progress;
+                }
+                if result.is_some() {
+                    projection.settled_result = result;
+                }
+                self.transcript_sequences[index] = sequence;
                 return;
             }
         }
-        self.push_kind(
+        let index = self.transcript.len();
+        self.push_entry(
             sequence,
-            text,
-            TranscriptKind::Tool {
-                name: tool_name.to_owned(),
+            TranscriptEntry::Tool(ToolProjection {
+                call_id: tool_call_id.clone(),
+                sequence,
+                transcript_index: index,
+                tool_name: tool_name.to_owned(),
+                arguments: String::new(),
+                latest_progress: progress,
+                settled_result: result,
                 state,
-            },
+            }),
         );
-        let index = self.transcript.len().saturating_sub(1);
         self.active_tool_lines.insert(tool_call_id.clone(), index);
     }
 
@@ -731,18 +868,15 @@ impl AppState {
         self.status = UiStatus::Notice(text.into());
     }
 
-    pub(super) fn local_line(&mut self, text: impl Into<String>) {
-        self.push(None, text.into());
-    }
-
-    pub(super) fn welcome_line(&mut self) {
-        self.push_kind(
+    pub(crate) fn welcome_line(&mut self) {
+        self.push_entry(
             None,
-            format!(
-                "𝒑i-agent v{} · Run /help for commands",
-                env!("CARGO_PKG_VERSION")
-            ),
-            TranscriptKind::Welcome,
+            TranscriptEntry::Welcome {
+                text: format!(
+                    "𝒕ea v{} · Run /help for commands",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            },
         );
     }
 
@@ -794,8 +928,10 @@ impl AppState {
 
     pub(super) fn clear_transcript(&mut self) {
         self.transcript.clear();
+        self.transcript_sequences.clear();
         self.streaming_line = None;
         self.active_tool_lines.clear();
+        self.reported_usage = Usage::default();
         self.viewport_offset = 0;
         self.follow_output = true;
     }
@@ -828,6 +964,19 @@ impl AppState {
         }
     }
 
+    /// Scroll a temporary surface without changing live transcript follow state.
+    pub(super) fn page_surface_up(&mut self, lines: usize) {
+        self.surface_offset = self.surface_offset.saturating_sub(lines);
+    }
+
+    /// Scroll a temporary surface without changing live transcript follow state.
+    pub(super) fn page_surface_down(&mut self, lines: usize) {
+        self.surface_offset = self
+            .surface_offset
+            .saturating_add(lines)
+            .min(self.surface_lines.len().saturating_sub(1));
+    }
+
     pub(super) fn follow_end(&mut self) {
         self.follow_output = true;
         self.viewport_offset = self.transcript.len();
@@ -841,6 +990,61 @@ impl AppState {
         self.visible_transcript_lines = visible_transcript_lines;
         self.transcript_rows = transcript_rows;
     }
+}
+
+fn full_transcript_detail_lines(entries: &[TranscriptEntry]) -> Vec<String> {
+    if entries.is_empty() {
+        return vec!["Full detail".into(), String::new(), "No transcript yet.".into()];
+    }
+
+    let mut lines = vec!["Full detail".into(), String::new()];
+    for (index, entry) in entries.iter().enumerate() {
+        if index != 0 {
+            lines.push(String::new());
+        }
+        match entry {
+            TranscriptEntry::Welcome { text } => {
+                lines.push("Welcome".into());
+                lines.extend(text.lines().map(str::to_owned));
+            }
+            TranscriptEntry::User { text } => {
+                lines.push("User".into());
+                lines.extend(text.lines().map(str::to_owned));
+            }
+            TranscriptEntry::Assistant { text, streaming } => {
+                lines.push(if *streaming {
+                    "Assistant (streaming)".into()
+                } else {
+                    "Assistant".into()
+                });
+                lines.extend(text.lines().map(str::to_owned));
+            }
+            TranscriptEntry::Tool(tool) => {
+                lines.push(format!("Tool: {} ({:?})", tool.tool_name, tool.state));
+                if !tool.arguments.is_empty() {
+                    lines.push("Arguments".into());
+                    lines.extend(tool.arguments.lines().map(str::to_owned));
+                }
+                if let Some(progress) = &tool.latest_progress {
+                    lines.push("Progress".into());
+                    lines.extend(progress.lines().map(str::to_owned));
+                }
+                if let Some(result) = &tool.settled_result {
+                    lines.push("Result".into());
+                    lines.extend(result.lines().map(str::to_owned));
+                }
+            }
+            TranscriptEntry::Notice { text, severity } => {
+                lines.push(format!("Notice ({severity:?})"));
+                lines.extend(text.lines().map(str::to_owned));
+            }
+            TranscriptEntry::Error { text } => {
+                lines.push("Error".into());
+                lines.extend(text.lines().map(str::to_owned));
+            }
+        }
+    }
+    lines
 }
 
 fn format_context_percent(tokens: Option<u64>, capacity: Option<u64>) -> String {

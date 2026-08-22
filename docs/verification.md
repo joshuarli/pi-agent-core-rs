@@ -12,7 +12,8 @@ Run the repository's pinned nightly toolchain:
 
 ```bash
 cargo +nightly-2026-07-24 test --workspace
-cargo +nightly-2026-07-24 fmt --check
+python3 crates/tea-agent/fixtures/fx-ui/check.py
+cargo +nightly-2026-07-24 test -p tea-agent --features pty-harness --test pty_streaming
 git diff --check
 ```
 

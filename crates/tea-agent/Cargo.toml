@@ -33,7 +33,9 @@ tea-protocol = { path = "../tea-protocol" }
 smol = { workspace = true }
 
 [dev-dependencies]
-ptytest = { path = "../../../ptytest" }
+# The local harness crate was renamed while retaining its `ptytest` Rust API.
+# Keep the application-facing dependency name stable for the PTY contracts.
+ptytest = { package = "laputa-ptytest", path = "../../../ptytest" }
 
 [[test]]
 name = "pty_streaming"

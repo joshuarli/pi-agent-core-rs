@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::ui::visual_layout::{display_width, VisualLayout};
+
 /// Errors from native prompt editing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComposerError {
@@ -104,20 +106,20 @@ impl Composer {
 
     /// Move one scalar to the left.
     pub fn move_left(&mut self) {
-        self.cursor = self.text[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
+        self.cursor = previous_cluster_start(&self.text, self.cursor);
     }
 
     /// Move one scalar to the right.
     pub fn move_right(&mut self) {
-        self.cursor = self.text[self.cursor..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| self.cursor + index)
-            .unwrap_or(self.text.len());
+        if let Some(character) = self.text[self.cursor..].chars().next() {
+            self.cursor += character.len_utf8();
+            while let Some(character) = self.text[self.cursor..].chars().next() {
+                if !is_zero_width(character) {
+                    break;
+                }
+                self.cursor += character.len_utf8();
+            }
+        }
     }
 
     /// Move over one shell-like word to the left.
@@ -204,14 +206,59 @@ impl Composer {
         self.cursor = char_offset(&self.text[next_start..next_end], column) + next_start;
     }
 
-    /// Move to the beginning of the line.
-    pub const fn home(&mut self) {
-        self.cursor = 0;
+    /// Move to the same display column on the previous wrapped or hard line.
+    ///
+    /// Unlike [`Self::move_line_up`], this follows the terminal's visual rows,
+    /// including soft wrapping and wide scalars. It returns whether the cursor
+    /// moved, allowing input handling to fall back to history at the boundary.
+    pub fn move_visual_line_up(&mut self, width: u16) -> bool {
+        self.move_visual_line(width, -1)
     }
 
-    /// Move to the end of the line.
+    /// Move to the same display column on the next wrapped or hard line.
+    pub fn move_visual_line_down(&mut self, width: u16) -> bool {
+        self.move_visual_line(width, 1)
+    }
+
+    fn move_visual_line(&mut self, width: u16, direction: isize) -> bool {
+        let layout = VisualLayout::measure(&self.text, self.cursor, width);
+        let current = layout.cursor_row as isize;
+        let target = current + direction;
+        if target < 0 || target >= layout.rows.len() as isize {
+            return false;
+        }
+        let current_row = &layout.rows[layout.cursor_row];
+        let target_row = &layout.rows[target as usize];
+        let desired_column = self.text[current_row.start..self.cursor]
+            .chars()
+            .map(display_width)
+            .sum::<usize>();
+        let mut column = 0;
+        let mut cursor = target_row.start;
+        for symbol in self.text[target_row.start..target_row.end].chars() {
+            let symbol_width = display_width(symbol);
+            if column + symbol_width > desired_column {
+                break;
+            }
+            column += symbol_width;
+            cursor += symbol.len_utf8();
+        }
+        self.cursor = cursor;
+        true
+    }
+
+    /// Move to the beginning of the current logical line.
+    pub fn home(&mut self) {
+        self.cursor = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+    }
+
+    /// Move to the end of the current logical line.
     pub fn end(&mut self) {
-        self.cursor = self.text.len();
+        self.cursor = self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |index| self.cursor + index);
     }
 
     /// Delete the scalar before the cursor.
@@ -219,24 +266,23 @@ impl Composer {
         if self.cursor == 0 {
             return;
         }
-        let start = self.text[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        self.text.drain(start..self.cursor);
-        self.cursor = start;
+        let cluster_start = previous_cluster_start(&self.text, self.cursor);
+        self.text.drain(cluster_start..self.cursor);
+        self.cursor = cluster_start;
     }
 
     /// Delete the scalar at the cursor.
     pub fn delete(&mut self) {
-        let Some(end) = self.text[self.cursor..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| self.cursor + index)
-        else {
+        let Some(character) = self.text[self.cursor..].chars().next() else {
             return;
         };
+        let mut end = self.cursor + character.len_utf8();
+        while let Some(next) = self.text[end..].chars().next() {
+            if !is_zero_width(next) {
+                break;
+            }
+            end += next.len_utf8();
+        }
         self.text.drain(self.cursor..end);
     }
 
@@ -247,7 +293,7 @@ impl Composer {
             return Err(ComposerError::Newline);
         }
         self.text = text;
-        self.end();
+        self.cursor = self.text.len();
         Ok(())
     }
 
@@ -262,6 +308,30 @@ fn char_offset(text: &str, target: usize) -> usize {
     text.char_indices()
         .nth(target)
         .map_or(text.len(), |(index, _)| index)
+}
+
+fn is_zero_width(character: char) -> bool {
+    character == '\u{200d}'
+        || matches!(character, '\u{fe0e}' | '\u{fe0f}')
+        || ('\u{300}'..='\u{36f}').contains(&character)
+        || ('\u{1ab0}'..='\u{1aff}').contains(&character)
+        || ('\u{20d0}'..='\u{20ff}').contains(&character)
+        || ('\u{fe20}'..='\u{fe2f}').contains(&character)
+}
+
+fn previous_cluster_start(text: &str, cursor: usize) -> usize {
+    let mut iterator = text[..cursor].char_indices().rev();
+    let Some((mut start, mut character)) = iterator.next() else {
+        return 0;
+    };
+    while is_zero_width(character) {
+        let Some((previous_start, previous_character)) = iterator.next() else {
+            return 0;
+        };
+        start = previous_start;
+        character = previous_character;
+    }
+    start
 }
 
 #[cfg(test)]
@@ -292,5 +362,56 @@ mod tests {
         assert!(composer.is_multiline());
         assert_eq!(composer.take(), "first\nsecond");
         assert!(composer.text().is_empty());
+    }
+
+    #[test]
+    fn home_and_end_follow_the_current_logical_line() {
+        let mut composer = Composer::new();
+        composer.replace_from_editor("first\nsecond");
+        composer.move_line_up();
+        composer.home();
+        assert_eq!(composer.cursor(), 0);
+        composer.move_line_down();
+        composer.home();
+        assert_eq!(composer.cursor(), 6);
+        composer.end();
+        assert_eq!(composer.cursor(), composer.text().len());
+    }
+
+    #[test]
+    fn scalar_cursor_edits_preserve_utf8_boundaries() {
+        let mut composer = Composer::new();
+        composer.insert_str("aé界").expect("one line is valid");
+        composer.move_left();
+        composer.backspace();
+        assert_eq!(composer.text(), "a界");
+        assert!(composer.text().is_char_boundary(composer.cursor()));
+        composer.delete();
+        assert_eq!(composer.text(), "a");
+    }
+
+    #[test]
+    fn cursor_treats_combining_marks_as_part_of_the_previous_cluster() {
+        let mut composer = Composer::new();
+        composer.insert_str("e\u{301}x").expect("one line is valid");
+        composer.move_left();
+        composer.move_left();
+        assert_eq!(composer.cursor(), 0);
+        composer.move_right();
+        assert_eq!(composer.cursor(), 3);
+        composer.backspace();
+        assert_eq!(composer.text(), "x");
+    }
+
+    #[test]
+    fn visual_line_movement_follows_soft_wraps_and_wide_cells() {
+        let mut composer = Composer::new();
+        composer.replace_from_editor("a界bc");
+        composer.end();
+        assert!(composer.move_visual_line_up(5));
+        assert_eq!(composer.cursor(), 1);
+        assert!(composer.move_visual_line_down(5));
+        assert_eq!(composer.cursor(), 5);
+        assert!(!composer.move_visual_line_down(5));
     }
 }

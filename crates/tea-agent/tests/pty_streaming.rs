@@ -1,4 +1,4 @@
-use ptytest::{CommandSpec, ExitStatus, Key, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
+use ptytest::{Color as PtyColor, CommandSpec, ExitStatus, Key, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
 use std::io::Write;
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -105,7 +105,7 @@ fn real_binary_renders_openrouter_text_before_the_mock_response_settles() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "model readiness",
-            |screen| screen.contains("𝒑i-agent") && screen.contains("yolo · gpt-5.6-luna"),
+            |screen| screen.contains("𝒕ea") && screen.contains("yolo · gpt-5.6-luna"),
         )
         .expect("model selection should render");
     let active = terminal.terminal_state();
@@ -257,12 +257,24 @@ fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
             terminal.deadline(Duration::from_secs(3)),
             "local model readiness",
             |screen| {
-                screen.contains("𝒑i-agent")
+                screen.contains("𝒕ea")
                     && screen.contains("yolo · Laguna-XS-2.1-5bit")
-                    && screen.row(1).is_some_and(|row| row.starts_with("┃"))
+                    && screen.row(2).is_some_and(|row| row.starts_with("┃"))
             },
         )
         .expect("local model selection should render");
+    let startup = terminal.screen();
+    assert!(startup.row(0).is_some_and(|row| row.starts_with("𝒕ea v")));
+    assert!(startup.row(2).is_some_and(|row| row.starts_with("┃")));
+    assert!(startup.row(4).is_some_and(|row| row.starts_with("yolo ·")));
+    let cursor = startup.cursor();
+    assert_eq!((cursor.row, cursor.column, cursor.visible), (2, 2, true));
+    assert!(
+        startup
+            .cell(2, 0)
+            .is_some_and(|cell| cell.attributes().bold),
+        "the composer rail retains the text emphasis role"
+    );
 
     terminal
         .send_bytes(
@@ -310,6 +322,41 @@ fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
         .expect("Esc should close the model selector");
 
     terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "/")
+        .expect("open inline slash completion");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "slash completion menu",
+            |screen| {
+                screen.row(3).is_some_and(|row| row.starts_with('─'))
+                    && screen.row(4).is_some_and(|row| row.starts_with("Results 12"))
+                    && screen.row(13).is_some_and(|row| row.starts_with("↑↓ Navigate"))
+            },
+        )
+        .expect("leading slash should open the measured inline menu");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Down)
+        .expect("move slash completion selection");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "moved slash completion selection",
+            |screen| {
+                screen
+                    .cell(7, 2)
+                    .is_some_and(|cell| cell.attributes().foreground == PtyColor::Indexed(14))
+            },
+        )
+        .expect("Down should move the accent role to the next command row");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Escape)
+        .expect("close slash completion without submitting");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Ctrl('c'))
+        .expect("clear slash completion draft");
+
+    terminal
         .send_text(terminal.deadline(Duration::from_secs(3)), "/he")
         .expect("send command prefix");
     terminal
@@ -329,9 +376,25 @@ fn real_binary_keeps_native_multiline_editing_and_history_inside_a_pty() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "help output",
-            |screen| screen.contains("keys: Enter submit"),
+            |screen| {
+                screen.row(0).is_some_and(|row| row.starts_with("┃"))
+                    && screen.contains("Commands 12")
+                    && screen.contains("show keybindings and commands")
+                    && screen.row(14).is_some_and(|row| row.starts_with('─'))
+                    && screen.row(15).is_some_and(|row| row.starts_with("↑↓ Navigate"))
+            },
         )
-        .expect("help command should render its key summary");
+        .expect("help command should render a temporary command surface");
+    terminal
+        .send_key(terminal.deadline(Duration::from_secs(3)), Key::Escape)
+        .expect("close help surface before returning to the composer");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "help surface closed",
+            |screen| screen.contains("𝒕ea") && !screen.contains("Commands 12"),
+        )
+        .expect("Esc should remove temporary help content");
     terminal
         .send_key(terminal.deadline(Duration::from_secs(3)), Key::Up)
         .expect("recall command history");

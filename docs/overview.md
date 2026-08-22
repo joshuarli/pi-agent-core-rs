@@ -71,6 +71,8 @@ downstream optional layers.
 - [Tracing](trace.md) — optional trajectory observer boundary.
 - [Terminal host](tui.md) — `tea` ownership boundaries, interaction
   contract, and post-V0 direction.
+- [`fx` UI compatibility oracle](fx-ui-compatibility.md) — frozen terminal sizes,
+  normalized-cell snapshots, and the reduced tea parity map.
 - [Writing Luau extensions](luau-extensions.md) — closed bundles, capability
   bindings, coroutine-backed tools, limits, and review rules.
 

@@ -2,12 +2,13 @@ use crate::editor::Editor;
 use crate::terminal::TerminalGuard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tea_core::state::AgentPhase;
-use tea_core::CoreError;
+use tea_core::{CoreError, Usage};
 
 use super::error::AppError;
+use super::commands;
 use super::runtime::App;
-use super::state::QueueDelivery;
-use super::support::format_usage;
+use super::state::{QueueDelivery, UiSurface};
+use super::support::format_footer_usage;
 
 impl App {
     pub(super) fn handle_terminal_event(
@@ -17,8 +18,12 @@ impl App {
     ) -> Result<(), AppError> {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(terminal, key),
-            Event::Paste(text) if self.state.picker.is_none() => {
+            Event::Paste(text)
+                if self.state.picker.is_none()
+                    && matches!(self.state.surface(), UiSurface::None) =>
+            {
                 self.state.composer_mut().insert_str_multiline(&text);
+                self.refresh_command_completion();
                 Ok(())
             }
             Event::Paste(text) => self.picker_insert(&text),
@@ -31,7 +36,64 @@ impl App {
         if self.state.picker.is_some() {
             return self.handle_picker_key(key);
         }
+        if self.state.surface() == UiSurface::ToolDetail
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('o')
+        {
+            self.state.toggle_tool_detail();
+            return Ok(());
+        }
+        if self.state.surface() == UiSurface::ToolDetail {
+            let page = usize::from(terminal.size()?.1.saturating_sub(3)).max(1);
+            match key.code {
+                KeyCode::PageUp | KeyCode::Up => self.state.page_surface_up(page),
+                KeyCode::PageDown | KeyCode::Down => self.state.page_surface_down(page),
+                _ => {}
+            }
+            if matches!(key.code, KeyCode::PageUp | KeyCode::Up | KeyCode::PageDown | KeyCode::Down) {
+                return Ok(());
+            }
+        }
+        if !matches!(self.state.surface(), UiSurface::None) && key.code == KeyCode::Esc {
+            self.state.close_surface();
+            return Ok(());
+        }
+        if !matches!(self.state.surface(), UiSurface::None) {
+            return Ok(());
+        }
+        if self.state.slash_completion.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.state.slash_completion = None;
+                    return Ok(());
+                }
+                KeyCode::Up => {
+                    self.state.move_slash_completion(-1);
+                    return Ok(())
+                }
+                KeyCode::Down => {
+                    self.state.move_slash_completion(1);
+                    return Ok(())
+                }
+                KeyCode::Tab => {
+                    self.complete_command();
+                    return Ok(())
+                }
+                KeyCode::Enter => {
+                    if let Some(command) = self.state.selected_slash_completion().map(str::to_owned)
+                    {
+                        self.state
+                            .composer_mut()
+                            .replace_from_editor(format!("{command} "));
+                        self.state.slash_completion = None;
+                        return self.submit_composer();
+                    }
+                }
+                _ => {}
+            }
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+            self.state.slash_completion = None;
             let current = self.state.composer().text().to_owned();
             match Editor::open(terminal, &current) {
                 Ok(replacement) => {
@@ -47,7 +109,7 @@ impl App {
             return Ok(());
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
-            self.state.toggle_tool_output();
+            self.state.toggle_tool_detail();
             self.previous_grid = None;
             return Ok(());
         }
@@ -69,21 +131,21 @@ impl App {
                 self.state.follow_end()
             }
             KeyCode::End => self.state.composer_mut().end(),
-            KeyCode::Up if self.state.composer().is_multiline() => {
-                self.state.composer_mut().move_line_up()
-            }
-            KeyCode::Down if self.state.composer().is_multiline() => {
-                self.state.composer_mut().move_line_down()
-            }
             KeyCode::Up => {
-                self.state.begin_history_navigation();
-                if let Some(history) = self.state.history_previous() {
-                    self.state.composer_mut().replace_from_editor(history);
+                let width = terminal.size()?.0;
+                if !self.state.composer_mut().move_visual_line_up(width) {
+                    self.state.begin_history_navigation();
+                    if let Some(history) = self.state.history_previous() {
+                        self.state.composer_mut().replace_from_editor(history);
+                    }
                 }
             }
             KeyCode::Down => {
-                if let Some(history) = self.state.history_next() {
-                    self.state.composer_mut().replace_from_editor(history);
+                let width = terminal.size()?.0;
+                if !self.state.composer_mut().move_visual_line_down(width) {
+                    if let Some(history) = self.state.history_next() {
+                        self.state.composer_mut().replace_from_editor(history);
+                    }
                 }
             }
             KeyCode::PageUp => self.state.page_up(5),
@@ -100,6 +162,7 @@ impl App {
             }
             _ => {}
         }
+        self.refresh_command_completion();
         Ok(())
     }
 
@@ -115,6 +178,7 @@ impl App {
         } else {
             self.state.composer_mut().clear();
         }
+        self.state.slash_completion = None;
     }
 
     fn submit_composer(&mut self) -> Result<(), AppError> {
@@ -160,46 +224,45 @@ impl App {
         if !prefix.starts_with('/') || input.chars().any(char::is_whitespace) {
             return;
         }
-        const COMMANDS: &[&str] = &[
-            "/help",
-            "/model",
-            "/cost",
-            "/compact",
-            "/reload-extensions",
-            "/steer",
-            "/followup",
-            "/session",
-            "/resume",
-            "/new",
-            "/clear",
-            "/quit",
-        ];
-        let Some(command) = COMMANDS
-            .iter()
-            .copied()
-            .find(|command| command.starts_with(prefix))
+        let matches = commands::matching(prefix);
+        let Some(command) = self
+            .state
+            .selected_slash_completion()
+            .or_else(|| matches.first().map(|command| command.name))
+            .map(str::to_owned)
         else {
             return;
         };
         self.state
             .composer_mut()
             .replace_from_editor(format!("{command} "));
+        self.state.slash_completion = None;
+    }
+
+    fn refresh_command_completion(&mut self) {
+        let input = self.state.composer().text();
+        let Some(prefix) = input.split_whitespace().next() else {
+            self.state.slash_completion = None;
+            return;
+        };
+        if !prefix.starts_with('/') || input.chars().any(char::is_whitespace) {
+            self.state.slash_completion = None;
+            return;
+        }
+        self.state.update_slash_completion(
+            commands::matching(prefix)
+                .into_iter()
+                .map(|command| command.name.to_owned())
+                .collect(),
+        );
     }
 
     pub(super) fn dispatch_command(&mut self, input: &str) -> Result<(), AppError> {
+        self.state.slash_completion = None;
         let mut words = input.split_whitespace();
         let command = words.next().unwrap_or_default();
         if self.agent_is_active()
-            && matches!(
-                command,
-                "/model"
-                    | "/compact"
-                    | "/session"
-                    | "/resume"
-                    | "/new"
-                    | "/clear"
-                    | "/reload-extensions"
-            )
+            && commands::find(command).is_some_and(|spec| !spec.allowed_while_active)
         {
             self.state
                 .notice(format!("{command} is unavailable while a run is active"));
@@ -207,9 +270,8 @@ impl App {
         }
         match command {
             "/help" => {
-                self.state.local_line(
-                    "keys: Enter submit, Shift+Enter newline, Ctrl+C cancel/clear/quit, Ctrl+G $EDITOR, Ctrl+O expand/collapse tool output, Alt+B/Alt+F words, Up/Down history, Tab command completion, PgUp/PgDn scroll, Ctrl+End follow; commands: /model /cost /compact /session /resume /new /reload-extensions /steer <prompt> /followup <prompt> /clear /quit",
-                );
+                self.state
+                    .set_surface_lines(UiSurface::Help, help_surface_lines());
             }
             "/model" => {
                 if let (Some(provider), Some(model)) = (words.next(), words.next()) {
@@ -218,7 +280,9 @@ impl App {
                     self.open_model_picker();
                 }
             }
-            "/cost" => self.show_cost(),
+            "/cost" => {
+                self.show_cost_surface();
+            }
             "/steer" => self.enqueue_command_prompt(
                 input.strip_prefix("/steer").unwrap_or_default(),
                 QueueDelivery::Steering,
@@ -260,6 +324,7 @@ impl App {
                     Ok(()) => {
                         let snapshot = agent.snapshot();
                         self.state.clear_transcript();
+                        self.state.close_surface();
                         self.state.set_snapshot(snapshot);
                         self.state.notice("cleared");
                     }
@@ -309,31 +374,66 @@ impl App {
         Ok(())
     }
 
-    fn show_cost(&mut self) {
+    fn show_cost_surface(&mut self) {
         let Some(snapshot) = self.state.snapshot().cloned() else {
+            self.state.set_surface_lines(
+                UiSurface::Cost,
+                vec![format!(
+                    "cost total: {}",
+                    format_footer_usage(&Usage::default())
+                )],
+            );
             return;
         };
         if snapshot.accounting.turns.is_empty() {
-            self.state
-                .local_line("cost: no provider-reported accounting yet");
+            self.state.set_surface_lines(
+                UiSurface::Cost,
+                vec![format!(
+                    "cost total: {}",
+                    format_footer_usage(&snapshot.accounting.aggregate)
+                )],
+            );
             return;
         }
+        let mut lines = Vec::with_capacity(snapshot.accounting.turns.len() + 1);
         for turn in &snapshot.accounting.turns {
             let model = turn
                 .model
                 .as_ref()
                 .map(|model| format!("{}/{}", model.provider, model.model))
                 .unwrap_or_else(|| "unknown model".into());
-            self.state.local_line(format!(
+            lines.push(format!(
                 "cost run {} turn {} {model}: {}",
                 turn.run_id.0,
                 turn.turn_id.0,
-                format_usage(&turn.usage)
+                format_footer_usage(&turn.usage)
             ));
         }
-        self.state.local_line(format!(
+        lines.push(format!(
             "cost total: {}",
-            format_usage(&snapshot.accounting.aggregate)
+            format_footer_usage(&snapshot.accounting.aggregate)
         ));
+        self.state.set_surface_lines(UiSurface::Cost, lines);
     }
+}
+
+fn help_surface_lines() -> Vec<String> {
+    const GROUPS: &[(&str, &[&str])] = &[
+        ("General", &["/help", "/clear", "/quit"]),
+        ("Session", &["/new", "/session", "/resume"]),
+        ("Runtime", &["/model", "/cost", "/compact"]),
+        ("Queue", &["/steer", "/followup"]),
+        ("Extensions", &["/reload-extensions"]),
+    ];
+
+    let mut lines = vec![format!("Commands {}", commands::all().len())];
+    for (heading, names) in GROUPS {
+        lines.push(String::new());
+        lines.push((*heading).into());
+        for name in *names {
+            let spec = commands::find(name).expect("help groups use registered commands");
+            lines.push(format!("  {:<20} {}", spec.name, spec.help));
+        }
+    }
+    lines
 }

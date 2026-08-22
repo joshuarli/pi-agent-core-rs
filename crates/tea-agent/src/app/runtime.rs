@@ -310,7 +310,13 @@ impl App {
         let current = render::render(&self.state, &self.registry, width, height);
         let diff = current.diff(self.previous_grid.as_ref());
         let cursor = composer_cursor(&self.state, width, height);
-        terminal.draw(&diff, cursor)?;
+        if let Err(error) = terminal.draw(&diff, cursor) {
+            // Crossterm may have emitted part of a frame before a flush failed. The cell grid
+            // retained by the app can no longer be trusted as the terminal's actual state, so
+            // force the next successful draw to be a full repaint.
+            self.previous_grid = None;
+            return Err(error.into());
+        }
         self.previous_grid = Some(current);
         Ok(())
     }

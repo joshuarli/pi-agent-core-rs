@@ -226,7 +226,10 @@ fn event_projection_keeps_streaming_text_as_one_raw_line() {
         },
     });
     assert_eq!(state.transcript().len(), 1);
-    assert_eq!(state.transcript()[0].text, "assistant: hello");
+    assert!(matches!(
+        &state.transcript()[0],
+        TranscriptEntry::Assistant { text, streaming: true } if text == "hello"
+    ));
 }
 
 #[test]
@@ -276,7 +279,83 @@ fn event_projection_groups_a_tool_lifecycle_in_one_readable_row() {
     ));
 
     assert_eq!(state.transcript().len(), 1);
-    assert_eq!(state.transcript()[0].text, "tool shell — failed: exit 1");
+    assert!(matches!(
+        &state.transcript()[0],
+        TranscriptEntry::Tool(tool)
+            if tool.tool_name == "shell"
+                && tool.settled_result.as_deref() == Some("exit 1")
+                && tool.state == ToolState::Failed
+    ));
+}
+
+#[test]
+fn ctrl_o_opens_a_full_transcript_detail_viewer_and_preserves_live_state() {
+    let mut state = AppState::new();
+    state.welcome_line();
+    state.push_entry(
+        None,
+        TranscriptEntry::User {
+            text: "inspect this".into(),
+        },
+    );
+    let call_id = ToolCallId::new("call-compact").expect("fixture ID");
+    state.apply_event(&tea_core::AgentEvent {
+        run_id: tea_core::RunId(1),
+        sequence: tea_core::EventSequence(1),
+        kind: tea_core::event::AgentEventKind::ToolExecutionStart {
+            tool_call_id: call_id,
+            tool_name: "read".into(),
+            arguments: SerializedJson::new(r#"{"path":"src/lib.rs"}"#),
+        },
+    });
+    let TranscriptEntry::Tool(tool) = &state.transcript()[2] else {
+        panic!("expected tool entry")
+    };
+    assert_eq!(tool.tool_name, "read");
+    state.toggle_tool_detail();
+    assert_eq!(state.surface(), UiSurface::ToolDetail);
+    assert!(state
+        .surface_lines()
+        .is_some_and(|lines| {
+            lines.iter().any(|line| line == "Welcome")
+                && lines.iter().any(|line| line == "User")
+                && lines.iter().any(|line| line == "Tool: read (Started)")
+                && lines.iter().any(|line| line.contains("src/lib.rs"))
+        }));
+    let grid = crate::render::render(&state, &tea_core::provider::ProviderRegistry::new(), 40, 10);
+    let title = (0..40)
+        .filter_map(|column| grid.get(column, 2))
+        .map(|cell| cell.symbol)
+        .collect::<String>();
+    assert!(title.starts_with("Full detail"));
+    assert_eq!(crate::render::composer_cursor_position(&state, 40, 10), Some((2, 0)));
+    state.page_surface_down(2);
+    assert_eq!(state.surface_offset(), 2);
+    state.page_surface_up(1);
+    assert_eq!(state.surface_offset(), 1);
+    state.toggle_tool_detail();
+    assert_eq!(state.surface(), UiSurface::None);
+    assert_eq!(state.surface_offset(), 0);
+    assert_eq!(state.transcript().len(), 3);
+}
+
+#[test]
+fn temporary_surface_payload_does_not_enter_or_survive_transcript_close() {
+    let mut state = AppState::new();
+    state.set_surface_lines(UiSurface::Help, vec!["help text".into()]);
+    assert_eq!(state.transcript().len(), 0);
+    assert_eq!(
+        state.surface_lines().map(|lines| lines.to_vec()),
+        Some(vec!["help text".to_owned()])
+    );
+    let grid = crate::render::render(&state, &tea_core::provider::ProviderRegistry::new(), 20, 6);
+    assert_eq!(grid.get(0, 0).expect("surface rail").symbol, '┃');
+    assert_eq!(grid.get(0, 1).expect("surface divider").symbol, '─');
+    assert_eq!(grid.get(0, 2).expect("surface payload").symbol, 'h');
+    assert_eq!(crate::render::composer_cursor_position(&state, 20, 6), Some((2, 0)));
+    state.close_surface();
+    assert_eq!(state.surface(), UiSurface::None);
+    assert!(state.surface_lines().is_none());
 }
 
 #[test]
@@ -308,13 +387,18 @@ fn event_projection_makes_provider_failure_and_abort_explicit() {
         state
             .transcript()
             .iter()
-            .map(|line| line.text.as_str())
+            .map(|entry| match entry {
+                TranscriptEntry::Error { text }
+                | TranscriptEntry::Notice { text, .. }
+                | TranscriptEntry::Welcome { text }
+                | TranscriptEntry::User { text }
+                | TranscriptEntry::Assistant { text, .. } => text.as_str(),
+                TranscriptEntry::Tool(_) => "tool",
+            })
             .collect::<Vec<_>>(),
-        [
-            "assistant error: provider rejected the request",
-            "turn aborted"
-        ]
+        ["provider rejected the request"]
     );
+    assert_eq!(state.status(), &UiStatus::Notice("turn aborted".into()));
 }
 
 #[test]
@@ -343,6 +427,28 @@ fn accounting_does_not_render_unknown_as_zero() {
         }),
         "in unknown out unknown reasoning unknown cache-read 0 cache-write 7 cost 0.000001"
     );
+}
+
+#[test]
+fn usage_events_update_footer_projection_without_transcript_noise() {
+    let mut state = AppState::new();
+    state.apply_event(&tea_core::AgentEvent {
+        run_id: tea_core::RunId(1),
+        sequence: tea_core::EventSequence(1),
+        kind: tea_core::event::AgentEventKind::ModelTurnUsage {
+            accounting: tea_core::state::ModelTurnAccounting {
+                run_id: tea_core::RunId(1),
+                turn_id: tea_core::TurnId(1),
+                model: None,
+                usage: Usage {
+                    output_tokens: Some(3),
+                    ..Usage::default()
+                },
+            },
+        },
+    });
+    assert!(state.transcript().is_empty());
+    assert!(state.footer_lines(&tea_core::provider::ProviderRegistry::new())[1].contains("out 3"));
 }
 
 #[test]
