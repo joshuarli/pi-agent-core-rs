@@ -22,7 +22,7 @@ pty-harness = ["tea-core/provider-openrouter-test-support"]
 
 [dependencies]
 crossterm = { version = "=0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
-hi-lite = { path = "../../../hi-lite" }
+laputa-hi-lite = "0.1"
 tea-core = { path = "../tea-core", features = [
     "provider-commandcode",
     "provider-openrouter",
@@ -33,9 +33,8 @@ tea-protocol = { path = "../tea-protocol" }
 smol = { workspace = true }
 
 [dev-dependencies]
-# The local harness crate was renamed while retaining its `ptytest` Rust API.
-# Keep the application-facing dependency name stable for the PTY contracts.
-ptytest = { package = "laputa-ptytest", path = "../../../ptytest" }
+# Published package name; the library target remains `ptytest` for consumers.
+laputa-ptytest = "0.1"
 
 [[test]]
 name = "pty_streaming"
