@@ -12,9 +12,23 @@ use tea_core::state::{Message, MessageId, SerializedJson, ToolCallId};
 use tea_core::tool::ToolUpdate;
 use tea_core::{AgentToolResult, DefaultCodingTools, ModelDescriptor, ThinkingLevel, Usage};
 use std::ffi::OsString;
+use std::fs;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn test_tea_home(label: &str) -> PathBuf {
+    static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
+    let root = std::env::temp_dir().join(format!(
+        "tea-app-{label}-{}-{}",
+        std::process::id(),
+        NEXT_HOME.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).expect("test Tea home should be created");
+    root
+}
 
 #[derive(Debug)]
 struct ContextCheckingProvider;
@@ -197,6 +211,55 @@ fn cli_parses_explicit_tea_home() {
         Some(std::path::Path::new("/tmp/tea-test"))
     );
     assert!(CliOptions::help_text().contains("--tea-home <path>"));
+}
+
+#[test]
+fn startup_does_not_open_model_picker_without_a_saved_selection() {
+    let tea_home = test_tea_home("startup");
+    let options = CliOptions::parse(
+        ["tea", "--tea-home", tea_home.to_str().expect("UTF-8 test path")]
+            .map(OsString::from),
+    )
+    .expect("startup options parse");
+    let mut app = App::new(options);
+
+    app.assemble_agent().expect("host should assemble");
+
+    assert_eq!(app.state().surface(), UiSurface::None);
+    assert!(app.state().selected_model.is_none());
+    let _ = fs::remove_dir_all(tea_home);
+}
+
+#[test]
+fn selected_model_is_saved_and_restored_without_starting_the_picker() {
+    let tea_home = test_tea_home("last-model");
+    let options = CliOptions::parse(
+        ["tea", "--tea-home", tea_home.to_str().expect("UTF-8 test path")]
+            .map(OsString::from),
+    )
+    .expect("startup options parse");
+    let mut first = App::new(options.clone());
+    first.assemble_agent().expect("first host should assemble");
+    first
+        .select_model(
+            "local".into(),
+            tea_core::provider::local::LAGUNA_XS_2_1_MODEL.into(),
+        )
+        .expect("local model should be selectable");
+    assert!(tea_home.join("last-model.json").is_file());
+
+    let mut second = App::new(options);
+    second.assemble_agent().expect("second host should assemble");
+
+    assert_eq!(second.state().surface(), UiSurface::None);
+    assert_eq!(
+        second.state().selected_model.as_ref().map(|model| (
+            model.provider.as_str(),
+            model.model.as_str(),
+        )),
+        Some(("local", tea_core::provider::local::LAGUNA_XS_2_1_MODEL))
+    );
+    let _ = fs::remove_dir_all(tea_home);
 }
 
 #[test]

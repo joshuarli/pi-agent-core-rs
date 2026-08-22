@@ -52,13 +52,22 @@ streams only assistant text to stdout, and exits; it requires both
 `medium`, `high`, `xhigh`, or `max`.
 
 `--cwd` is the explicit workspace authority passed to the default coding-tool
-bundle. With no provider/model pair, the host opens the cross-provider model
-selector rather than guessing a model. The host may read documented credential
-environment variables, but it must never log them or move credential discovery
-into core.
-No preferences, keys, themes, keymaps, credentials, or Tea source/configuration
-are persisted. Linear session files are the one deliberate continuity feature
-and are stored below `<tea-home>/sessions` (normally `~/.tea/sessions`).
+bundle. At startup, the host restores the last selected provider/model from
+`<tea-home>/last-model.json` (normally `~/.tea/last-model.json`) when one is
+available. It never opens the model selector as part of startup; a first run
+without a saved selection starts on the normal composer screen, and `/model`
+remains available for choosing one. A complete explicit `--provider`/`--model`
+pair takes precedence over the saved selection. The host may read documented
+credential environment variables, but it must never log them or move credential
+discovery into core.
+No keys, themes, keymaps, credentials, or Tea source/configuration are persisted.
+The last-model preference and linear session files are the deliberate continuity
+features; sessions are stored below `<tea-home>/sessions` (normally
+`~/.tea/sessions`).
+The preference is a versioned JSON object with non-empty `provider` and `model`
+strings, for example `{"version":1,"provider":"local","model":"Laguna-XS-2.1-5bit"}`.
+Malformed or unavailable preference files are ignored for model restoration and
+reported as a local startup notice.
 
 ## Linear session persistence
 

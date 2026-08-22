@@ -13,6 +13,7 @@ mod host;
 mod input;
 mod tea;
 mod picker;
+mod preferences;
 mod runtime;
 mod session;
 mod state;

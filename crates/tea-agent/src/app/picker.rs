@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::error::AppError;
 use super::host::model_candidates;
+use super::preferences::save_last_model;
 use super::runtime::App;
 use super::session::{SessionRecord, SessionStore};
 use super::state::{Picker, UiSurface};
@@ -310,7 +311,7 @@ impl App {
         self.state.automatic_compaction_enabled =
             self.agent_or_setup()?.automatic_compaction().enabled;
         self.state.selected_context_window = context_window;
-        self.state.selected_model = Some(descriptor);
+        self.state.selected_model = Some(descriptor.clone());
         if let Some(session) = self.current_session.as_mut() {
             session.model = self.state.selected_model.clone();
         }
@@ -318,6 +319,12 @@ impl App {
         self.state.close_surface();
         self.state.set_snapshot(self.agent_or_setup()?.snapshot());
         self.state.notice("model selected");
+        if let Some(home) = self.tea_home.as_ref() {
+            if let Err(error) = save_last_model(home, &descriptor) {
+                self.state
+                    .notice(format!("model selected but preference was not saved: {error}"));
+            }
+        }
         Ok(())
     }
 

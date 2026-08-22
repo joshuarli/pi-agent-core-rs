@@ -18,6 +18,7 @@ use super::cli::CliOptions;
 use super::compaction::ProviderCompactor;
 use super::error::AppError;
 use super::host::{build_host_agent_with_thinking, compose_tea_configuration};
+use super::preferences::load_last_model;
 use super::tea::{load_tea_extensions, resolve_tea_home, TeaExtensions};
 use super::session::{SessionRecord, SessionStore};
 use super::state::{AppState, UiStatus};
@@ -165,7 +166,7 @@ impl App {
         Ok(())
     }
 
-    fn assemble_agent(&mut self) -> Result<(), AppError> {
+    pub(super) fn assemble_agent(&mut self) -> Result<(), AppError> {
         if self.core.is_some() {
             return Ok(());
         }
@@ -211,9 +212,17 @@ impl App {
         );
         self.state.welcome_line();
 
-        match (self.options.provider(), self.options.model()) {
-            (None, None) => self.open_model_picker(),
-            (Some(_provider), None) => self.open_model_picker(),
+        let explicit_provider = self.options.provider().map(OsStr::to_owned);
+        let explicit_model = self.options.model().map(OsStr::to_owned);
+        match (explicit_provider.as_deref(), explicit_model.as_deref()) {
+            (None, None) => {
+                self.restore_last_model(None);
+            }
+            (Some(provider), None) => {
+                if !self.restore_last_model(provider.to_str()) {
+                    self.state.notice("select a model with /model");
+                }
+            }
             (Some(provider), Some(model)) => {
                 self.select_model(os_text(provider, "--provider")?, os_text(model, "--model")?)?
             }
@@ -224,6 +233,31 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn restore_last_model(&mut self, provider_filter: Option<&str>) -> bool {
+        let Some(home) = self.tea_home.as_ref() else {
+            return false;
+        };
+        match load_last_model(home) {
+            Ok(Some(model))
+                if provider_filter.is_none_or(|provider| provider == model.provider) =>
+            {
+                let provider = model.provider.clone();
+                let model_id = model.model.clone();
+                if let Err(error) = self.select_model(provider, model_id) {
+                    self.state
+                        .notice(format!("last model could not be restored: {error}"));
+                }
+                true
+            }
+            Ok(Some(_)) | Ok(None) => false,
+            Err(error) => {
+                self.state
+                    .notice(format!("last model could not be read: {error}"));
+                true
+            }
+        }
     }
 
     async fn event_loop(&mut self, terminal: &mut TerminalGuard) -> Result<(), AppError> {
